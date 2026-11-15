@@ -34,8 +34,8 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Built-in docs** at `/docs/user` and `/docs/admin` (public, filled with this installation's addresses), linked from the header, the login page and a help link on every console tab | done |
 | Console design: sidebar pane + tabs, monochrome style | done |
 | **Alerts**: service down/recovered, CPU and memory thresholds, failed deploys and backups, critical CVEs in running images; ntfy push and signed webhooks per organization | done, tested |
-| gVisor sandbox for tenant containers | production config + installer; **not testable on Windows dev** |
-| Host firewall for tenant networks, isolation test (Phase 0 gate) | scripts written; **run them on the server** |
+| gVisor sandbox for tenant containers | done, verified on a Debian 12 server (Phase 0 gate) |
+| Host firewall for tenant networks, isolation test (Phase 0 gate) | done, gate PASSED on a real server via `host/deploy.sh` |
 
 The end-to-end test (`scripts/e2e-dev.sh`) runs 216 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds and self-signup. Unit tests: `go test ./...` (outbound request guard).
 

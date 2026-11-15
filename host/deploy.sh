@@ -23,6 +23,9 @@
 # Optional features (off-site backups, invoices, builds, self-signup) are set in
 # /opt/platform/deploy/.env afterwards; see the deployment guide.
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+# Pipelines below never stop reading early (no "grep -q", "head", "awk ... exit"):
+# with pipefail, a writer killed by SIGPIPE would abort the whole script.
 
 # ---------- options ----------
 CONSOLE="" APPS="" REGISTRY="" BACKUP_URL=""
@@ -90,7 +93,7 @@ setenv() { # setenv FILE KEY VALUE: replace or append KEY=VALUE without sed esca
   K="$k" V="$v" awk 'BEGIN{k=ENVIRON["K"]; v=ENVIRON["V"]} index($0, k"=")==1 {print k"="v; f=1; next} {print} END{if(!f) print k"="v}' "$f" > "$tmp"
   cat "$tmp" > "$f"; rm -f "$tmp"
 }
-getenv() { { grep -E "^$2=" "$1" || true; } | head -1 | cut -d= -f2-; }
+getenv() { K="$2" awk 'index($0, ENVIRON["K"]"=")==1 && !f {print substr($0, length(ENVIRON["K"])+2); f=1}' "$1"; }
 secret() { openssl rand -hex 32; }
 
 # ---------- 1. checks ----------
@@ -123,7 +126,7 @@ PUBLIC_IP=$(curl -fsS4 --max-time 10 https://ifconfig.me 2>/dev/null || ip -4 ro
 info "public IPv4: $PUBLIC_IP"
 DNS_OK=1
 for h in "$CONSOLE" "$REGISTRY" "dnscheck-$RANDOM.$APPS"; do
-  got=$(dig +short A "$h" | tail -1)
+  got=$(dig +short A "$h" | awk 'END {print}')
   if [[ $got == "$PUBLIC_IP" ]]; then info "DNS ok: $h -> $got"; else warn "DNS: $h -> '${got:-nothing}', expected $PUBLIC_IP"; DNS_OK=0; fi
 done
 if (( ! DNS_OK )); then
@@ -140,7 +143,7 @@ systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
 info "done"
 
 # ---------- 3. host firewall ----------
-if [[ -z $SSH_PORT ]]; then SSH_PORT=$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}'); SSH_PORT=${SSH_PORT:-22}; fi
+if [[ -z $SSH_PORT ]]; then SSH_PORT=$(sshd -T 2>/dev/null | awk '/^port / && !p {p=$2} END {print p}' || true); SSH_PORT=${SSH_PORT:-22}; fi
 if (( SKIP_HARDEN )); then
   step "3/11 Host firewall: skipped (--skip-harden)"
 else
@@ -223,7 +226,7 @@ chmod +x "$DIR"/host/*.sh
 
 # ---------- 7. isolation ----------
 step "7/11 gVisor, tenant firewall, Phase 0 isolation gate"
-if docker info --format '{{json .Runtimes}}' | grep -q runsc; then
+if [[ $(docker info --format '{{json .Runtimes}}' 2>/dev/null) == *runsc* ]]; then
   info "gVisor already registered"
 else
   bash "$DIR/host/install-gvisor.sh"
@@ -296,7 +299,7 @@ fi
 # ---------- 11. first organization ----------
 step "11/11 First organization"
 if [[ -n $ORG ]]; then
-  if docker compose -f compose.prod.yml exec -T postgres psql -qtA -U platform_owner platform -c "SELECT 1 FROM orgs WHERE slug = '$ORG'" | grep -q 1; then
+  if [[ $(docker compose -f compose.prod.yml exec -T postgres psql -qtA -U platform_owner platform -c "SELECT 1 FROM orgs WHERE slug = '$ORG'") == 1 ]]; then
     info "organization $ORG already exists"
   else
     docker compose -f compose.prod.yml exec -T api /platform admin create-org --slug "$ORG" --name "$ORG_NAME" --plan "$PLAN" --owner-email "$OWNER_EMAIL"
