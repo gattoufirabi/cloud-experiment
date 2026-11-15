@@ -24,6 +24,8 @@ A fresh Debian 13 server becomes a running platform in about an hour. Do not onb
 
 You need a Debian 13 server (8 vCPU and 32 GB RAM fit roughly 40 to 80 small client services), your SSH key, and three DNS records pointing to it: the console (`{{console}}`), the registry (`{{registry}}`) and a wildcard for apps (`*.{{apps}}`). Use a separate domain for client apps.
 
+**Quickest:** point the DNS records at the server, then run `sudo bash host/deploy.sh --console {{console}} --apps {{apps}} --registry {{registry}}` from a copy of the code. It does steps 1 to 7 below, stops if the isolation gate fails, and is safe to re-run (`--help` lists the options). The steps, by hand:
+
 1. **Harden the host** with `demo-env/scripts/bootstrap.sh`: SSH by key only, default-deny firewall, WireGuard, automatic security updates.
 2. **Copy the code** to `/opt/platform`.
 3. **Install gVisor:** `bash /opt/platform/host/install-gvisor.sh`

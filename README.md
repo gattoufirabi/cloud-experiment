@@ -37,7 +37,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | gVisor sandbox for tenant containers | production config + installer; **not testable on Windows dev** |
 | Host firewall for tenant networks, isolation test (Phase 0 gate) | scripts written; **run them on the server** |
 
-The end-to-end test (`scripts/e2e-dev.sh`) runs 192 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews and git builds. Unit tests: `go test ./...` (outbound request guard).
+The end-to-end test (`scripts/e2e-dev.sh`) runs 216 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds and self-signup. Unit tests: `go test ./...` (outbound request guard).
 
 **Not built yet** (next phases in ARCHITECTURE.md): Phase 4 (multiple servers), buildpacks/Railpack builds without a Dockerfile, email alerts (needs an SMTP server), disk quotas for volumes and registry storage, registry garbage collection, operator web console (CLI only today), self-service TOTP reset (operator resets it in the database).
 
