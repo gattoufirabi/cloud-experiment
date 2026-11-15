@@ -400,6 +400,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, sta
 		d = data{}
 	}
 	d["V"] = s.assetV
+	s.addNav(r, d)
 	if sess := sessionFrom(r); sess != nil {
 		d["User"] = sess
 		d["CSRF"] = sess.CSRF
@@ -423,6 +424,10 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, sta
 
 // back redirects with a flash message (msg) or error (errMsg).
 func back(w http.ResponseWriter, r *http.Request, path, msg, errMsg string) {
+	frag := ""
+	if i := strings.Index(path, "#"); i >= 0 {
+		path, frag = path[:i], path[i:]
+	}
 	q := url.Values{}
 	if msg != "" {
 		q.Set("msg", msg)
@@ -433,7 +438,7 @@ func back(w http.ResponseWriter, r *http.Request, path, msg, errMsg string) {
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
-	http.Redirect(w, r, path, http.StatusSeeOther)
+	http.Redirect(w, r, path+frag, http.StatusSeeOther)
 }
 
 func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {

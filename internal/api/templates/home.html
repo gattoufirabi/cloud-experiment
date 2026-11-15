@@ -1,11 +1,13 @@
 {{define "title"}}Organizations{{end}}
 {{define "content"}}
-<h1>Your organizations</h1>
-{{if .Orgs}}
-<ul class="list">
-  {{range .Orgs}}<li><a href="/o/{{.Slug}}"><strong>{{.Name}}</strong></a> <span class="badge">{{.Role}}</span></li>{{end}}
-</ul>
-{{else}}
-<p class="muted">You are not a member of any organization yet. Ask an administrator for an invitation.</p>
-{{end}}
+<section class="narrow">
+  <h1>Organizations</h1>
+  {{if .Orgs}}
+  <ul class="list">
+    {{range .Orgs}}<li><a href="/o/{{.Slug}}"><strong>{{.Name}}</strong></a> <span class="badge">{{.Role}}</span></li>{{end}}
+  </ul>
+  {{else}}
+  <p class="lede">[*] you are not a member of any organization yet. Ask an administrator for an invitation.</p>
+  {{end}}
+</section>
 {{end}}

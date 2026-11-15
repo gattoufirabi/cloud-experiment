@@ -1,17 +1,19 @@
 {{define "title"}}Audit log · {{.Org.Name}}{{end}}
 {{define "content"}}
-<h1>Audit log</h1>
-<p class="muted">Every action in {{.Org.Name}}, newest first (last 300). Entries are hash-chained: they cannot be altered without detection.</p>
+<div class="head"><h1>Audit log</h1></div>
+<p class="lede">Every action in {{.Org.Name}}, newest first (last 300). Entries are hash-chained, so they cannot be altered without detection.</p>
+<div class="section">
 <div class="scroll-x">
 <table>
   <thead><tr><th>When (UTC)</th><th>Who</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr></thead>
   <tbody>
   {{range .Events}}
-    <tr><td class="nowrap">{{datetime .At}}</td><td>{{.Who}}</td><td><code>{{.Action}}</code></td><td>{{.Target}}</td><td><code class="small">{{.Detail}}</code></td><td>{{.IP}}</td></tr>
+    <tr><td class="nowrap">{{datetime .At}}</td><td>{{.Who}}</td><td><code>{{.Action}}</code></td><td>{{.Target}}</td><td><code>{{.Detail}}</code></td><td>{{.IP}}</td></tr>
   {{else}}
-    <tr><td colspan="6" class="muted">No events yet.</td></tr>
+    <tr><td colspan="6" class="muted">[*] no events yet.</td></tr>
   {{end}}
   </tbody>
 </table>
+</div>
 </div>
 {{end}}

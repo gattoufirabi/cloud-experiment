@@ -281,11 +281,11 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case formErr != "":
-		back(w, r, svcPath(o, p, sv), "", formErr)
+		back(w, r, svcPath(o, p, sv)+"#settings", "", formErr)
 	case deployNow:
-		back(w, r, svcPath(o, p, sv), "Settings saved. Deployment started.", "")
+		back(w, r, svcPath(o, p, sv)+"#settings", "Settings saved. Deployment started.", "")
 	default:
-		back(w, r, svcPath(o, p, sv), "Settings saved. They apply at the next deployment.", "")
+		back(w, r, svcPath(o, p, sv)+"#settings", "Settings saved. They apply at the next deployment.", "")
 	}
 }
 
@@ -342,10 +342,10 @@ func (s *Server) deployService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if formErr != "" {
-		back(w, r, svcPath(o, p, sv), "", formErr)
+		back(w, r, svcPath(o, p, sv)+"#overview", "", formErr)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), "Deployment started.", "")
+	back(w, r, svcPath(o, p, sv)+"#overview", "Deployment started.", "")
 }
 
 func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +377,7 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), "Rolling back: revision "+itoa(rev)+" is being redeployed as revision "+itoa(newRev)+".", "")
+	back(w, r, svcPath(o, p, sv)+"#overview", "Rolling back: revision "+itoa(rev)+" is being redeployed as revision "+itoa(newRev)+".", "")
 }
 
 func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
@@ -402,7 +402,7 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if formErr != "" {
-		back(w, r, svcPath(o, p, sv), "", formErr)
+		back(w, r, svcPath(o, p, sv)+"#settings", "", formErr)
 		return
 	}
 	back(w, r, o.Path()+"/p/"+p.Slug, "Service deleted. Its container is being removed.", "")
@@ -444,10 +444,10 @@ func (s *Server) setSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if formErr != "" {
-		back(w, r, svcPath(o, p, sv), "", formErr)
+		back(w, r, svcPath(o, p, sv)+"#settings", "", formErr)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), "Secret saved. Deploy to apply it.", "")
+	back(w, r, svcPath(o, p, sv)+"#settings", "Secret saved. Deploy to apply it.", "")
 }
 
 func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
@@ -466,7 +466,7 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), "Secret deleted. Deploy to apply it.", "")
+	back(w, r, svcPath(o, p, sv)+"#settings", "Secret deleted. Deploy to apply it.", "")
 }
 
 // ---------- custom domains ----------
@@ -517,10 +517,10 @@ func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if formErr != "" {
-		back(w, r, svcPath(o, p, sv), "", formErr)
+		back(w, r, svcPath(o, p, sv)+"#domains", "", formErr)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), "Domain added. Create the DNS records shown, then click Verify.", "")
+	back(w, r, svcPath(o, p, sv)+"#domains", "Domain added. Create the DNS records shown, then click Verify.", "")
 }
 
 func (s *Server) verifyDomain(w http.ResponseWriter, r *http.Request) {
@@ -561,10 +561,10 @@ func (s *Server) verifyDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if formErr != "" {
-		back(w, r, svcPath(o, p, sv), "", formErr)
+		back(w, r, svcPath(o, p, sv)+"#domains", "", formErr)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), host+" verified. It will serve this application within a few seconds.", "")
+	back(w, r, svcPath(o, p, sv)+"#domains", host+" verified. It will serve this application within a few seconds.", "")
 }
 
 func (s *Server) deleteDomain(w http.ResponseWriter, r *http.Request) {
@@ -585,5 +585,5 @@ func (s *Server) deleteDomain(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), "Domain removed.", "")
+	back(w, r, svcPath(o, p, sv)+"#domains", "Domain removed.", "")
 }

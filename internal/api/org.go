@@ -245,11 +245,11 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(strings.TrimSpace(r.PostFormValue("email")))
 	role := r.PostFormValue("role")
 	if !strings.Contains(email, "@") || len(email) > 254 || !model.ValidRole(role) {
-		back(w, r, o.Path(), "", "Enter a valid email address and role.")
+		back(w, r, o.Path()+"#members", "", "Enter a valid email address and role.")
 		return
 	}
 	if role == "owner" && o.Role != "owner" {
-		back(w, r, o.Path(), "", "Only owners can invite other owners.")
+		back(w, r, o.Path()+"#members", "", "Only owners can invite other owners.")
 		return
 	}
 	token := secure.NewToken()
@@ -262,7 +262,7 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, s.pool, o.ID, "invite.created", "email:"+email, map[string]string{"role": role})
 	// Shown once, never stored in clear: the admin sends it to the person over a channel they trust.
-	s.renderOrg(w, r, o, http.StatusOK, data{"InviteLink": s.cfg.BaseURL + "/invite/" + token, "InviteEmail": email})
+	s.renderOrg(w, r, o, http.StatusOK, data{"InviteLink": s.cfg.BaseURL + "/invite/" + token, "InviteEmail": email, "Tab": "members"})
 }
 
 func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {
@@ -273,14 +273,14 @@ func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("user")
 	var role string
 	if err := s.pool.QueryRow(r.Context(), `SELECT role FROM memberships WHERE org_id = $1 AND user_id = $2`, o.ID, userID).Scan(&role); err != nil {
-		back(w, r, o.Path(), "", "Member not found.")
+		back(w, r, o.Path()+"#members", "", "Member not found.")
 		return
 	}
 	if role == "owner" {
 		var owners int
 		_ = s.pool.QueryRow(r.Context(), `SELECT count(*) FROM memberships WHERE org_id = $1 AND role = 'owner'`, o.ID).Scan(&owners)
 		if o.Role != "owner" || owners <= 1 {
-			back(w, r, o.Path(), "", "Only an owner can remove an owner, and the last owner cannot be removed.")
+			back(w, r, o.Path()+"#members", "", "Only an owner can remove an owner, and the last owner cannot be removed.")
 			return
 		}
 	}
@@ -289,7 +289,7 @@ func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, s.pool, o.ID, "member.removed", "user:"+userID, nil)
-	back(w, r, o.Path(), "Member removed.", "")
+	back(w, r, o.Path()+"#members", "Member removed.", "")
 }
 
 func (s *Server) auditPage(w http.ResponseWriter, r *http.Request) {
@@ -318,7 +318,7 @@ func (s *Server) auditPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "audit", http.StatusOK, data{"Org": o, "Events": events})
+	s.render(w, r, "audit", http.StatusOK, data{"Org": o, "Events": events, "AuditPage": true})
 }
 
 // ---------- projects ----------
@@ -374,7 +374,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 	slug := r.PathValue("project")
 	if r.PostFormValue("confirm") != slug {
-		back(w, r, o.Path()+"/p/"+slug, "", "Type the project ID exactly to confirm deletion.")
+		back(w, r, o.Path()+"/p/"+slug+"#project-settings", "", "Type the project ID exactly to confirm deletion.")
 		return
 	}
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {

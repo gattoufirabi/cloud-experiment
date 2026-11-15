@@ -109,10 +109,10 @@ func (s *Server) backupNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if formErr != "" {
-		back(w, r, svcPath(o, p, sv), "", formErr)
+		back(w, r, svcPath(o, p, sv)+"#backups", "", formErr)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), "Backup started.", "")
+	back(w, r, svcPath(o, p, sv)+"#backups", "Backup started.", "")
 }
 
 func (s *Server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -148,10 +148,10 @@ func (s *Server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if formErr != "" {
-		back(w, r, svcPath(o, p, sv), "", formErr)
+		back(w, r, svcPath(o, p, sv)+"#backups", "", formErr)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), "Restore started. The application stops briefly while its data is replaced.", "")
+	back(w, r, svcPath(o, p, sv)+"#backups", "Restore started. The application stops briefly while its data is replaced.", "")
 }
 
 func (s *Server) backupSettings(w http.ResponseWriter, r *http.Request) {
@@ -174,5 +174,5 @@ func (s *Server) backupSettings(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), "Backup schedule saved.", "")
+	back(w, r, svcPath(o, p, sv)+"#backups", "Backup schedule saved.", "")
 }

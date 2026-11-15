@@ -1,41 +1,52 @@
 {{define "title"}}{{.Project.Name}}{{end}}
 {{define "content"}}
-<div class="head"><h1>{{.Project.Name}}</h1><span class="muted">{{.Project.Slug}}</span></div>
+<div class="head"><h1>{{.Project.Name}}</h1><code>{{.Project.Slug}}</code></div>
+<p class="lede">A project groups related services. Each service is one container with its own address.</p>
 
-<section class="card">
-  <h2>Services</h2>
-  {{if .Services}}
-  <table>
-    <thead><tr><th>Service</th><th>Image</th><th>Last deployment</th></tr></thead>
-    <tbody>
-    {{range .Services}}
-      <tr><td><a href="{{$.Org.Path}}/p/{{$.Project.Slug}}/s/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
-          <td><code>{{if .Image}}{{.Image}}{{else}}not set{{end}}</code></td>
-          <td><span class="status s-{{.Status}}">{{.Status}}</span></td></tr>
-    {{end}}
-    </tbody>
-  </table>
-  {{else}}<p class="muted">No services yet. A service is one container: a website, an API or a worker.</p>{{end}}
+<nav class="tabs" role="tablist" aria-label="Project sections">
+  <a role="tab" href="#services">Services <span class="count">{{len .Services}}</span></a>
+  {{if roleAtLeast .Org.Role "admin"}}<a role="tab" href="#project-settings">Settings</a>{{end}}
+</nav>
 
+<section class="pane" id="services" role="tabpanel" aria-label="Services">
+  <div class="section">
+    {{if .Services}}
+    <table>
+      <thead><tr><th>Service</th><th>Image</th><th>Last deployment</th></tr></thead>
+      <tbody>
+      {{range .Services}}
+        <tr><td><a href="{{$.Org.Path}}/p/{{$.Project.Slug}}/s/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
+            <td><code>{{if .Image}}{{.Image}}{{else}}not set{{end}}</code></td>
+            <td>{{if eq .Status "not deployed"}}<span class="st st-none">[not deployed]</span>{{else}}{{template "status" .Status}}{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="small muted">[*] no services yet. A service is one container: a website, an API or a worker.</p>{{end}}
+  </div>
   {{if roleAtLeast .Org.Role "developer"}}
-  <form method="post" action="{{.Org.Path}}/p/{{.Project.Slug}}/services" class="inline">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <input name="slug" placeholder="service-id" pattern="[a-z0-9][a-z0-9-]{1,19}" required aria-label="Service ID">
-    <input name="image" placeholder="image, e.g. nginx:1.27-alpine" aria-label="Image">
-    <button type="submit">Add service</button>
-  </form>
+  <div class="section">
+    <h2>Add a service</h2>
+    <form method="post" action="{{.Org.Path}}/p/{{.Project.Slug}}/services" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="slug" placeholder="service-id" pattern="[a-z0-9][a-z0-9-]{1,19}" required aria-label="Service ID">
+      <input name="image" placeholder="image, e.g. nginx:1.27-alpine" aria-label="Image">
+      <button type="submit" class="arrow">Add service</button>
+    </form>
+  </div>
   {{end}}
 </section>
 
 {{if roleAtLeast .Org.Role "admin"}}
-<section class="card danger-zone">
-  <h2>Delete project</h2>
-  <p>Deletes every service in this project and stops their containers. This cannot be undone.</p>
-  <form method="post" action="{{.Org.Path}}/p/{{.Project.Slug}}/delete" class="inline">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <input name="confirm" placeholder="type {{.Project.Slug}} to confirm" required aria-label="Confirm project ID">
-    <button class="danger" type="submit">Delete project</button>
-  </form>
+<section class="pane" id="project-settings" role="tabpanel" aria-label="Settings">
+  <div class="section">
+    <h2>Delete project</h2>
+    <p class="small">Deletes every service in this project and stops their containers. This cannot be undone.</p>
+    <form method="post" action="{{.Org.Path}}/p/{{.Project.Slug}}/delete" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="confirm" placeholder="type {{.Project.Slug}} to confirm" required aria-label="Confirm project ID">
+      <button class="danger" type="submit">Delete project</button>
+    </form>
+  </div>
 </section>
 {{end}}
 {{end}}

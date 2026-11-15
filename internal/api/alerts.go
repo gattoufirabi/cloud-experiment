@@ -235,5 +235,5 @@ func (s *Server) alertThresholds(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, svcPath(o, p, sv), "Alert thresholds saved.", "")
+	back(w, r, svcPath(o, p, sv)+"#alerts", "Alert thresholds saved.", "")
 }

@@ -21,6 +21,46 @@ const el = (tag, cls, text) => {
   return n;
 };
 
+// ---------- tabs ----------
+// Panes are plain sections with ids; tab links point at them (#settings). Without
+// JavaScript every pane is shown in order. With it, one pane is visible at a time, the
+// choice is kept in the URL fragment, and redirects back to "#tab" reopen it.
+const tablist = document.querySelector('.tabs[role="tablist"]');
+const paneVisible = (node) => !node.closest(".pane") || !node.closest(".pane").hidden;
+if (tablist) {
+  const links = [...tablist.querySelectorAll('a[role="tab"]')].filter((a) => a.hash && document.getElementById(a.hash.slice(1)));
+  const show = (id, remember) => {
+    const current = links.find((a) => a.hash === "#" + id) || links[0];
+    if (!current) return;
+    links.forEach((a) => {
+      const on = a === current;
+      a.setAttribute("aria-selected", on ? "true" : "false");
+      a.tabIndex = on ? 0 : -1;
+      document.getElementById(a.hash.slice(1)).hidden = !on;
+    });
+    if (remember) history.replaceState(null, "", location.pathname + location.search + current.hash);
+    document.dispatchEvent(new CustomEvent("tabshown", { detail: current.hash.slice(1) }));
+  };
+  tablist.addEventListener("click", (e) => {
+    const a = e.target.closest('a[role="tab"]');
+    if (!a || !links.includes(a)) return;
+    e.preventDefault();
+    show(a.hash.slice(1), true);
+  });
+  tablist.addEventListener("keydown", (e) => { // arrow keys move between tabs
+    const i = links.indexOf(document.activeElement);
+    if (i < 0 || (e.key !== "ArrowRight" && e.key !== "ArrowLeft")) return;
+    const next = links[(i + (e.key === "ArrowRight" ? 1 : links.length - 1)) % links.length];
+    next.focus();
+    show(next.hash.slice(1), true);
+  });
+  show(location.hash.slice(1) || tablist.dataset.default || "", false);
+  window.addEventListener("hashchange", () => show(location.hash.slice(1), false));
+  // The browser jumps to the #pane anchor after load; keep the page header in view instead.
+  window.scrollTo(0, 0);
+  window.addEventListener("load", () => { if (links.some((a) => a.hash === location.hash)) window.scrollTo(0, 0); });
+}
+
 // ---------- logs ----------
 const logs = document.getElementById("logs");
 if (logs) {
@@ -44,8 +84,10 @@ if (logs) {
       logs.textContent = "Logs are not available right now.";
     }
   };
-  const loop = () => { clearTimeout(timer); load(); timer = setTimeout(loop, 4000); };
+  // Poll only while the logs pane is open.
+  const loop = () => { clearTimeout(timer); if (paneVisible(logs)) load(); timer = setTimeout(loop, 4000); };
   search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(loop, 400); });
+  document.addEventListener("tabshown", (e) => { if (e.detail === logs.closest(".pane")?.id) loop(); });
   loop();
 }
 
@@ -57,14 +99,16 @@ if (metrics) {
     if (points.length < 2) return;
     const t0 = points[0][0], t1 = points[points.length - 1][0];
     const top = Math.max(max, ...points.map((p) => p[1])) || 1;
-    const d = points.map((p, i) => {
-      const x = ((p[0] - t0) / (t1 - t0 || 1)) * 300;
-      const y = 58 - (p[1] / top) * 56;
-      return (i ? "L" : "M") + x.toFixed(1) + " " + y.toFixed(1);
-    }).join("");
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", d);
-    svg.append(path);
+    const pts = points.map((p) => [((p[0] - t0) / (t1 - t0 || 1)) * 300, 70 - (p[1] / top) * 66]);
+    const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join("");
+    const ns = "http://www.w3.org/2000/svg";
+    const area = document.createElementNS(ns, "path");
+    area.setAttribute("class", "area");
+    area.setAttribute("d", line + "L300 72L0 72Z");
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("class", "line");
+    path.setAttribute("d", line);
+    svg.append(area, path);
   };
   const load = async () => {
     try {
@@ -86,7 +130,7 @@ if (metrics) {
 // ---------- deployment status: reload while a deployment is in progress ----------
 const deps = document.getElementById("deployments");
 if (deps) {
-  const busy = () => deps.querySelector(".s-pending, .s-deploying") !== null;
+  const busy = () => deps.querySelector(".st-pending, .st-deploying") !== null;
   if (busy()) {
     const poll = async () => {
       try {

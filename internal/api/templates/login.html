@@ -1,12 +1,12 @@
 {{define "title"}}Log in{{end}}
 {{define "content"}}
-<section class="narrow card">
+<section class="narrow">
   <h1>Log in</h1>
+  <p class="lede">Accounts are created by invitation. After your password, enter the 6-digit code from your authenticator app.</p>
   <form method="post" action="/login" class="stack">
     <label>Email <input type="email" name="email" value="{{.Email}}" autocomplete="username" required autofocus></label>
     <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
-    <button type="submit">Continue</button>
+    <div><button type="submit" class="arrow">Continue</button></div>
   </form>
-  <p class="muted small">Accounts are created by invitation only. A two-step code from your authenticator app is required after your password.</p>
 </section>
 {{end}}

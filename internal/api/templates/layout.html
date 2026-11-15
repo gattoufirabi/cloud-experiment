@@ -1,4 +1,33 @@
-{{define "sevcounts"}}<span class="sev sev-c" title="critical">{{.Critical}}</span><span class="sev sev-h" title="high">{{.High}}</span><span class="sev sev-m" title="medium">{{.Medium}}</span><span class="sev sev-l" title="low">{{.Low}}</span>{{end}}
+{{define "sevcounts"}}<span class="sev" title="critical">C {{.Critical}}</span><span class="sev" title="high">H {{.High}}</span><span class="sev" title="medium">M {{.Medium}}</span><span class="sev" title="low">L {{.Low}}</span>{{end}}
+
+{{define "status"}}<span class="st st-{{.}}">[{{.}}]</span>{{end}}
+
+{{define "flash"}}{{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}{{with .Err}}<p class="flash err" role="alert">{{.}}</p>{{end}}{{end}}
+
+{{define "sidebar"}}
+<div class="side-org">
+  <a href="{{.Org.Path}}" class="{{if not .CurProject}}cur{{end}}">{{.Org.Name}}</a>
+  <div class="meta">{{.Org.Role}}{{if .Org.Suspended}} · suspended{{end}}</div>
+</div>
+<div class="side-h">Projects</div>
+{{range $p := .Nav}}
+<div class="side-proj">
+  <a href="{{$.Org.Path}}/p/{{$p.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (not $.CurService)}}cur{{end}}">{{$p.Name}}</a>
+  {{if $p.Services}}<ul>
+    {{range $p.Services}}<li><a href="{{$.Org.Path}}/p/{{$p.Slug}}/s/{{.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (eq .Slug $.CurService)}}cur{{end}}" title="{{.Slug}}: {{.Status}}"><span class="glyph g-{{.Status}}" aria-hidden="true"></span>{{.Slug}}</a></li>{{end}}
+  </ul>{{end}}
+</div>
+{{else}}
+<p class="empty">[*] no projects yet</p>
+{{end}}
+<div class="side-links">
+  <a href="{{.Org.Path}}#members">Members</a>
+  {{if .RegistryHostNav}}<a href="{{.Org.Path}}#registry">Registry</a>{{end}}
+  <a href="{{.Org.Path}}#alerts">Alerts</a>
+  {{if roleAtLeast .Org.Role "admin"}}<a href="{{.Org.Path}}/audit" class="{{if .AuditPage}}cur{{end}}">Audit log</a>{{end}}
+</div>
+{{end}}
+
 {{define "layout"}}<!doctype html>
 <html lang="en">
 <head>
@@ -9,21 +38,27 @@
   <script src="/static/app.js?v={{.V}}" defer></script>
 </head>
 <body>
+<div class="frame">
   <header class="top">
-    <a class="brand" href="/">Platform</a>
-    {{with .Org}}<nav class="crumbs"><a href="{{.Path}}">{{.Name}}</a>{{if $.Project}} / <a href="{{.Path}}/p/{{$.Project.Slug}}">{{$.Project.Name}}</a>{{end}}{{if $.Service}} / <span>{{$.Service.Slug}}</span>{{end}}</nav>{{end}}
+    <a class="brand" href="/" aria-label="platform home"><span class="brand-mark">plat</span>form</a>
+    {{with .Org}}<nav class="crumbs" aria-label="Breadcrumb"><a href="{{.Path}}">{{.Name}}</a>{{if $.Project}}<span class="sep">/</span><a href="{{.Path}}/p/{{$.Project.Slug}}">{{$.Project.Name}}</a>{{end}}{{if $.Service}}<span class="sep">/</span><span>{{$.Service.Slug}}</span>{{end}}</nav>{{end}}
     {{with .User}}
     <form method="post" action="/logout" class="logout">
       <input type="hidden" name="csrf" value="{{$.CSRF}}">
       <span class="muted">{{.Email}}</span>
-      <button class="link" type="submit">Log out</button>
+      <button class="secondary small" type="submit">Log out</button>
     </form>
     {{end}}
   </header>
-  <main>
-    {{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}
-    {{with .Err}}<p class="flash err" role="alert">{{.}}</p>{{end}}
-    {{template "content" .}}
-  </main>
+  {{if .HasNav}}
+  <div class="workspace">
+    <aside class="side" aria-label="Projects and services">{{template "sidebar" .}}</aside>
+    <main class="main">{{template "flash" .}}{{template "content" .}}</main>
+  </div>
+  {{else}}
+  <main class="main single">{{template "flash" .}}{{template "content" .}}</main>
+  {{end}}
+  <footer class="legal">platform · self-hosted, open source</footer>
+</div>
 </body>
 </html>{{end}}
