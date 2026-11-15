@@ -16,7 +16,7 @@ All platform services run as containers on one server. Only the agent can change
 | trivy | Vulnerability database for image scans. | Unprivileged. |
 | agent | Re-checks every spec, deploys, updates Caddy, runs scans and backups in short-lived containers, health probes, alerts. | Root and Docker socket; no open port. |
 
-Client applications run under gVisor, each project on its own network (a /24 from `10.208.0.0/12`), with no route to other clients, private ranges or the host. Managed PostgreSQL databases are containers on the same project networks (`pd-<id>`), with their data in `pvdb-<id>` volumes and their dumps in `pbdb-<id>` volumes; a deleted database's volumes are kept until you remove them.
+Client applications run under gVisor, each project on its own network (a /24 from `10.208.0.0/12`), with no route to other clients, private ranges or the host. Managed PostgreSQL and Redis databases are containers on the same project networks (`pd-<id>`), with their data in `pvdb-<id>` volumes and their dumps in `pbdb-<id>` volumes; a deleted database's volumes are kept until you remove them.
 
 ## Install a server
 

@@ -20,22 +20,45 @@ import (
 // generated, encrypted password); the agent runs it on the project's private network.
 
 type databaseInfo struct {
-	ID, Slug, Version, DBName, Username, Status, Message string
-	CPUMillis, MemoryMB, BackupHour                      int
-	BackupEnabled                                        bool
-	PasswordEnc                                          []byte
-	CreatedAt                                            time.Time
+	ID, Slug, Engine, Version, DBName, Username, Status, Message string
+	CPUMillis, MemoryMB, BackupHour                              int
+	BackupEnabled                                                bool
+	PasswordEnc                                                  []byte
+	CreatedAt                                                    time.Time
 }
 
 // Host is the name services in the same project use to connect.
 func (d *databaseInfo) Host() string { return "pd-" + model.Compact(d.ID)[:12] }
 
+// Port and Label describe the engine for templates.
+func (d *databaseInfo) Port() int {
+	if d.Engine == "redis" {
+		return 6379
+	}
+	return 5432
+}
+
+func (d *databaseInfo) Label() string {
+	if d.Engine == "redis" {
+		return "Redis " + d.Version
+	}
+	return "PostgreSQL " + d.Version
+}
+
+// DefaultSecret is the usual environment variable name for this engine's URL.
+func (d *databaseInfo) DefaultSecret() string {
+	if d.Engine == "redis" {
+		return "REDIS_URL"
+	}
+	return "DATABASE_URL"
+}
+
 func (s *Server) loadDatabase(r *http.Request, tx pgx.Tx, projectID string) (*databaseInfo, error) {
 	var d databaseInfo
 	err := tx.QueryRow(r.Context(), `
-		SELECT id, slug, version, db_name, username, status, message, cpu_millis, memory_mb, backup_hour, backup_enabled, password_enc, created_at
+		SELECT id, slug, engine, version, db_name, username, status, message, cpu_millis, memory_mb, backup_hour, backup_enabled, password_enc, created_at
 		FROM databases WHERE project_id = $1 AND slug = $2`, projectID, r.PathValue("db")).
-		Scan(&d.ID, &d.Slug, &d.Version, &d.DBName, &d.Username, &d.Status, &d.Message, &d.CPUMillis, &d.MemoryMB,
+		Scan(&d.ID, &d.Slug, &d.Engine, &d.Version, &d.DBName, &d.Username, &d.Status, &d.Message, &d.CPUMillis, &d.MemoryMB,
 			&d.BackupHour, &d.BackupEnabled, &d.PasswordEnc, &d.CreatedAt)
 	return &d, err
 }
@@ -78,6 +101,10 @@ func (s *Server) dbPassword(d *databaseInfo) string {
 }
 
 func (s *Server) dbURL(d *databaseInfo) string {
+	if d.Engine == "redis" {
+		u := url.URL{Scheme: "redis", User: url.UserPassword("default", s.dbPassword(d)), Host: d.Host() + ":6379", Path: "/0"}
+		return u.String()
+	}
 	u := url.URL{Scheme: "postgres", User: url.UserPassword(d.Username, s.dbPassword(d)), Host: d.Host() + ":5432", Path: "/" + d.DBName, RawQuery: "sslmode=disable"}
 	return u.String()
 }
@@ -88,9 +115,18 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := strings.TrimSpace(r.PostFormValue("slug"))
-	version := r.PostFormValue("version")
-	if version != "16" {
-		version = "17"
+	// "postgres:17", "postgres:16" or "redis:7"; anything else falls back to PostgreSQL 17.
+	engine, version, _ := strings.Cut(r.PostFormValue("engine"), ":")
+	switch {
+	case engine == "redis":
+		version = "7"
+	case engine == "postgres" && version == "16":
+	default:
+		engine, version = "postgres", "17"
+	}
+	dbName, user := "app", "app" // PostgreSQL database and role
+	if engine == "redis" {
+		dbName, user = "0", "default" // Redis logical database and ACL user
 	}
 	base := o.Path() + "/p/" + r.PathValue("project")
 	if !model.ValidSlug(slug) {
@@ -126,8 +162,9 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		var id string
 		// Insert with a placeholder, then seal the password bound to the row ID.
 		if err := tx.QueryRow(r.Context(), `
-			INSERT INTO databases (org_id, project_id, slug, version, password_enc) VALUES ($1, $2, $3, $4, '\x00') RETURNING id`,
-			o.ID, p.ID, slug, version).Scan(&id); err != nil {
+			INSERT INTO databases (org_id, project_id, slug, engine, version, db_name, username, password_enc)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, '\x00') RETURNING id`,
+			o.ID, p.ID, slug, engine, version, dbName, user).Scan(&id); err != nil {
 			if isUniqueViolation(err) {
 				formErr = "A database with this ID already exists in the project."
 				return nil
@@ -141,7 +178,7 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.Exec(r.Context(), `UPDATE databases SET password_enc = $2 WHERE id = $1`, id, enc); err != nil {
 			return err
 		}
-		s.audit(r, tx, o.ID, "database.created", "database:"+p.Slug+"/"+slug, map[string]string{"version": version})
+		s.audit(r, tx, o.ID, "database.created", "database:"+p.Slug+"/"+slug, map[string]string{"engine": engine, "version": version})
 		_, err = tx.Exec(r.Context(), `SELECT pg_notify('deployments', '')`)
 		return err
 	})
@@ -242,10 +279,10 @@ func (s *Server) attachDatabase(w http.ResponseWriter, r *http.Request) {
 	var formErr string
 	svcSlug := r.PostFormValue("service")
 	name := strings.TrimSpace(r.PostFormValue("name"))
-	if name == "" {
-		name = "DATABASE_URL"
-	}
 	o, p, d, err, ok := s.withDatabase(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, d *databaseInfo) error {
+		if name == "" {
+			name = d.DefaultSecret()
+		}
 		if !model.SecretNameRe.MatchString(name) || strings.HasPrefix(name, "PLATFORM_") {
 			formErr = "Secret names use uppercase letters, digits and underscores."
 			return nil

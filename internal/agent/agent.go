@@ -47,10 +47,11 @@ type Agent struct {
 	backupWake   chan struct{}
 	resticPulled bool
 
-	alertWake  chan struct{}
-	alertHTTP  *http.Client
-	probeFails map[string]int
-	attached   map[string]bool // project networks the proxy and agent are known to be on
+	alertWake   chan struct{}
+	alertHTTP   *http.Client
+	probeFails  map[string]int
+	attached    map[string]bool // project networks the proxy and agent are known to be on
+	restoringDB map[string]bool // databases held stopped by a restore
 
 	mu        sync.Mutex
 	targets   []target // running live containers, refreshed each reconcile
@@ -95,12 +96,13 @@ func Run(ctx context.Context, cfg config.Config) error {
 		wake:  make(chan struct{}, 1),
 		log:   log,
 
-		scanWake:   make(chan struct{}, 1),
-		backupWake: make(chan struct{}, 1),
-		alertWake:  make(chan struct{}, 1),
-		alertHTTP:  newAlertHTTP(cfg.AlertAllowPrivate),
-		probeFails: map[string]int{},
-		attached:   map[string]bool{},
+		scanWake:    make(chan struct{}, 1),
+		backupWake:  make(chan struct{}, 1),
+		alertWake:   make(chan struct{}, 1),
+		alertHTTP:   newAlertHTTP(cfg.AlertAllowPrivate),
+		probeFails:  map[string]int{},
+		attached:    map[string]bool{},
+		restoringDB: map[string]bool{},
 	}
 
 	// A deploy interrupted by a restart is retried from the start.

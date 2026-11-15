@@ -22,7 +22,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Vulnerability scanning** (Trivy): every push, every deploy (cached 24 h per image), nightly rescan of running images; report per service | done, tested |
 | Scan policy per organization: `warn` (default) or `block-critical` | done, tested |
 | **Per-client backups** (restic) of each service's persistent folder: nightly + on demand, retention, self-service restore with a safety snapshot | done, tested |
-| **Managed PostgreSQL** (16 or 17): per-project private database, resources counted against the plan, one-click `DATABASE_URL` secret, consistent `pg_dump` backups with self-service restore | done, tested |
+| **Managed PostgreSQL** (16 or 17) **and Redis 7**: per-project private database, resources counted against the plan, one-click `DATABASE_URL` secret, consistent backups (`pg_dump` / Redis snapshot) with self-service restore | done, tested |
 | **API tokens, REST API v1 and `platformctl`** (deploy from CI, status, logs, secrets), org- and role-scoped, audited | done, tested |
 | **Built-in docs** at `/docs/user` and `/docs/admin` (public, filled with this installation's addresses), linked from the header, the login page and a help link on every console tab | done |
 | Console design: sidebar pane + tabs, monochrome style | done |
@@ -30,9 +30,9 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | gVisor sandbox for tenant containers | production config + installer; **not testable on Windows dev** |
 | Host firewall for tenant networks, isolation test (Phase 0 gate) | scripts written; **run them on the server** |
 
-The end-to-end test (`scripts/e2e-dev.sh`) runs 103 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases and the API. Unit tests: `go test ./...` (outbound request guard).
+The end-to-end test (`scripts/e2e-dev.sh`) runs 112 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases and the API. Unit tests: `go test ./...` (outbound request guard).
 
-**Not built yet** (next phases in ARCHITECTURE.md): email alerts (needs an SMTP server), passkeys, managed Redis, disk quotas for volumes and registry storage, registry garbage collection, operator web console (CLI only today), self-service TOTP reset (operator resets it in the database).
+**Not built yet** (next phases in ARCHITECTURE.md): email alerts (needs an SMTP server), passkeys, disk quotas for volumes and registry storage, registry garbage collection, operator web console (CLI only today), self-service TOTP reset (operator resets it in the database).
 
 ---
 

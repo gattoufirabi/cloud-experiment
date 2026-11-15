@@ -249,6 +249,30 @@ check "[A] database deleted" "$(code_of ja -X POST "$BASE/o/$A/p/shop/d/main/del
 GONE=no; for _ in $(seq 1 30); do docker inspect "$DB_CID" >/dev/null 2>&1 || { GONE=yes; break; }; sleep 2; done
 check "[A] database container removed" "$GONE" yes
 
+echo "== Managed Redis"
+rd_cli() { dx exec "$RD_CID" sh -c "redis-cli -a \"\$REDIS_PASSWORD\" --no-auth-warning $1" 2>&1 | tr -d '\r'; }
+check "[A] Redis created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=cache -d engine=redis:7)" 303
+RD_ST=""; for _ in $(seq 1 60); do
+  RD_ST=$(owner_sql "SELECT d.status FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'cache'")
+  [ "$RD_ST" = running ] || [ "$RD_ST" = failed ] && break; sleep 2; done
+check "[A] Redis running" "$RD_ST" running
+RD_CID=$(owner_sql "SELECT d.container_id FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'cache'")
+RD_HOST=$(owner_sql "SELECT 'pd-' || left(replace(d.id::text, '-', ''), 12) FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'cache'")
+check "[A] Redis requires its password" "$(dx exec "$RD_CID" redis-cli ping 2>&1 | tr -d '\r' | grep -c NOAUTH)" 1
+if dx exec "$CID_F" sh -c "echo | nc -w 3 $RD_HOST 6379" >/dev/null 2>&1; then ok "[A] service in the same project reaches Redis"; else bad "[A] service cannot reach Redis"; fi
+if dx exec "$CID_B" sh -c "echo | nc -w 3 $RD_HOST 6379" >/dev/null 2>&1; then bad "[B->A] B's service reached A's Redis"; else ok "[B->A] B's service cannot reach A's Redis"; fi
+code_of ja -X POST "$BASE/o/$A/p/shop/d/cache/attach" -d csrf=$CSRF_A -d service=files >/dev/null
+check "[A] REDIS_URL secret stored by default" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name = 'REDIS_URL'")" 1
+rd_cli "SET marker $MARK-r1" >/dev/null
+check "[A] Redis backup completes" "$(code_of ja -X POST "$BASE/o/$A/p/shop/d/cache/backups" -d csrf=$CSRF_A >/dev/null; s=; for _ in $(seq 1 60); do s=$(owner_sql "SELECT j.status FROM backup_jobs j JOIN databases d ON d.id = j.database_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND d.slug = 'cache' ORDER BY j.created_at DESC LIMIT 1"); [ "$s" = done ] || [ "$s" = error ] && break; sleep 2; done; echo "$s")" done
+RD_SNAP=$(owner_sql "SELECT b.snapshot_id FROM backup_snapshots b JOIN databases d ON d.id = b.database_id JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND d.slug = 'cache' ORDER BY b.taken_at DESC LIMIT 1")
+rd_cli "SET marker $MARK-r2" >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/shop/d/cache/backups/restore/$RD_SNAP" -d csrf=$CSRF_A -d confirm=cache >/dev/null
+RS=""; for _ in $(seq 1 60); do RS=$(owner_sql "SELECT j.status FROM backup_jobs j JOIN databases d ON d.id = j.database_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND d.slug = 'cache' AND j.kind = 'restore' ORDER BY j.created_at DESC LIMIT 1"); [ "$RS" = done ] || [ "$RS" = error ] && break; sleep 2; done
+check "[A] Redis restore completes" "$RS" done
+check "[A] Redis key is back to the snapshot" "$(rd_cli "GET marker")" "$MARK-r1"
+code_of ja -X POST "$BASE/o/$A/p/shop/d/cache/delete" -d csrf=$CSRF_A -d confirm=cache >/dev/null
+
 echo "== API tokens and platformctl"
 api_code() { local t=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" "$@"; }
 api_get() { local t=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" "$@"; }

@@ -74,18 +74,19 @@ Every deployment is a numbered revision. The new version starts next to the old 
 
 ## Managed databases
 
-A managed PostgreSQL database runs next to your services, on the project's private network, with nightly consistent backups.
+Managed PostgreSQL and Redis run next to your services, on the project's private network, with nightly consistent backups.
 
-1. **Create it** on the project's **Databases** tab (developers): give it an ID such as `main` and choose PostgreSQL 17 or 16. It starts within a minute with 250 millicores and 256 MB, counted against your plan.
-2. **Connect a service:** on the database's **Connect** tab, choose a service and click **Add secret**. The connection URL is stored as an encrypted `DATABASE_URL` secret of that service. Redeploy the service to apply it.
-3. **Use it** from your application through `DATABASE_URL`, for example `postgres://app:…@pd-…:5432/app?sslmode=disable`.
+1. **Create it** on the project's **Databases** tab (developers): give it an ID such as `main` and choose PostgreSQL 17, PostgreSQL 16 or Redis 7. It starts within a minute with 250 millicores and 256 MB, counted against your plan.
+2. **Connect a service:** on the database's **Connect** tab, choose a service and click **Add secret**. The connection URL is stored as an encrypted secret of that service: `DATABASE_URL` for PostgreSQL, `REDIS_URL` for Redis. Redeploy the service to apply it.
+3. **Use it** from your application through that variable, for example `postgres://app:…@pd-…:5432/app?sslmode=disable` or `redis://default:…@pd-…:6379/0`.
 
 - **Who can reach it:** only services of the same project. The database is not reachable from the internet or from other projects, so traffic stays on the private network.
 - **Who can see the password:** developers and above. Viewers see the host, port, database and user only.
 - **Resources:** change CPU and memory on the **Settings** tab. The database restarts with the new values; data is kept.
-- **Backups:** every night at the hour you choose, the platform takes a consistent `pg_dump`, encrypts it with your organization's key and keeps 7 daily, 4 weekly and 6 monthly snapshots. **Back up now** takes one immediately.
-- **Restore** (admins): type the database ID next to a snapshot and click **Restore**. A safety snapshot of the current data is taken first and always kept; the snapshot is then loaded with `pg_restore`, replacing existing tables. Connected applications may see errors for a few seconds.
-- **Plans:** Starter includes 1 managed database, Pro includes 5.
+- **Backups:** every night at the hour you choose, the platform takes a consistent `pg_dump` (PostgreSQL) or snapshot (Redis), encrypts it with your organization's key and keeps 7 daily, 4 weekly and 6 monthly snapshots. **Back up now** takes one immediately.
+- **Restore** (admins): type the database ID next to a snapshot and click **Restore**. A safety snapshot of the current data is taken first and always kept; the snapshot is then loaded with `pg_restore`, replacing existing tables; Redis is briefly stopped and restarted with the snapshot. Connected applications may see errors for a few seconds.
+- **Redis memory:** Redis uses at most 80% of the memory you give it and then refuses new writes instead of evicting keys, so size it for your data.
+- **Plans:** Starter includes 1 managed database, Pro includes 5 (PostgreSQL and Redis together).
 
 ## Custom domains and HTTPS
 

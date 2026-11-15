@@ -363,8 +363,8 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		Slug, Image, Status string
 	}
 	type dbRow struct {
-		Slug, Version, Status string
-		CPUMillis, MemoryMB   int
+		Slug, Engine, Version, Status string
+		CPUMillis, MemoryMB           int
 	}
 	var p *projectInfo
 	var services []svc
@@ -374,7 +374,7 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		if p, err = s.loadProject(r, tx); err != nil {
 			return err
 		}
-		drows, err := tx.Query(r.Context(), `SELECT slug, version, status, cpu_millis, memory_mb FROM databases WHERE project_id = $1 ORDER BY slug`, p.ID)
+		drows, err := tx.Query(r.Context(), `SELECT slug, engine, version, status, cpu_millis, memory_mb FROM databases WHERE project_id = $1 ORDER BY slug`, p.ID)
 		if err != nil {
 			return err
 		}
