@@ -83,6 +83,16 @@ Every deployment is a numbered revision. The new version starts next to the old 
 - **Roll back:** click **Redeploy** next to an earlier revision on the Overview tab. Its exact settings come back as a new revision; secrets use their current values.
 - **Delete a service:** at the bottom of the Settings tab, type the service ID to confirm.
 
+## Preview environments
+
+A preview is a temporary copy of a service, with the same settings, secrets and traffic protection but another image, at its own address: `<name>.<service>-<project>-<organization>.<apps domain>`. Typical use: one preview per pull request, so reviewers can click through the change before it is merged.
+
+- **Create one** in the service's **Previews** tab (name, image, lifetime), or from CI with `platformctl preview create shop/web pr-42 --image registry.example.com/acme/web:pr-42 --wait`. Running the same command again redeploys that preview with the new image and renews its lifetime, so it can run on every push.
+- **Lifetime:** 72 hours by default, up to 720. The preview is deleted automatically when it expires; delete it earlier with the **Delete** button or `platformctl preview delete shop/web pr-42` (for example when the pull request is closed).
+- **Limits:** at most 5 previews per service. They use your plan's CPU and memory (and are billed like services) but do not count as services.
+- Previews never get a persistent folder or backups, and do not appear on public status pages. A preview's logs are under **logs and details** in the Previews tab.
+- Secrets are copied when the preview is created; later changes to the service's secrets do not reach existing previews.
+
 ## Managed databases
 
 Managed PostgreSQL and Redis run next to your services, on the project's private network, with nightly consistent backups.

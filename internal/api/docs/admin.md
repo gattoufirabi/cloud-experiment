@@ -102,6 +102,7 @@ DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE email = 'person
 | .env passwords and secrets | Set new ones and restart. | Rotate and restart. |
 
 - **Lost passkey:** the person can still log in with password and code and remove it under Account. To remove all of someone's passkeys: `DELETE FROM passkeys WHERE user_id = (SELECT id FROM users WHERE email = 'person@example.com');`. Passkeys are bound to `CONSOLE_HOST`: changing the console address makes existing passkeys stop working, and users must add new ones.
+- **Preview environments** are hidden service rows (`services.preview_of`). The agent deletes expired ones every minute (audited as `preview.expired`); their containers and routes go away at the next reconcile. With ACME, each preview address gets its own certificate on demand, so wildcard DNS for the apps domain must cover two levels (`*.apps.example.com` does).
 - **Traffic protection** runs in Caddy, built with two open-source modules (`deploy/caddy/Dockerfile`: Coraza WAF with the OWASP Core Rule Set, and caddy-ratelimit). All services with the WAF on share one rule-set instance, so Caddy needs about 100 MB more once any client turns it on. Rate limits are kept in memory and reset when Caddy restarts.
 - **Status pages** are opt-in per project and read only through restricted database functions; a suspended client's pages return "not found". Uptime history older than 90 days is pruned by the agent.
 

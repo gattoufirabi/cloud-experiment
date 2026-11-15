@@ -140,7 +140,7 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 	var apiTokens []apiToken
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `
-			SELECT p.slug, p.name, (SELECT count(*) FROM services s WHERE s.project_id = p.id)
+			SELECT p.slug, p.name, (SELECT count(*) FROM services s WHERE s.project_id = p.id AND s.preview_of IS NULL)
 			FROM projects p ORDER BY p.name`)
 		if err != nil {
 			return err
@@ -149,7 +149,7 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 			return err
 		}
 		if err := tx.QueryRow(r.Context(), `
-			SELECT (SELECT count(*) FROM services),
+			SELECT (SELECT count(*) FROM services WHERE preview_of IS NULL),
 			       (SELECT coalesce(sum(cpu_millis), 0) FROM services) + (SELECT coalesce(sum(cpu_millis), 0) FROM databases),
 			       (SELECT coalesce(sum(memory_mb), 0) FROM services) + (SELECT coalesce(sum(memory_mb), 0) FROM databases),
 			       (SELECT count(*) FROM databases)`).
@@ -388,7 +388,7 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		rows, err := tx.Query(r.Context(), `
 			SELECT s.slug, s.image,
 			       coalesce((SELECT d.status FROM deployments d WHERE d.service_id = s.id ORDER BY d.revision DESC LIMIT 1), 'not deployed')
-			FROM services s WHERE s.project_id = $1 ORDER BY s.slug`, p.ID)
+			FROM services s WHERE s.project_id = $1 AND s.preview_of IS NULL ORDER BY s.slug`, p.ID)
 		if err != nil {
 			return err
 		}
@@ -445,7 +445,7 @@ func (s *Server) checkQuota(r *http.Request, tx pgx.Tx, o *orgInfo, excludeID st
 	// Services and managed databases share the plan's CPU and memory; excludeID skips
 	// the service or database being edited.
 	if err := tx.QueryRow(r.Context(), `
-		SELECT (SELECT count(*) FROM services WHERE id::text <> $1),
+		SELECT (SELECT count(*) FROM services WHERE id::text <> $1 AND preview_of IS NULL),
 		       (SELECT coalesce(sum(cpu_millis), 0) FROM services WHERE id::text <> $1) +
 		       (SELECT coalesce(sum(cpu_millis), 0) FROM databases WHERE id::text <> $1),
 		       (SELECT coalesce(sum(memory_mb), 0) FROM services WHERE id::text <> $1) +

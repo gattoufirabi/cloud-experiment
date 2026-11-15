@@ -123,6 +123,9 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET "+svc+"/deployments/{rev}", s.apiAuth("viewer", s.apiDeployment))
 	m.HandleFunc("GET "+svc+"/logs", s.apiAuth("viewer", s.apiLogs))
 	m.HandleFunc("PUT "+svc+"/secrets/{name}", s.apiAuth("developer", s.apiSetSecret))
+	m.HandleFunc("GET "+svc+"/previews", s.apiAuth("viewer", s.apiPreviews))
+	m.HandleFunc("POST "+svc+"/previews", s.apiAuth("developer", s.apiCreatePreview))
+	m.HandleFunc("DELETE "+svc+"/previews/{name}", s.apiAuth("developer", s.apiDeletePreview))
 }
 
 func (s *Server) apiMe(w http.ResponseWriter, r *http.Request, o *orgInfo) {
@@ -138,7 +141,7 @@ func (s *Server) apiProjects(w http.ResponseWriter, r *http.Request, o *orgInfo)
 	}
 	var out []project
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
-		rows, err := tx.Query(r.Context(), `SELECT p.slug, p.name, (SELECT count(*) FROM services s WHERE s.project_id = p.id) FROM projects p ORDER BY p.slug`)
+		rows, err := tx.Query(r.Context(), `SELECT p.slug, p.name, (SELECT count(*) FROM services s WHERE s.project_id = p.id AND s.preview_of IS NULL) FROM projects p ORDER BY p.slug`)
 		if err != nil {
 			return err
 		}
@@ -170,7 +173,7 @@ func (s *Server) apiServices(w http.ResponseWriter, r *http.Request, o *orgInfo)
 		rows, err := tx.Query(r.Context(), `
 			SELECT s.slug, s.image,
 			       coalesce((SELECT d.status FROM deployments d WHERE d.service_id = s.id ORDER BY d.revision DESC LIMIT 1), 'not deployed')
-			FROM services s WHERE s.project_id = $1 ORDER BY s.slug`, p.ID)
+			FROM services s WHERE s.project_id = $1 AND s.preview_of IS NULL ORDER BY s.slug`, p.ID)
 		if err != nil {
 			return err
 		}
@@ -218,7 +221,7 @@ func (s *Server) apiService1(w http.ResponseWriter, r *http.Request, o *orgInfo)
 		resp = map[string]any{
 			"id": sv.Slug, "project": p.Slug, "image": sv.Image, "port": sv.Port, "health_path": sv.HealthPath,
 			"cpu_millis": sv.CPUMillis, "memory_mb": sv.MemoryMB, "volume_path": sv.VolumePath,
-			"url":         s.appURL(model.DefaultHost(sv.Slug, p.Slug, o.Slug, s.cfg.AppsDomain)),
+			"url":         s.appURL(s.serviceHost(o, p, sv)),
 			"deployments": toAPIDeployments(deps),
 		}
 		return nil

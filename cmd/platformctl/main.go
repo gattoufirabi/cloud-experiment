@@ -10,6 +10,7 @@
 //	platformctl deploy <project>/<service> [--image IMAGE] [--wait]
 //	platformctl logs <project>/<service> [--filter TEXT]
 //	platformctl secret set <project>/<service> NAME     (value read from standard input)
+//	platformctl preview create|list|delete <project>/<service> [NAME] ...
 //
 // Standard library only: one static binary, easy to drop into any CI image.
 package main
@@ -82,6 +83,8 @@ func main() {
 			usage(2)
 		}
 		err = c.setSecret(args[1], args[2])
+	case "preview":
+		err = c.preview(args)
 	default:
 		usage(2)
 	}
@@ -101,6 +104,10 @@ func usage(code int) {
                                            deploy current settings, optionally with a new image
   logs <project>/<service> [--filter TEXT] last log lines (6 hours, up to 300)
   secret set <project>/<service> NAME      set a secret; the value is read from standard input
+  preview create <project>/<service> NAME [--image IMAGE] [--ttl HOURS] [--wait]
+                                           create or update a preview environment (e.g. pr-42)
+  preview list <project>/<service>         list previews
+  preview delete <project>/<service> NAME  delete a preview
 
 environment: PLATFORM_URL (console address), PLATFORM_TOKEN (API token "pla_...")`)
 	os.Exit(code)
@@ -328,4 +335,87 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// ---------- preview environments ----------
+
+type preview struct {
+	Name     string    `json:"name"`
+	URL      string    `json:"url"`
+	Image    string    `json:"image"`
+	Status   string    `json:"status"`
+	Expires  time.Time `json:"expires_at"`
+	Revision int       `json:"revision"`
+}
+
+func (c *client) preview(args []string) error {
+	if len(args) < 2 {
+		usage(2)
+	}
+	sub := args[0]
+	p, s := target(args[1:])
+	base := "/api/v1/projects/" + p + "/services/" + s + "/previews"
+	switch sub {
+	case "list":
+		var list []preview
+		if err := c.do("GET", base, nil, &list); err != nil {
+			return err
+		}
+		var rows [][]string
+		for _, v := range list {
+			rows = append(rows, []string{v.Name, v.Status, v.URL, v.Expires.UTC().Format("2006-01-02 15:04 UTC"), v.Image})
+		}
+		table("NAME\tSTATUS\tURL\tEXPIRES\tIMAGE", rows)
+		return nil
+	case "delete":
+		if len(args) != 3 {
+			usage(2)
+		}
+		if err := c.do("DELETE", base+"/"+url.PathEscape(args[2]), nil, nil); err != nil {
+			return err
+		}
+		fmt.Println("preview", args[2], "deleted")
+		return nil
+	case "create":
+		if len(args) < 3 {
+			usage(2)
+		}
+		name := args[2]
+		fs := flag.NewFlagSet("preview create", flag.ExitOnError)
+		image := fs.String("image", "", "image (default: the service's image)")
+		ttl := fs.Int("ttl", 0, "lifetime in hours (default 72, at most 720)")
+		wait := fs.Bool("wait", false, "wait until the preview is live or failed")
+		_ = fs.Parse(args[3:])
+		var res preview
+		if err := c.do("POST", base, map[string]any{"name": name, "image": *image, "ttl_hours": *ttl}, &res); err != nil {
+			return err
+		}
+		fmt.Println("preview", res.Name, "deploying at", res.URL)
+		if !*wait {
+			return nil
+		}
+		deadline := time.Now().Add(15 * time.Minute)
+		for time.Now().Before(deadline) {
+			time.Sleep(2 * time.Second)
+			var list []preview
+			if err := c.do("GET", base, nil, &list); err != nil {
+				return err
+			}
+			for _, v := range list {
+				if v.Name != name {
+					continue
+				}
+				switch v.Status {
+				case "live":
+					fmt.Println("preview", name, "is live at", v.URL)
+					return nil
+				case "failed":
+					return fmt.Errorf("preview %s failed to deploy (see its logs in the console)", name)
+				}
+			}
+		}
+		return errors.New("timed out waiting for the preview")
+	}
+	usage(2)
+	return nil
 }

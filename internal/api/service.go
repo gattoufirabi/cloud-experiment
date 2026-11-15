@@ -22,6 +22,18 @@ type serviceInfo struct {
 	ID, Slug, Image, HealthPath, VolumePath string
 	Port, CPUMillis, MemoryMB               int
 	Env                                     map[string]string
+	PreviewName, ParentSlug                 string // set for preview environments
+	Expires                                 *time.Time
+}
+
+func (sv *serviceInfo) isPreview() bool { return sv.PreviewName != "" }
+
+// serviceHost is the platform address of a service or preview.
+func (s *Server) serviceHost(o *orgInfo, p *projectInfo, sv *serviceInfo) string {
+	if sv.isPreview() {
+		return s.previewHost(sv.PreviewName, sv.ParentSlug, p.Slug, o.Slug)
+	}
+	return model.DefaultHost(sv.Slug, p.Slug, o.Slug, s.cfg.AppsDomain)
 }
 
 func (sv *serviceInfo) spec() model.Spec {
@@ -32,9 +44,12 @@ func (sv *serviceInfo) spec() model.Spec {
 func (s *Server) loadService(r *http.Request, tx pgx.Tx, projectID string) (*serviceInfo, error) {
 	var sv serviceInfo
 	err := tx.QueryRow(r.Context(), `
-		SELECT id, slug, image, health_path, volume_path, port, cpu_millis, memory_mb, env
-		FROM services WHERE project_id = $1 AND slug = $2`, projectID, r.PathValue("service")).
-		Scan(&sv.ID, &sv.Slug, &sv.Image, &sv.HealthPath, &sv.VolumePath, &sv.Port, &sv.CPUMillis, &sv.MemoryMB, &sv.Env)
+		SELECT s.id, s.slug, s.image, s.health_path, s.volume_path, s.port, s.cpu_millis, s.memory_mb, s.env,
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at
+		FROM services s LEFT JOIN services ps ON ps.id = s.preview_of
+		WHERE s.project_id = $1 AND s.slug = $2`, projectID, r.PathValue("service")).
+		Scan(&sv.ID, &sv.Slug, &sv.Image, &sv.HealthPath, &sv.VolumePath, &sv.Port, &sv.CPUMillis, &sv.MemoryMB, &sv.Env,
+			&sv.PreviewName, &sv.ParentSlug, &sv.Expires)
 	if sv.Env == nil {
 		sv.Env = map[string]string{}
 	}
@@ -150,6 +165,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 	var incidents []incidentView
 	var cpuPct, memPct *int
 	var prot protection
+	var previews []previewView
 	o, p, sv, err, ok := s.withService(w, r, "viewer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
 		var err error
 		if deps, err = recentDeployments(r, tx, sv.ID, 15); err != nil {
@@ -165,6 +181,9 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if prot, err = loadProtection(r, tx, sv.ID); err != nil {
+			return err
+		}
+		if previews, err = s.loadPreviews(r, tx, o, p, sv); err != nil {
 			return err
 		}
 		var sc scanSummary
@@ -204,7 +223,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	host := model.DefaultHost(sv.Slug, p.Slug, o.Slug, s.cfg.AppsDomain)
+	host := s.serviceHost(o, p, sv)
 	s.render(w, r, "service", http.StatusOK, data{
 		"Org": o, "Project": p, "Service": sv, "EnvText": model.FormatEnv(sv.Env),
 		"Deployments": deps, "Secrets": secrets, "Domains": domains,
@@ -213,7 +232,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		"Scan":    scan, "Findings": findings, "RegistryHost": s.cfg.RegistryHost,
 		"Backups": backups, "CanRestore": model.RoleAtLeast(o.Role, "admin"),
 		"Incidents": incidents, "AlertCPU": cpuPct, "AlertMem": memPct,
-		"Protection": prot,
+		"Protection": prot, "Previews": previews, "MaxPreviews": maxPreviewsPerService,
 	})
 }
 

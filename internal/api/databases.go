@@ -198,7 +198,7 @@ func (s *Server) databasePage(w http.ResponseWriter, r *http.Request) {
 	var services []string
 	var backups *backupView
 	o, p, d, err, ok := s.withDatabase(w, r, "viewer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, d *databaseInfo) error {
-		rows, err := tx.Query(r.Context(), `SELECT slug FROM services WHERE project_id = $1 ORDER BY slug`, p.ID)
+		rows, err := tx.Query(r.Context(), `SELECT slug FROM services WHERE project_id = $1 AND preview_of IS NULL ORDER BY slug`, p.ID)
 		if err != nil {
 			return err
 		}

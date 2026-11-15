@@ -25,7 +25,7 @@ func (s *Server) loadNav(r *http.Request, o *orgInfo) []navProject {
 		rows, err := tx.Query(r.Context(), `
 			SELECT p.slug, p.name, coalesce(s.slug, ''),
 			       coalesce((SELECT d.status FROM deployments d WHERE d.service_id = s.id ORDER BY d.revision DESC LIMIT 1), 'none')
-			FROM projects p LEFT JOIN services s ON s.project_id = p.id
+			FROM projects p LEFT JOIN services s ON s.project_id = p.id AND s.preview_of IS NULL
 			ORDER BY p.name, p.slug, s.slug`)
 		if err != nil {
 			return err

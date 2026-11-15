@@ -4,6 +4,7 @@
   <h1>{{.Service.Slug}}</h1>
   <a class="right" href="{{.URL}}" target="_blank" rel="noopener">{{.URL}} ↗</a>
 </div>
+{{if .Service.PreviewName}}<p class="notice">Preview <strong>{{.Service.PreviewName}}</strong> of <a href="{{.Org.Path}}/p/{{.Project.Slug}}/s/{{.Service.ParentSlug}}#previews">{{.Service.ParentSlug}}</a>{{with .Service.Expires}}, deleted automatically {{datetime .}}{{end}}.</p>{{end}}
 <p class="lede"><code>{{if .Service.Image}}{{.Service.Image}}{{else}}no image set{{end}}</code> · port {{.Service.Port}} · {{.Service.CPUMillis}} millicores · {{.Service.MemoryMB}} MB{{if .Service.VolumePath}} · folder {{.Service.VolumePath}}{{end}}</p>
 
 <nav class="tabs" role="tablist" aria-label="Service sections">
@@ -14,6 +15,7 @@
   <a role="tab" href="#security">Security</a>
   {{if .Service.VolumePath}}<a role="tab" href="#backups">Backups</a>{{end}}
   <a role="tab" href="#alerts">Alerts</a>
+  {{if not .Service.PreviewName}}<a role="tab" href="#previews">Previews{{with .Previews}} <span class="count">{{len .}}</span>{{end}}</a>{{end}}
 </nav>
 
 <!-- ============ overview ============ -->
@@ -337,4 +339,40 @@
     {{else}}<p class="small muted">No incidents.</p>{{end}}
   </div>
 </section>
+
+<!-- ============ previews ============ -->
+{{if not .Service.PreviewName}}
+<section class="pane" id="previews" role="tabpanel" aria-label="Previews">
+  <p class="help"><a href="/docs/user#preview-environments" target="_blank" rel="noopener">Guide: preview environments ↗</a></p>
+  <div class="section">
+    <h2>Preview environments</h2>
+    <p class="small muted">A temporary copy of this service, with the same settings and secrets but another image, at its own address. Typical use: one preview per pull request, created by your CI. No persistent folder; deleted automatically when it expires. At most {{.MaxPreviews}} per service; they share your plan's CPU and memory.</p>
+    {{if .Previews}}
+    <table>
+      <thead><tr><th>Preview</th><th>Image</th><th>Expires</th><th></th></tr></thead>
+      <tbody>
+      {{range .Previews}}
+        <tr><td>{{template "status" .Status}} <a href="{{.URL}}" target="_blank" rel="noopener">{{.Name}} ↗</a><br><a class="small" href="{{$.Org.Path}}/p/{{$.Project.Slug}}/s/{{.Slug}}">logs and details</a></td>
+          <td><code>{{.Image}}</code></td><td class="nowrap">{{datetime .Expires}}</td>
+          <td>{{if $.CanEdit}}<form method="post" action="{{$.Path}}/previews/{{.Name}}/delete" class="inline flush"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary small" data-confirm="Delete preview {{.Name}}?">Delete</button></form>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="muted">No previews.</p>{{end}}
+  </div>
+  {{if .CanEdit}}
+  <div class="section">
+    <h2>Create or update a preview</h2>
+    <p class="small muted">Using an existing name redeploys that preview with the new image and renews its lifetime.</p>
+    <form method="post" action="{{.Path}}/previews" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Name <span class="hint">e.g. pr-42; address {{"{"}}name{{"}"}}.{{.Service.Slug}}-{{.Project.Slug}}-{{.Org.Slug}}.{{.AppsDomain}}</span><input name="name" maxlength="20" pattern="[a-z0-9][a-z0-9-]{0,19}" required></label>
+      <label>Image <span class="hint">empty = this service's image</span><input name="image" placeholder="{{.Service.Image}}"></label>
+      <label>Lifetime <span class="hint">hours, 1–720</span><input type="number" name="ttl_hours" min="1" max="720" value="72"></label>
+      <div><button type="submit">Deploy preview</button></div>
+    </form>
+  </div>
+  {{end}}
+</section>
+{{end}}
 {{end}}

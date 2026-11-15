@@ -59,10 +59,11 @@ func (a *Agent) meterMinute(ctx context.Context) {
 	}
 	if _, err := a.pool.Exec(ctx, `
 		INSERT INTO usage_hourly (org_id, resource_id, kind, name, hour, cpu_milli_minutes, mem_mb_minutes)
-		SELECT d.org_id, d.service_id, 'service', p.slug || '/' || s.slug, date_trunc('hour', now()),
-		       (d.spec->>'cpu_millis')::int, (d.spec->>'memory_mb')::int
+		SELECT d.org_id, d.service_id, 'service', p.slug || '/' || coalesce(ps.slug || ' preview ' || s.preview_name, s.slug),
+		       date_trunc('hour', now()), (d.spec->>'cpu_millis')::int, (d.spec->>'memory_mb')::int
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
+		LEFT JOIN services ps ON ps.id = s.preview_of
 		JOIN projects p ON p.id = s.project_id
 		JOIN orgs o ON o.id = d.org_id
 		WHERE d.status = 'live' AND NOT o.suspended
@@ -78,6 +79,7 @@ func (a *Agent) meterMinute(ctx context.Context) {
 		    name              = EXCLUDED.name`); err != nil {
 		a.log.Warn("meter usage", "err", err)
 	}
+	a.expirePreviews(ctx)
 	// Keep a week of ticks; older minutes can no longer be metered anyway.
 	_, _ = a.pool.Exec(ctx, `DELETE FROM meter_ticks WHERE minute < now() - interval '7 days'`)
 }
@@ -119,5 +121,34 @@ func (a *Agent) meterEgress(ctx context.Context, last map[string]uint64) {
 		if !seen[id] {
 			delete(last, id)
 		}
+	}
+}
+
+// expirePreviews deletes previews past their expiry; reconcile then removes their
+// containers and the proxy route.
+func (a *Agent) expirePreviews(ctx context.Context) {
+	rows, err := a.pool.Query(ctx, `
+		DELETE FROM services s USING services ps, projects p
+		WHERE s.expires_at < now() AND ps.id = s.preview_of AND p.id = s.project_id
+		RETURNING s.org_id, p.slug || '/' || ps.slug, s.preview_name`)
+	if err != nil {
+		a.log.Warn("expire previews", "err", err)
+		return
+	}
+	type gone struct{ org, target, name string }
+	var list []gone
+	for rows.Next() {
+		var g gone
+		if rows.Scan(&g.org, &g.target, &g.name) == nil {
+			list = append(list, g)
+		}
+	}
+	rows.Close()
+	for _, g := range list {
+		_ = auditAgent(ctx, a, g.org, "preview.expired", "service:"+g.target, map[string]string{"preview": g.name})
+		a.log.Info("preview expired", "service", g.target, "preview", g.name)
+	}
+	if len(list) > 0 {
+		a.poke()
 	}
 }

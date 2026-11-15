@@ -281,3 +281,6 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
   body, .frame, .main, .workspace { background: #fff !important; margin: 0; padding: 0; display: block; }
   .invoice { border: 0; padding: 0; max-width: none; }
 }
+
+/* ---------- previews ---------- */
+.notice { background: var(--mist); border-radius: 16px; padding: 12px 18px; font-weight: 600; }

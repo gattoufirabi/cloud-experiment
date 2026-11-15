@@ -385,6 +385,30 @@ admin invoice-paid --number "$INV" >/dev/null
 if c ja "$BASE/o/$A/invoices/$INV" | grep -q "PAID"; then ok "operator payment shows as paid"; else bad "invoice not marked paid"; fi
 check "invoice issue and payment audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE target = 'invoice:$INV' AND action IN ('invoice.issued', 'invoice.paid')")" 2
 
+echo "== Preview environments"
+admin set-plan --slug "$A" --plan pro >/dev/null   # room for previews in the CPU/memory quota
+TOK_DEV=$(new_api_token ja "$A" "$CSRF_A" previews developer)   # the first CI token was revoked above
+PV1=pr-1.web-shop-$A.apps.localhost
+pv_code() { curl -s -o /dev/null -w '%{http_code}' --resolve "$1:$PORT:127.0.0.1" "http://$1:$PORT/"; }
+wait_pv_code() { local got; for _ in $(seq 1 45); do got=$(pv_code "$1"); [ "$got" = "$2" ] && break; sleep 2; done; echo "$got"; }
+check "[A] preview created in the console" "$(code_of ja -X POST "$BASE$SVC_A/previews" -d csrf=$CSRF_A -d name=pr-1 -d image=nginx:1.27-alpine -d ttl_hours=24)" 303
+check "preview answers at its own address" "$(wait_pv_code "$PV1" 200)" 200
+PV_CID=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.preview_name = 'pr-1' AND d.status = 'live'")
+check "preview gets the service's secrets" "$(docker exec "$PV_CID" printenv API_KEY | tr -d '\r')" "tenant-a-secret"
+if api_get "$TOK_DEV" "$BASE/api/v1/projects/shop/services" | grep -q '"pv-'; then bad "previews leak into the service list"; else ok "previews are not listed as services"; fi
+check "[API] invalid preview name refused (422)" "$(api_code "$TOK_DEV" -X POST -H 'Content-Type: application/json' -d '{"name":"Bad_Name"}' "$BASE/api/v1/projects/shop/services/web/previews")" 422
+if pctl preview create shop/web pr-2 --image nginx:1.27-alpine --ttl 2 --wait | grep -q "is live"; then ok "[CLI] platformctl preview create --wait reaches live"; else bad "[CLI] preview create failed"; fi
+check "[API] creating an existing preview updates it (200)" "$(api_code "$TOK_DEV" -X POST -H 'Content-Type: application/json' -d '{"name":"pr-2","image":"nginx:1.27-alpine"}' "$BASE/api/v1/projects/shop/services/web/previews")" 200
+check "[CLI] platformctl preview list shows both" "$(pctl preview list shop/web | grep -c '^pr-')" 2
+check "[B->A] B cannot delete A's preview (404)" "$(api_code "$TOK_B" -X DELETE "$BASE/api/v1/projects/shop/services/web/previews/pr-1")" 404
+check "A's preview still up after B's attempt" "$(pv_code "$PV1")" 200
+owner_sql "UPDATE services SET expires_at = now() - interval '1 minute' WHERE preview_name = 'pr-2' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')" >/dev/null
+check "expired preview removed automatically" "$(wait_pv_code "pr-2.web-shop-$A.apps.localhost" 404)" 404
+check "expiry audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'preview.expired' AND detail->>'preview' = 'pr-2' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" 1
+if pctl preview delete shop/web pr-1 | grep -q deleted; then ok "[CLI] platformctl preview delete"; else bad "[CLI] preview delete failed"; fi
+check "deleted preview no longer served" "$(wait_pv_code "$PV1" 404)" 404
+check "parent service unaffected" "$(app_code /)" 200
+
 echo "== Alerts"
 ntfy_has() { # ntfy_has <topic> <text> [tries]: wait until a message on topic contains text
   for _ in $(seq 1 "${3:-30}"); do

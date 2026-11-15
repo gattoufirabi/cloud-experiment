@@ -65,14 +65,16 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 	rows, err := a.pool.Query(ctx, `
 		SELECT d.container_name, (d.spec->>'port')::int, s.slug, p.slug, o.slug,
 		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}'),
-		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.blocked_ips::text[]
+		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.blocked_ips::text[],
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, '')
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
+		LEFT JOIN services ps ON ps.id = s.preview_of
 		JOIN projects p ON p.id = s.project_id
 		JOIN orgs o ON o.id = d.org_id
 		LEFT JOIN domains dm ON dm.service_id = s.id
 		WHERE d.status = 'live' AND NOT o.suspended AND d.container_name IS NOT NULL
-		GROUP BY d.id, s.id, p.slug, o.slug
+		GROUP BY d.id, s.id, ps.slug, p.slug, o.slug
 		ORDER BY o.slug, p.slug, s.slug`)
 	if err != nil {
 		return nil, err
@@ -81,11 +83,16 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		var name, svc, proj, org string
 		var port int
 		var custom, blocked []string
+		var previewName, parentSlug string
 		rt := route{}
-		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked); err != nil {
+		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug); err != nil {
 			return route{}, err
 		}
-		rt.Hosts = append([]string{model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)}, custom...)
+		host := model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)
+		if previewName != "" { // preview: <name>.<parent>-<project>-<org>.<apps domain>
+			host = previewName + "." + model.DefaultHost(parentSlug, proj, org, a.cfg.AppsDomain)
+		}
+		rt.Hosts = append([]string{host}, custom...)
 		rt.Dial = name + ":" + strconv.Itoa(port)
 		rt.Blocked = blocked
 		return rt, nil
