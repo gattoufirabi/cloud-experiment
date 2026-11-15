@@ -109,7 +109,8 @@ services:
     deploy: { resources: { limits: { memory: 256M } } }
 
   caddy:
-    image: caddy:2.10-alpine
+    image: platform-caddy:2.11.9
+    build: ./caddy   # Caddy + Coraza WAF + rate limit (see caddy/Dockerfile)
     container_name: platform-caddy
     restart: unless-stopped
     logging: *logging
@@ -122,7 +123,7 @@ services:
       - ./caddy/initial-prod.json:/etc/caddy/initial.json:ro
       - caddy-admin:/run/caddy
       - /srv/platform/caddy:/data
-    deploy: { resources: { limits: { memory: 256M } } }
+    deploy: { resources: { limits: { memory: 512M } } }   # the WAF rule set needs ~100 MB
 
   registry:
     image: registry:2.8.3

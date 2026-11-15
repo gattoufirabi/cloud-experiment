@@ -138,6 +138,16 @@ docker push {{registry}}/<organization>/myapp:1.4.2
 - An image from another organization's space is always refused.
 - The **Last used** column shows whether a token is still in use.
 
+## Traffic protection
+
+Each service's **Security** tab has three protections, applied by the platform's proxy before requests reach your app, on every address of the service. Changes apply within a few seconds, without a redeploy. Developers and above can change them.
+
+- **Web application firewall:** the OWASP Core Rule Set blocks common attacks such as SQL injection, cross-site scripting, path traversal and known scanner probes. Blocked requests get `403 Forbidden`. It is off by default because some apps (for example ones that accept HTML or code in forms) can trigger false positives: turn it on, then click through your app.
+- **Requests per minute per visitor:** each visitor IP address may send at most this many requests per rolling minute; above it they get `429 Too Many Requests` with a `Retry-After` header. Count every asset a page loads (scripts, images, API calls) when you choose the number.
+- **Blocked addresses:** up to 100 IPv4/IPv6 addresses or ranges (for example `203.0.113.7` or `198.51.100.0/24`) that always get `403`.
+
+Health checks and alerts are not affected: the platform checks your app directly, not through the proxy.
+
 ## Security scanning
 
 Images are checked against a public database of known vulnerabilities (CVEs), at three moments:

@@ -194,6 +194,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST "+svc+"/delete", s.auth(authFull, s.deleteService))
 	m.HandleFunc("POST "+svc+"/backups", s.auth(authFull, s.backupNow))
 	m.HandleFunc("POST "+svc+"/alerts", s.auth(authFull, s.alertThresholds))
+	m.HandleFunc("POST "+svc+"/protection", s.auth(authFull, s.protectionSettings))
 	m.HandleFunc("POST "+svc+"/backups/settings", s.auth(authFull, s.backupSettings))
 	m.HandleFunc("POST "+svc+"/backups/restore/{snap}", s.auth(authFull, s.restoreSnapshot))
 	m.HandleFunc("GET "+svc+"/status.json", s.auth(authFull, s.statusJSON))

@@ -329,6 +329,34 @@ check "[A] passkey removed" "$(code_of ja -X POST "$BASE$PKID" -d csrf=$CSRF_A)"
 OUT=$("$TMP/softauthn.exe" login -url "$BASE" -key "$TMP/pk-a.json" 2>&1)
 if echo "$OUT" | grep -q "HTTP 401"; then ok "removed passkey can no longer sign in"; else bad "removed passkey still works"; fi
 
+echo "== Traffic protection"
+app_code() { curl -s -o /dev/null -w '%{http_code}' --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT$1"; }
+wait_app_code() { # wait_app_code <path> <expected>: proxy changes apply within seconds
+  local got
+  for _ in $(seq 1 20); do got=$(app_code "$1"); [ "$got" = "$2" ] && break; sleep 1; done
+  echo "$got"
+}
+XSS='/?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E'
+SQLI='/?id=1%27%20OR%20%271%27%3D%271'
+check "WAF off: suspicious request passes" "$(app_code "$XSS")" 200
+check "[B->A] B cannot change A's protection" "$(code_of jb -X POST "$BASE$SVC_A/protection" -d csrf=$CSRF_B -d waf=1)" 404
+if c ja -L "$BASE$SVC_A/protection" -d csrf=$CSRF_A -d rpm=5 | grep -q "between 10 and 100000"; then ok "request limit out of range refused"; else bad "rpm=5 accepted"; fi
+if c ja -L "$BASE$SVC_A/protection" -d csrf=$CSRF_A --data-urlencode "blocked=not-an-ip" | grep -q "Not an address"; then ok "invalid blocked address refused"; else bad "invalid address accepted"; fi
+check "[A] WAF turned on" "$(code_of ja -X POST "$BASE$SVC_A/protection" -d csrf=$CSRF_A -d waf=1)" 303
+check "WAF blocks cross-site scripting (403)" "$(wait_app_code "$XSS" 403)" 403
+check "WAF blocks SQL injection (403)" "$(app_code "$SQLI")" 403
+check "WAF lets normal requests through" "$(app_code /)" 200
+check "B's app unaffected by A's WAF" "$(curl -s -o /dev/null -w '%{http_code}' --resolve "web-shop-$B.apps.localhost:$PORT:127.0.0.1" "http://web-shop-$B.apps.localhost:$PORT$XSS")" 200
+check "[A] request limit 10/min set" "$(code_of ja -X POST "$BASE$SVC_A/protection" -d csrf=$CSRF_A -d waf=1 -d rpm=10)" 303
+sleep 3
+N429=0; for _ in $(seq 1 15); do [ "$(app_code /)" = 429 ] && N429=$((N429+1)); done
+if [ "$N429" -ge 4 ]; then ok "visitors over the limit get 429 ($N429 of 15)"; else bad "rate limit not enforced ($N429 of 15 got 429)"; fi
+check "[A] block every address" "$(code_of ja -X POST "$BASE$SVC_A/protection" -d csrf=$CSRF_A --data-urlencode $'blocked=0.0.0.0/0\n::/0')" 303
+check "blocked visitors get 403" "$(wait_app_code / 403)" 403
+check "protection saved in the audit log" "$(owner_sql "SELECT count(*) >= 3 FROM audit_events WHERE action = 'service.protection' AND target = 'service:web' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
+check "[A] protection turned off" "$(code_of ja -X POST "$BASE$SVC_A/protection" -d csrf=$CSRF_A)" 303
+check "app answers normally again" "$(wait_app_code "$XSS" 200)" 200
+
 echo "== Alerts"
 ntfy_has() { # ntfy_has <topic> <text> [tries]: wait until a message on topic contains text
   for _ in $(seq 1 "${3:-30}"); do

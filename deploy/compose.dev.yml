@@ -109,7 +109,8 @@ services:
       caddy: { condition: service_started }
 
   caddy:
-    image: caddy:2.10-alpine
+    image: platform-caddy:2.11.9
+    build: ./caddy   # Caddy + Coraza WAF + rate limit (see caddy/Dockerfile)
     container_name: platform-caddy
     restart: unless-stopped
     command: ["caddy", "run", "--config", "/etc/caddy/initial.json"]

@@ -189,7 +189,29 @@
 
 <!-- ============ security ============ -->
 <section class="pane" id="security" role="tabpanel" aria-label="Security">
-  <p class="help"><a href="/docs/user#security-scanning" target="_blank" rel="noopener">Guide: security scanning ↗</a></p>
+  <p class="help"><a href="/docs/user#traffic-protection" target="_blank" rel="noopener">Guide: traffic protection ↗</a> · <a href="/docs/user#security-scanning" target="_blank" rel="noopener">security scanning ↗</a></p>
+
+  <div class="section">
+    <h2>Traffic protection</h2>
+    <p class="small muted">Applied by the platform's proxy before requests reach your app, on every address of this service. Changes apply within a few seconds, without a redeploy.</p>
+    {{with .Protection}}
+    <p class="small">{{if .WAF}}{{template "status" "live"}} Web application firewall on{{else}}Web application firewall off{{end}}
+      · {{with .RPM}}limit {{.}} requests/minute per visitor{{else}}no request limit{{end}}
+      · {{len .Blocked}} blocked address{{if ne (len .Blocked) 1}}es{{end}}</p>
+    {{end}}
+    {{if .CanEdit}}
+    <form method="post" action="{{.Path}}/protection" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label class="check"><input type="checkbox" name="waf" value="1"{{if .Protection.WAF}} checked{{end}}>
+        Web application firewall <span class="hint">OWASP Core Rule Set: blocks common attacks such as SQL injection, cross-site scripting and path traversal (answers 403). Test your app after turning it on.</span></label>
+      <label>Requests per minute per visitor <span class="hint">10–100000; above it visitors get 429 "Too Many Requests". Empty = no limit.</span>
+        <input type="number" name="rpm" min="10" max="100000" value="{{with .Protection.RPM}}{{.}}{{end}}" placeholder="no limit"></label>
+      <label>Blocked addresses <span class="hint">IPv4/IPv6 addresses or ranges (CIDR), one per line, at most 100. They get 403.</span>
+        <textarea name="blocked" rows="3" placeholder="203.0.113.7&#10;198.51.100.0/24">{{.Protection.BlockedTx}}</textarea></label>
+      <div><button type="submit" class="secondary">Save protection</button></div>
+    </form>
+    {{end}}
+  </div>
 
   <div class="section">
     <h2>Vulnerability scan</h2>

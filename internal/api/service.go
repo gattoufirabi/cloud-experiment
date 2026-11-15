@@ -149,6 +149,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 	var backups *backupView
 	var incidents []incidentView
 	var cpuPct, memPct *int
+	var prot protection
 	o, p, sv, err, ok := s.withService(w, r, "viewer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
 		var err error
 		if deps, err = recentDeployments(r, tx, sv.ID, 15); err != nil {
@@ -161,6 +162,9 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if err := tx.QueryRow(r.Context(), `SELECT alert_cpu_pct, alert_mem_pct FROM services WHERE id = $1`, sv.ID).Scan(&cpuPct, &memPct); err != nil {
+			return err
+		}
+		if prot, err = loadProtection(r, tx, sv.ID); err != nil {
 			return err
 		}
 		var sc scanSummary
@@ -209,6 +213,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		"Scan":    scan, "Findings": findings, "RegistryHost": s.cfg.RegistryHost,
 		"Backups": backups, "CanRestore": model.RoleAtLeast(o.Role, "admin"),
 		"Incidents": incidents, "AlertCPU": cpuPct, "AlertMem": memPct,
+		"Protection": prot,
 	})
 }
 

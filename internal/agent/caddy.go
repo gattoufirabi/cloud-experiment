@@ -53,21 +53,26 @@ func (c *caddyClient) load(ctx context.Context, body []byte) error {
 }
 
 type route struct {
-	Hosts []string
-	Dial  string
+	Hosts   []string
+	Dial    string
+	Zone    string   // rate-limit zone name (service ID)
+	WAF     bool     // OWASP Core Rule Set
+	RPM     int      // requests per minute per visitor IP; 0 = no limit
+	Blocked []string // CIDR ranges refused with 403
 }
 
 func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 	rows, err := a.pool.Query(ctx, `
 		SELECT d.container_name, (d.spec->>'port')::int, s.slug, p.slug, o.slug,
-		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}')
+		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}'),
+		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.blocked_ips::text[]
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
 		JOIN projects p ON p.id = s.project_id
 		JOIN orgs o ON o.id = d.org_id
 		LEFT JOIN domains dm ON dm.service_id = s.id
 		WHERE d.status = 'live' AND NOT o.suspended AND d.container_name IS NOT NULL
-		GROUP BY d.id, s.slug, p.slug, o.slug
+		GROUP BY d.id, s.id, p.slug, o.slug
 		ORDER BY o.slug, p.slug, s.slug`)
 	if err != nil {
 		return nil, err
@@ -75,12 +80,15 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (route, error) {
 		var name, svc, proj, org string
 		var port int
-		var custom []string
-		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom); err != nil {
+		var custom, blocked []string
+		rt := route{}
+		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked); err != nil {
 			return route{}, err
 		}
-		hosts := append([]string{model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)}, custom...)
-		return route{Hosts: hosts, Dial: name + ":" + strconv.Itoa(port)}, nil
+		rt.Hosts = append([]string{model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)}, custom...)
+		rt.Dial = name + ":" + strconv.Itoa(port)
+		rt.Blocked = blocked
+		return rt, nil
 	})
 }
 
@@ -141,13 +149,40 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 			"terminal": true,
 		})
 	}
+	// One shared WAF route (not terminal) for every service that turned it on: the rule
+	// set is compiled once instead of once per service, which keeps Caddy's memory flat.
+	var wafHosts []string
 	for _, r := range routes {
+		if r.WAF {
+			wafHosts = append(wafHosts, r.Hosts...)
+		}
+	}
+	if len(wafHosts) > 0 {
 		rs = append(rs, obj{
-			"match": []any{obj{"host": r.Hosts}},
-			"handle": []any{obj{
-				"handler":   "reverse_proxy",
-				"upstreams": []any{obj{"dial": r.Dial}},
-			}},
+			"match":  []any{obj{"host": wafHosts}},
+			"handle": []any{obj{"handler": "waf", "load_owasp_crs": true, "directives": wafDirectives}},
+		})
+	}
+	for _, r := range routes {
+		var sub []any
+		if len(r.Blocked) > 0 {
+			sub = append(sub, obj{
+				"match":  []any{obj{"remote_ip": obj{"ranges": r.Blocked}}},
+				"handle": []any{obj{"handler": "static_response", "status_code": 403, "body": "Access denied.\n"}},
+			})
+		}
+		if r.RPM > 0 {
+			sub = append(sub, obj{"handle": []any{obj{
+				"handler": "rate_limit",
+				"rate_limits": obj{"svc-" + r.Zone: obj{
+					"key": "{http.request.remote.host}", "window": "1m", "max_events": r.RPM,
+				}},
+			}}})
+		}
+		sub = append(sub, obj{"handle": []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": r.Dial}}}}})
+		rs = append(rs, obj{
+			"match":    []any{obj{"host": r.Hosts}},
+			"handle":   []any{obj{"handler": "subroute", "routes": sub}},
 			"terminal": true,
 		})
 	}
@@ -177,6 +212,17 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 		"apps":  apps,
 	}
 }
+
+// wafDirectives: OWASP Core Rule Set at paranoia level 1 (the default, few false
+// positives) in blocking mode. Response bodies are not inspected (memory, latency), and
+// large uploads are inspected partially instead of refused.
+const wafDirectives = `Include @coraza.conf-recommended
+Include @crs-setup.conf.example
+Include @owasp_crs/*.conf
+SecRuleEngine On
+SecResponseBodyAccess Off
+SecRequestBodyLimitAction ProcessPartial
+SecAuditEngine Off`
 
 func hostOnly(hostport string) string {
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
