@@ -1,0 +1,60 @@
+{{define "title"}}Billing · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Billing</h1><span class="badge">Plan {{.PlanName}}</span></div>
+<p class="lede">Usage is measured every minute. Invoices cover one calendar month (UTC) and are issued on the 1st.</p>
+<p class="help"><a href="/docs/user#billing-and-usage" target="_blank" rel="noopener">Guide: billing and usage ↗</a></p>
+
+<div class="section">
+  <h2>{{month .Month}} so far</h2>
+  <p class="big">{{money .Total .Currency}} <span class="muted small">estimated, {{if .TaxPercent}}including {{.TaxPercent}}% tax{{else}}no tax{{end}}</span></p>
+  <table>
+    <thead><tr><th>Item</th><th class="num">Quantity</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
+    <tbody>
+    {{range .Lines}}<tr><td>{{.Description}}</td><td class="num">{{qty .Quantity}} {{.Unit}}</td><td class="num">{{unitprice .UnitPrice}} {{$.Currency}}</td><td class="num">{{money .Amount $.Currency}}</td></tr>
+    {{else}}<tr><td colspan="4" class="muted">Nothing to pay this month yet.</td></tr>{{end}}
+    {{if .Tax}}<tr><td colspan="3">Tax {{.TaxPercent}}%</td><td class="num">{{money .Tax .Currency}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  <p class="small muted">Prices of plan {{.PlanName}}: {{money .Prices.Monthly .Currency}} per month, {{unitprice .Prices.VCPUHour}} {{.Currency}} per vCPU-hour, {{unitprice .Prices.GBHour}} {{.Currency}} per GB-hour of memory, {{unitprice .Prices.GBOut}} {{.Currency}} per GB of network out. Resources are billed while they run, at the size you allocated, not the share they used.</p>
+</div>
+
+<div class="section">
+  <h2>Usage by resource</h2>
+  {{if .Usage}}
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Resource</th><th class="num">CPU (vCPU-h)</th><th class="num">Memory (GB-h)</th><th class="num">Network out (GB)</th></tr></thead>
+    <tbody>
+    {{range .Usage}}<tr><td>{{.Name}} <span class="muted small">{{.Kind}}</span></td><td class="num">{{qty .VCPUHours}}</td><td class="num">{{qty .GBHours}}</td><td class="num">{{qty .GB}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="muted">No running services or databases this month.</p>{{end}}
+</div>
+
+<div class="section">
+  <h2>Invoices</h2>
+  {{if not .BillingEnabled}}<p class="small muted">Invoicing is not turned on for this installation; usage is still measured.</p>{{end}}
+  {{if .Invoices}}
+  <table>
+    <thead><tr><th>Invoice</th><th>Period</th><th class="num">Total</th><th>Status</th></tr></thead>
+    <tbody>
+    {{range .Invoices}}<tr><td><a href="{{$.Org.Path}}/invoices/{{.Number}}">{{.Number}}</a></td><td>{{month .PeriodStart}}</td><td class="num">{{money .Total .Currency}}</td>
+      <td>{{if eq .Status "paid"}}{{template "status" "live"}} paid{{else if eq .Status "void"}}cancelled{{else}}{{template "status" "pending"}} to pay{{end}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No invoices yet.</p>{{end}}
+</div>
+
+<div class="section">
+  <h2>Billing details</h2>
+  <p class="small muted">Printed on the next invoices. Leave the name empty to use the organization's name.</p>
+  <form method="post" action="{{.Org.Path}}/billing/details" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Company or person <input name="billing_name" maxlength="200" value="{{.BillName}}" placeholder="{{.Org.Name}}"></label>
+    <label>Address <textarea name="billing_address" rows="3" maxlength="500">{{.BillAddr}}</textarea></label>
+    <label>Tax / VAT ID <input name="billing_tax_id" maxlength="50" value="{{.BillTax}}"></label>
+    <div><button type="submit" class="secondary">Save billing details</button></div>
+  </form>
+</div>
+{{end}}

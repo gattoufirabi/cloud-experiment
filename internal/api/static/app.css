@@ -265,3 +265,19 @@ details { margin: 14px 0 0; } summary { cursor: pointer; color: var(--fade); fon
 .passkey-login { margin-top: 20px; }
 .error-text { color: var(--black); font-weight: 700; }
 .row-between { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+
+/* ---------- billing and invoices ---------- */
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.big { font-size: 32px; font-weight: 700; margin: 8px 0 20px; }
+.invoice { background: var(--paper); border: 1px solid var(--line); border-radius: 24px; padding: 40px; max-width: 860px; }
+.invoice-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }
+.invoice-status { border: 2px solid var(--black); border-radius: 9999px; padding: 8px 18px; font-weight: 700; }
+.invoice-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 28px 0; }
+.invoice tfoot td { font-weight: 600; }
+.invoice tfoot .total td { font-size: 18px; font-weight: 700; border-top: 2px solid var(--black); }
+@media (max-width: 640px) { .invoice { padding: 20px; } .invoice-parties { grid-template-columns: 1fr; } }
+@media print {
+  .top, .side, .noprint, .flash { display: none !important; }
+  body, .frame, .main, .workspace { background: #fff !important; margin: 0; padding: 0; display: block; }
+  .invoice { border: 0; padding: 0; max-width: none; }
+}

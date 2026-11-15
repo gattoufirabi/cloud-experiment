@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"platform/internal/billing"
 	"platform/internal/config"
 	"platform/internal/db"
 	"platform/internal/registry"
@@ -153,6 +155,9 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /{$}", s.auth(authFull, s.home))
 	m.HandleFunc("GET /o/{org}", s.auth(authFull, s.orgPage))
 	m.HandleFunc("GET /o/{org}/audit", s.auth(authFull, s.auditPage))
+	m.HandleFunc("GET /o/{org}/billing", s.auth(authFull, s.billingPage))
+	m.HandleFunc("POST /o/{org}/billing/details", s.auth(authFull, s.billingDetails))
+	m.HandleFunc("GET /o/{org}/invoices/{number}", s.auth(authFull, s.invoicePage))
 	m.HandleFunc("POST /o/{org}/projects", s.auth(authFull, s.createProject))
 	m.HandleFunc("POST /o/{org}/invites", s.auth(authFull, s.createInvite))
 	m.HandleFunc("POST /o/{org}/members/{user}/remove", s.auth(authFull, s.removeMember))
@@ -389,6 +394,12 @@ func parseTemplates() (map[string]*template.Template, error) {
 		},
 		"datetime":    func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") },
 		"roleAtLeast": func(role, min string) bool { return roleAtLeast(role, min) },
+		"money":       func(cents int64, cur string) string { return billing.Money(cents, cur) },
+		"qty":         func(f float64) string { return strconv.FormatFloat(f, 'f', 2, 64) },
+		"unitprice":   func(c float64) string { return strconv.FormatFloat(c/100, 'f', -1, 64) },
+		"lines":       func(s string) []string { return strings.Split(s, "\n") },
+		"month":       func(t time.Time) string { return t.Format("January 2006") },
+		"day":         func(t time.Time) string { return t.Format("2 Jan 2006") },
 		"dbStatus": func(s string) string {
 			if s == "running" {
 				return "live"

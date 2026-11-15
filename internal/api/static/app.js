@@ -265,3 +265,8 @@ if (toc) {
     });
   }
 })();
+
+/* ---------- invoices: print button (no inline scripts under the CSP) ---------- */
+document.addEventListener("click", function (e) {
+  if (e.target.closest && e.target.closest("[data-print]")) window.print();
+});

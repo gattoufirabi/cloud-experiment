@@ -1,0 +1,31 @@
+{{define "title"}}Invoice {{.Invoice.Number}}{{end}}
+{{define "content"}}
+{{with .Invoice}}
+<p class="noprint"><a href="{{$.Org.Path}}/billing">← Billing</a> · <button type="button" class="secondary small" data-print>Print or save as PDF</button></p>
+<article class="invoice">
+  <header class="invoice-head">
+    <div>
+      <h1>Invoice</h1>
+      <p><strong>{{.Number}}</strong><br>Issued {{day .Issued}}<br>Period {{day .Start}} – {{day $.LastDay}}</p>
+    </div>
+    <div class="invoice-status">{{if eq .Status "paid"}}PAID{{with .Paid}} {{day .}}{{end}}{{else if eq .Status "void"}}CANCELLED{{else}}TO PAY{{end}}</div>
+  </header>
+  <div class="invoice-parties">
+    <div><span class="small muted">From</span><p>{{range lines .Seller}}{{.}}<br>{{end}}</p></div>
+    <div><span class="small muted">To</span><p>{{range lines .Buyer}}{{.}}<br>{{end}}</p></div>
+  </div>
+  <table>
+    <thead><tr><th>Description</th><th class="num">Quantity</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
+    <tbody>
+    {{range $.Lines}}<tr><td>{{.Description}}</td><td class="num">{{qty .Quantity}} {{.Unit}}</td><td class="num">{{unitprice .UnitPrice}} {{$.Invoice.Currency}}</td><td class="num">{{money .Amount $.Invoice.Currency}}</td></tr>{{end}}
+    </tbody>
+    <tfoot>
+      <tr><td colspan="3">Subtotal</td><td class="num">{{money .Sub .Currency}}</td></tr>
+      <tr><td colspan="3">Tax {{.TaxPct}}%</td><td class="num">{{money .Tax .Currency}}</td></tr>
+      <tr class="total"><td colspan="3">Total</td><td class="num">{{money .Total .Currency}}</td></tr>
+    </tfoot>
+  </table>
+  <p class="small muted">Plan {{.Plan}}. CPU and memory are billed at the size allocated while services and databases run.</p>
+</article>
+{{end}}
+{{end}}

@@ -258,6 +258,16 @@ The same operations are available over HTTP with `Authorization: Bearer <token>`
 
 A token works only inside its organization and only with its role. Every change made with a token appears in the audit log, named after the token.
 
+## Billing and usage
+
+Admins and owners find **Billing** in the organization's tabs.
+
+- **What is billed:** your plan's monthly fee, plus the CPU and memory **allocated** to each running service and database (per hour, at the size you chose, not the share the app actually used), plus network traffic going out of your services. Stopped or deleted resources cost nothing.
+- **This month so far:** the page shows the estimated amount up to now and the usage of each service and database. It updates every minute.
+- **Invoices** cover one calendar month (UTC) and appear on the 1st of the next month. Open one to print it or save it as PDF from your browser. The plan fee of your first month is counted from the day the organization was created.
+- **Billing details:** the company name, address and tax ID printed on your invoices. Changes apply to the next invoices, not to ones already issued.
+- **Paying:** follow the payment instructions you received from the platform operator; an invoice shows **paid** once the operator has recorded your payment.
+
 ## Team members and roles
 
 Each member has one role per organization; each role includes everything the roles above it can do.

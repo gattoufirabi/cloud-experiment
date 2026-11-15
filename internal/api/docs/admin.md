@@ -124,6 +124,16 @@ To restore the platform on a new server:
 5. Restore services' persistent folders from their latest snapshots, from the console or with `backup-key` and plain restic.
 6. Point DNS at the new server if its IP changed.
 
+## Billing
+
+Usage is metered by the agent every minute (allocated CPU and memory of live services and running databases, network out of services) into `usage_hourly`. With `BILLING_ENABLED=true`, the agent issues the previous month's invoices on the 1st (UTC). Invoices are documents only: there is no payment provider.
+
+- **Prices** live on each plan, in cents (decimals allowed): `platform admin set-prices --plan starter --monthly 500 --vcpu-hour 1 --gb-hour 0.5 --gb-out 2`. New prices apply to invoices issued afterwards.
+- **Seller block, currency and tax:** `BILLING_SELLER` (lines separated by `|`), `BILLING_CURRENCY` (default EUR) and `BILLING_TAX_PERCENT` in `.env`.
+- **Issue invoices by hand** (catch-up after downtime, safe to rerun): `platform admin generate-invoices --month 2026-10`.
+- **Record a payment:** `platform admin invoice-paid --number INV-2026-000042`; cancel one with `invoice-void`. Both are audited.
+- Organizations with nothing to pay get no invoice. Invoices are kept when an organization is deleted. Minutes when the agent was down are not billed.
+
 ## Upgrades and maintenance
 
 Client containers keep running while the platform services restart. Only an update of Caddy pauses client traffic, for up to a minute until the agent reconnects it.

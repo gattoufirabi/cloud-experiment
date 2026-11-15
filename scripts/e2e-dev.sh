@@ -243,6 +243,7 @@ DB_SNAP=$(owner_sql "SELECT b.snapshot_id FROM backup_snapshots b JOIN databases
 db_sql "DELETE FROM notes; INSERT INTO notes VALUES ('$MARK-db2')" >/dev/null
 check "[B->A] B cannot restore A's database (404)" "$(code_of jb -X POST "$BASE/o/$A/p/shop/d/main/backups/restore/$DB_SNAP" -d csrf=$CSRF_B -d confirm=main)" 404
 check "[A] database restore requested" "$(code_of ja -X POST "$BASE/o/$A/p/shop/d/main/backups/restore/$DB_SNAP" -d csrf=$CSRF_A -d confirm=main)" 303
+check "[A] database page renders once backups exist" "$(code_of ja "$BASE/o/$A/p/shop/d/main")" 200
 check "[A] database restore completes" "$(wait_dbjob)" done
 check "[A] database rows are back to the snapshot" "$(db_sql "SELECT t FROM notes")" "$MARK-db1"
 check "[A] database deleted" "$(code_of ja -X POST "$BASE/o/$A/p/shop/d/main/delete" -d csrf=$CSRF_A -d confirm=main)" 303
@@ -356,6 +357,33 @@ check "blocked visitors get 403" "$(wait_app_code / 403)" 403
 check "protection saved in the audit log" "$(owner_sql "SELECT count(*) >= 3 FROM audit_events WHERE action = 'service.protection' AND target = 'service:web' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 check "[A] protection turned off" "$(code_of ja -X POST "$BASE$SVC_A/protection" -d csrf=$CSRF_A)" 303
 check "app answers normally again" "$(wait_app_code "$XSS" 200)" 200
+
+echo "== Usage metering and invoices"
+check "usage is metered every minute" "$(owner_sql "SELECT count(*) > 0 FROM usage_hourly u JOIN orgs o ON o.id = u.org_id WHERE o.slug = '$A' AND u.cpu_milli_minutes > 0")" t
+# Last month for A: existed all month, 1 vCPU-hour, 1 GB-hour, 1 GB out (fictitious usage).
+LAST=$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)
+owner_sql "UPDATE orgs SET created_at = '$LAST-01'::date - interval '1 day' WHERE slug = '$A';
+  INSERT INTO usage_hourly (org_id, resource_id, kind, name, hour, cpu_milli_minutes, mem_mb_minutes, egress_bytes)
+  SELECT s.org_id, s.id, 'service', 'shop/web', '$LAST-02 10:00+00', 60000, 61440, 1000000000
+  FROM services s JOIN orgs o ON o.id = s.org_id JOIN projects p ON p.id = s.project_id WHERE o.slug = '$A' AND p.slug = 'shop' AND s.slug = 'web'
+  ON CONFLICT DO NOTHING" >/dev/null
+admin generate-invoices --month "$LAST" >/dev/null
+INV=$(owner_sql "SELECT number FROM invoices i JOIN orgs o ON o.id = i.org_id WHERE o.slug = '$A' AND i.period_start = '$LAST-01'")
+# Starter: fee 500c + 1c CPU + 1c memory (0.5 rounded) + 2c out = 504c, +20% tax = 605c
+check "[A] monthly invoice issued with the right total" "$(owner_sql "SELECT total_cents FROM invoices WHERE number = '$INV'")" 605
+check "invoice has fee, CPU, memory and network lines" "$(owner_sql "SELECT count(*) FROM invoice_lines l JOIN invoices i ON i.id = l.invoice_id WHERE i.number = '$INV'")" 4
+admin generate-invoices --month "$LAST" >/dev/null
+check "running invoicing again issues nothing twice" "$(owner_sql "SELECT count(*) FROM invoices i JOIN orgs o ON o.id = i.org_id WHERE o.slug = '$A'")" 1
+check "no invoice for B (nothing used last month)" "$(owner_sql "SELECT count(*) FROM invoices i JOIN orgs o ON o.id = i.org_id WHERE o.slug = '$B'")" 0
+if c ja "$BASE/o/$A/billing" | grep -q "$INV"; then ok "[A] invoice listed on the Billing page"; else bad "[A] invoice not listed"; fi
+PAGE=$(c ja "$BASE/o/$A/invoices/$INV")
+if echo "$PAGE" | grep -q "6.05 EUR" && echo "$PAGE" | grep -q "Example Hosting"; then ok "[A] invoice page shows total and seller"; else bad "[A] invoice page incomplete"; fi
+check "[B->A] B cannot open A's invoice (404)" "$(code_of jb "$BASE/o/$B/invoices/$INV")" 404
+check "[B->A] B cannot open A's billing page (404)" "$(code_of jb "$BASE/o/$A/billing")" 404
+check "[A] billing details saved" "$(code_of ja -X POST "$BASE/o/$A/billing/details" -d csrf=$CSRF_A -d "billing_name=Shop Owner Ltd (fictitious)" --data-urlencode $'billing_address=2 Test Road\nTestville')" 303
+admin invoice-paid --number "$INV" >/dev/null
+if c ja "$BASE/o/$A/invoices/$INV" | grep -q "PAID"; then ok "operator payment shows as paid"; else bad "invoice not marked paid"; fi
+check "invoice issue and payment audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE target = 'invoice:$INV' AND action IN ('invoice.issued', 'invoice.paid')")" 2
 
 echo "== Alerts"
 ntfy_has() { # ntfy_has <topic> <text> [tries]: wait until a message on topic contains text

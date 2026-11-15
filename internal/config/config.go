@@ -59,7 +59,13 @@ type Config struct {
 	BackupKeep     string // restic forget policy
 
 	// alerts
-	AlertsEnabled     bool
+	AlertsEnabled bool
+
+	// Billing: usage is always metered; invoices are issued monthly when enabled.
+	BillingEnabled    bool
+	BillingCurrency   string        // ISO 4217 code shown on invoices
+	BillingTaxPercent float64       // VAT/sales tax applied to every invoice
+	BillingSeller     string        // seller block printed on invoices; "|" separates lines
 	AlertInterval     time.Duration // health probe / evaluation period
 	AlertAllowPrivate bool          // dev only: let notifications reach private addresses
 }
@@ -112,6 +118,11 @@ func Load() Config {
 		AlertsEnabled:     envBool("ALERTS_ENABLED", false),
 		AlertInterval:     time.Duration(envInt("ALERT_INTERVAL_SECONDS", 30)) * time.Second,
 		AlertAllowPrivate: envBool("ALERT_ALLOW_PRIVATE_TARGETS", false),
+
+		BillingEnabled:    envBool("BILLING_ENABLED", false),
+		BillingCurrency:   strings.ToUpper(env("BILLING_CURRENCY", "EUR")),
+		BillingTaxPercent: envFloat("BILLING_TAX_PERCENT", 0),
+		BillingSeller:     strings.ReplaceAll(env("BILLING_SELLER", "Platform operator"), "|", "\n"),
 	}
 }
 
@@ -133,6 +144,14 @@ func envBool(k string, def bool) bool {
 func envInt(k string, def int) int {
 	v, err := strconv.Atoi(env(k, strconv.Itoa(def)))
 	if err != nil {
+		return def
+	}
+	return v
+}
+
+func envFloat(k string, def float64) float64 {
+	v, err := strconv.ParseFloat(env(k, ""), 64)
+	if err != nil || v < 0 || v > 100 {
 		return def
 	}
 	return v

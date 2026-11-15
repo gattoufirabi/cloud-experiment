@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,6 +24,7 @@ import (
 
 	"platform/internal/agent"
 	"platform/internal/api"
+	"platform/internal/billing"
 	"platform/internal/config"
 	"platform/internal/db"
 	"platform/internal/model"
@@ -105,6 +107,11 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
                                              refuse (or only report) images with critical vulnerabilities
   init-registry-key --file KEY --cert CERT   create the registry token signing key and certificate
   backup-key --slug S                        print an organization's backup repository and password (audited)
+  set-prices --plan P [--monthly CENTS] [--vcpu-hour CENTS] [--gb-hour CENTS] [--gb-out CENTS]
+                                             set a plan's prices (cents of BILLING_CURRENCY; decimals allowed)
+  generate-invoices [--month YYYY-MM]        issue invoices for a finished month (default: last month; safe to rerun)
+  invoice-paid --number N | invoice-void --number N
+                                             record a payment, or cancel an invoice
   totp-code --secret BASE32                  print the current two-step code (testing only)`)
 		return nil
 	}
@@ -121,6 +128,12 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
 	secret := fs.String("secret", "", "")
 	certFile := fs.String("cert", "", "")
 	policy := fs.String("policy", "", "")
+	monthFlag := fs.String("month", "", "")
+	number := fs.String("number", "", "")
+	monthly := fs.Float64("monthly", -1, "")
+	vcpuHour := fs.Float64("vcpu-hour", -1, "")
+	gbHour := fs.Float64("gb-hour", -1, "")
+	gbOut := fs.Float64("gb-out", -1, "")
 	_ = fs.Parse(args[1:])
 
 	switch args[0] {
@@ -255,6 +268,60 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
 			return fmt.Errorf("organization %q not found", *slug)
 		}
 		fmt.Println("plan of", *slug, "set to", *plan)
+	case "set-prices":
+		set := func(col string, v float64) error {
+			if v < 0 {
+				return nil
+			}
+			tag, err := pool.Exec(ctx, `UPDATE plans SET `+col+` = $2 WHERE id = $1`, *plan, v)
+			if err == nil && tag.RowsAffected() == 0 {
+				err = fmt.Errorf("plan %q not found", *plan)
+			}
+			return err
+		}
+		for col, v := range map[string]float64{"price_monthly_cents": math.Round(*monthly), "price_vcpu_hour_cents": *vcpuHour,
+			"price_gb_hour_cents": *gbHour, "price_gb_out_cents": *gbOut} {
+			if err := set(col, v); err != nil {
+				return err
+			}
+		}
+		var m int64
+		var c, g, o float64
+		if err := pool.QueryRow(ctx, `SELECT price_monthly_cents, price_vcpu_hour_cents::float8, price_gb_hour_cents::float8, price_gb_out_cents::float8 FROM plans WHERE id = $1`, *plan).
+			Scan(&m, &c, &g, &o); err != nil {
+			return err
+		}
+		fmt.Printf("%s: %s/month, %.4f c/vCPU-hour, %.4f c/GB-hour, %.4f c/GB out\n", *plan, billing.Money(m, cfg.BillingCurrency), c, g, o)
+	case "generate-invoices":
+		month := time.Now().UTC().AddDate(0, -1, 0)
+		if *monthFlag != "" {
+			t, err := time.Parse("2006-01", *monthFlag)
+			if err != nil {
+				return fmt.Errorf("--month must look like 2026-10")
+			}
+			month = t
+		}
+		n, err := billing.Generate(ctx, pool, cfg, month)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%d invoice(s) issued for %s\n", n, month.Format("2006-01"))
+	case "invoice-paid", "invoice-void":
+		status := strings.TrimPrefix(args[0], "invoice-")
+		var orgID string
+		err := pool.QueryRow(ctx, `
+			UPDATE invoices SET status = $2, paid_at = CASE WHEN $2 = 'paid' THEN now() END
+			WHERE number = $1 AND status = 'open' RETURNING org_id`, *number, status).Scan(&orgID)
+		if err == pgx.ErrNoRows {
+			return fmt.Errorf("no open invoice %q", *number)
+		}
+		if err != nil {
+			return err
+		}
+		if err := db.Audit(ctx, pool, orgID, "", "invoice."+status, "invoice:"+*number, nil, ""); err != nil {
+			return err
+		}
+		fmt.Println("invoice", *number, "marked", status)
 	default:
 		return fmt.Errorf("unknown admin command %q (try: platform admin help)", args[0])
 	}

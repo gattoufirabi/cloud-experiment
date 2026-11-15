@@ -18,6 +18,11 @@ x-app: &app
     BASE_URL: https://${CONSOLE_HOST:?set CONSOLE_HOST}
     CONSOLE_HOST: ${CONSOLE_HOST}
     APPS_DOMAIN: ${APPS_DOMAIN:?set APPS_DOMAIN}
+    # Invoices (usage is metered either way). Seller lines are separated by "|".
+    BILLING_ENABLED: ${BILLING_ENABLED:-false}
+    BILLING_CURRENCY: ${BILLING_CURRENCY:-EUR}
+    BILLING_TAX_PERCENT: ${BILLING_TAX_PERCENT:-0}
+    BILLING_SELLER: ${BILLING_SELLER:-Platform operator}
     COOKIE_SECURE: "true"
     MASTER_KEY_FILE: /run/secrets/master.key
     VICTORIALOGS_URL: http://victorialogs:9428

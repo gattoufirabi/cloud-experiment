@@ -116,6 +116,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.scanLoop(ctx)
 	go a.backupLoop(ctx)
 	go a.alertLoop(ctx)
+	go a.meterLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)

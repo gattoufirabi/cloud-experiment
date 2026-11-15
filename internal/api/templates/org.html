@@ -13,7 +13,7 @@
   {{if .RegistryHost}}<a role="tab" href="#registry">Registry</a>{{end}}
   <a role="tab" href="#alerts">Alerts</a>
   <a role="tab" href="#api">API</a>
-  {{if roleAtLeast .Org.Role "admin"}}<a href="{{.Org.Path}}/audit">Audit log ↗</a>{{end}}
+  {{if roleAtLeast .Org.Role "admin"}}<a href="{{.Org.Path}}/billing">Billing ↗</a><a href="{{.Org.Path}}/audit">Audit log ↗</a>{{end}}
 </nav>
 
 <!-- ============ projects ============ -->

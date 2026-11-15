@@ -16,6 +16,10 @@ x-app: &app
     BASE_URL: http://console.localhost:8088
     CONSOLE_HOST: console.localhost
     APPS_DOMAIN: apps.localhost
+    BILLING_ENABLED: "true"
+    BILLING_CURRENCY: EUR
+    BILLING_TAX_PERCENT: "20"
+    BILLING_SELLER: 'Example Hosting (fictitious)|1 Example Street|75000 Paris'
     MASTER_KEY_FILE: /run/secrets/master.key
     VICTORIALOGS_URL: http://victorialogs:9428
     VICTORIAMETRICS_URL: http://victoriametrics:8428
