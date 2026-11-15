@@ -85,6 +85,8 @@ func main() {
 		err = c.setSecret(args[1], args[2])
 	case "preview":
 		err = c.preview(args)
+	case "build":
+		err = c.build(args)
 	default:
 		usage(2)
 	}
@@ -108,6 +110,8 @@ func usage(code int) {
                                            create or update a preview environment (e.g. pr-42)
   preview list <project>/<service>         list previews
   preview delete <project>/<service> NAME  delete a preview
+  build <project>/<service> [--no-deploy] [--wait]
+                                           build the service's git branch (and deploy it unless --no-deploy)
 
 environment: PLATFORM_URL (console address), PLATFORM_TOKEN (API token "pla_...")`)
 	os.Exit(code)
@@ -418,4 +422,51 @@ func (c *client) preview(args []string) error {
 	}
 	usage(2)
 	return nil
+}
+
+// ---------- builds from git ----------
+
+func (c *client) build(args []string) error {
+	p, s := target(args)
+	fs := flag.NewFlagSet("build", flag.ExitOnError)
+	noDeploy := fs.Bool("no-deploy", false, "only build and push the image")
+	wait := fs.Bool("wait", false, "wait until the build finishes and print its log")
+	_ = fs.Parse(args[1:])
+	var res struct {
+		Number    int    `json:"number"`
+		StatusURL string `json:"status_url"`
+	}
+	if err := c.do("POST", "/api/v1/projects/"+p+"/services/"+s+"/builds", map[string]bool{"deploy": !*noDeploy}, &res); err != nil {
+		return err
+	}
+	fmt.Printf("build #%d queued\n", res.Number)
+	if !*wait {
+		return nil
+	}
+	deadline := time.Now().Add(40 * time.Minute)
+	printed := 0
+	for time.Now().Before(deadline) {
+		time.Sleep(3 * time.Second)
+		var b struct {
+			Status string `json:"status"`
+			Image  string `json:"image"`
+			Error  string `json:"error"`
+			Log    string `json:"log"`
+		}
+		if err := c.do("GET", res.StatusURL, nil, &b); err != nil {
+			return err
+		}
+		if len(b.Log) > printed {
+			fmt.Print(b.Log[printed:])
+			printed = len(b.Log)
+		}
+		switch b.Status {
+		case "done":
+			fmt.Printf("build #%d done: %s\n", res.Number, b.Image)
+			return nil
+		case "failed":
+			return fmt.Errorf("build #%d failed: %s", res.Number, b.Error)
+		}
+	}
+	return errors.New("timed out waiting for the build")
 }

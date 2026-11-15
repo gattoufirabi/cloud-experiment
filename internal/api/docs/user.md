@@ -83,6 +83,19 @@ Every deployment is a numbered revision. The new version starts next to the old 
 - **Roll back:** click **Redeploy** next to an earlier revision on the Overview tab. Its exact settings come back as a new revision; secrets use their current values.
 - **Delete a service:** at the bottom of the Settings tab, type the service ID to confirm.
 
+## Builds from git
+
+Instead of pushing images yourself, the platform can build your repository's **Dockerfile** for you.
+
+1. In the service's **Builds** tab, enter the repository's https address, the branch and, if the Dockerfile is not at the root, its folder. For a private repository add a read-only access token (GitHub fine-grained token, GitLab/Gitea deploy token); it is stored encrypted and never shown again.
+2. Click **Build now**, or run `platformctl build shop/web --wait` from CI. With **deploy when built** (the default) the service is redeployed with the new image and its current settings.
+3. To build on every push, create a **webhook address** and add it to your repository's webhooks (push events, JSON). Pushes to other branches are ignored.
+
+- Each build gets a page with its full log; images are stored in your registry space as `…/<organization>/<service>:git-<commit>` and scanned like any pushed image.
+- Builds run in an isolated sandbox: no access to the platform's internal network, other customers or the server; the internet is reachable for base images and packages. Limits per build: 2 CPU, 2 GB memory, 15 minutes, 4 GB image.
+- One build at a time per service: starting a build while one is waiting reuses the waiting one. At most 5 builds waiting or running per organization.
+- Only Dockerfile builds are supported for now; the build fails clearly if there is no Dockerfile.
+
 ## Preview environments
 
 A preview is a temporary copy of a service, with the same settings, secrets and traffic protection but another image, at its own address: `<name>.<service>-<project>-<organization>.<apps domain>`. Typical use: one preview per pull request, so reviewers can click through the change before it is merged.

@@ -55,6 +55,15 @@ func (s *Server) registryToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		subject = user
+	} else if strings.HasPrefix(user, registry.BuilderUserPrefix) {
+		// Agent pushing an image it built: org-scoped, push allowed.
+		slug = strings.TrimPrefix(user, registry.BuilderUserPrefix)
+		want := registry.BuilderPassword(s.cfg.RegistryInternalSecret, slug)
+		if s.cfg.RegistryInternalSecret == "" || subtle.ConstantTimeCompare([]byte(pass), []byte(want)) != 1 {
+			deny()
+			return
+		}
+		subject, canPush = user, true
 	} else {
 		var orgID string
 		err := s.pool.QueryRow(r.Context(), `SELECT org_id, org_slug, can_push FROM registry_token_check($1)`,

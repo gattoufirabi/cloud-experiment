@@ -48,6 +48,7 @@ type Agent struct {
 	resticPulled bool
 
 	alertWake   chan struct{}
+	buildWake   chan struct{}
 	alertHTTP   *http.Client
 	probeFails  map[string]int
 	attached    map[string]bool // project networks the proxy and agent are known to be on
@@ -99,6 +100,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		scanWake:    make(chan struct{}, 1),
 		backupWake:  make(chan struct{}, 1),
 		alertWake:   make(chan struct{}, 1),
+		buildWake:   make(chan struct{}, 1),
 		alertHTTP:   newAlertHTTP(cfg.AlertAllowPrivate),
 		probeFails:  map[string]int{},
 		attached:    map[string]bool{},
@@ -117,6 +119,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.backupLoop(ctx)
 	go a.alertLoop(ctx)
 	go a.meterLoop(ctx)
+	go a.buildLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)
@@ -152,6 +155,8 @@ func (a *Agent) listen(ctx context.Context) {
 							a.pokeBackups()
 						case "alert":
 							a.pokeAlerts()
+						case "build":
+							a.pokeBuilds()
 						default:
 							a.poke()
 						}

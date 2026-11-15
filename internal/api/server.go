@@ -142,6 +142,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/docs/user", http.StatusSeeOther) })
 	m.HandleFunc("GET /docs/{guide}", s.docsPage)
 	m.HandleFunc("GET /status/{org}/{project}", s.statusPage)
+	m.HandleFunc("POST /hooks/build/{token}", s.buildHook)
 	m.HandleFunc("GET /login", s.loginPage)
 	m.HandleFunc("POST /login", s.loginSubmit)
 	m.HandleFunc("POST /logout", s.auth(authAny, s.logout))
@@ -201,6 +202,10 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST "+svc+"/alerts", s.auth(authFull, s.alertThresholds))
 	m.HandleFunc("POST "+svc+"/protection", s.auth(authFull, s.protectionSettings))
 	m.HandleFunc("POST "+svc+"/previews", s.auth(authFull, s.createPreviewForm))
+	m.HandleFunc("POST "+svc+"/source", s.auth(authFull, s.saveSource))
+	m.HandleFunc("POST "+svc+"/builds", s.auth(authFull, s.startBuildForm))
+	m.HandleFunc("GET "+svc+"/builds/{n}", s.auth(authFull, s.buildPage))
+	m.HandleFunc("POST "+svc+"/build-hook", s.auth(authFull, s.rotateBuildHook))
 	m.HandleFunc("POST "+svc+"/previews/{name}/delete", s.auth(authFull, s.deletePreviewForm))
 	m.HandleFunc("POST "+svc+"/backups/settings", s.auth(authFull, s.backupSettings))
 	m.HandleFunc("POST "+svc+"/backups/restore/{snap}", s.auth(authFull, s.restoreSnapshot))
@@ -402,6 +407,17 @@ func parseTemplates() (map[string]*template.Template, error) {
 		"lines":       func(s string) []string { return strings.Split(s, "\n") },
 		"month":       func(t time.Time) string { return t.Format("January 2006") },
 		"day":         func(t time.Time) string { return t.Format("2 Jan 2006") },
+		"buildStatus": func(s string) string {
+			switch s {
+			case "done":
+				return "live"
+			case "running":
+				return "deploying"
+			case "queued":
+				return "pending"
+			}
+			return s
+		},
 		"dbStatus": func(s string) string {
 			if s == "running" {
 				return "live"

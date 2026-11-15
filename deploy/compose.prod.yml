@@ -18,6 +18,10 @@ x-app: &app
     BASE_URL: https://${CONSOLE_HOST:?set CONSOLE_HOST}
     CONSOLE_HOST: ${CONSOLE_HOST}
     APPS_DOMAIN: ${APPS_DOMAIN:?set APPS_DOMAIN}
+    # Builds from git (rootless BuildKit sandbox, network pt-build). Verify on the server
+    # before enabling; BUILD_RUNTIME=runsc runs the build containers under gVisor.
+    BUILDS_ENABLED: ${BUILDS_ENABLED:-false}
+    BUILD_RUNTIME: ${BUILD_RUNTIME:-}
     # Invoices (usage is metered either way). Seller lines are separated by "|".
     BILLING_ENABLED: ${BILLING_ENABLED:-false}
     BILLING_CURRENCY: ${BILLING_CURRENCY:-EUR}

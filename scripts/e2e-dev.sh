@@ -409,6 +409,48 @@ if pctl preview delete shop/web pr-1 | grep -q deleted; then ok "[CLI] platformc
 check "deleted preview no longer served" "$(wait_pv_code "$PV1" 404)" 404
 check "parent service unaffected" "$(app_code /)" 200
 
+echo "== Builds from git"
+# A local git server (static "dumb HTTP" repository) reached from the build sandbox
+# through host.docker.internal; BUILD_ALLOW_INSECURE_REPOS is on in the dev stack only.
+GITD="$TMP/git"; mkdir -p "$GITD/src" "$GITD/srv"
+cat > "$GITD/src/Dockerfile" <<'DOCKERFILE'
+FROM nginx:1.27-alpine
+RUN if [ -e /var/run/docker.sock ]; then echo DOCKER-SOCKET-VISIBLE; else echo SANDBOX-NO-DOCKER-SOCKET; fi
+RUN if wget -q -T 3 -O /dev/null http://postgres:5432 2>/dev/null; then echo PLATFORM-REACHABLE; else echo SANDBOX-NO-PLATFORM-ACCESS; fi
+COPY index.html /usr/share/nginx/html/index.html
+DOCKERFILE
+echo "built-from-git-$RUN" > "$GITD/src/index.html"
+(cd "$GITD/src" && git init -q -b main && git config core.autocrlf false && git add . && git -c user.email=e2e@example.test -c user.name=e2e commit -qm "e2e app") >/dev/null
+git clone -q --bare "$GITD/src" "$GITD/srv/app.git" && (cd "$GITD/srv/app.git" && git update-server-info)
+docker rm -f e2e-git >/dev/null 2>&1
+MSYS_NO_PATHCONV=1 docker run -d --name e2e-git -p 8099:80 -v "$(cygpath -w "$GITD/srv"):/usr/share/nginx/html:ro" nginx:1.27-alpine >/dev/null
+REPO=http://host.docker.internal:8099/app.git
+if c ja -L "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=https://user:pw@example.com/a.git" -d branch=main | grep -q "Repository:"; then ok "repository address with credentials refused"; else bad "credentials in repository address accepted"; fi
+check "[A] git source saved" "$(code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$REPO" -d branch=main -d dir=)" 303
+check "[A] build started from the console" "$(code_of ja -X POST "$BASE$SVC_A/builds" -d csrf=$CSRF_A -d deploy=1)" 303
+OUT=$(pctl build shop/web --wait)
+if echo "$OUT" | grep -q "done: .*/$A/web:git-"; then ok "[CLI] build finished; image pushed to A's registry space"; else bad "build failed: $(echo "$OUT" | tail -3)"; fi
+if echo "$OUT" | grep -q SANDBOX-NO-DOCKER-SOCKET; then ok "build sandbox has no Docker socket"; else bad "Docker socket check missing"; fi
+if echo "$OUT" | grep -q SANDBOX-NO-PLATFORM-ACCESS; then ok "build sandbox cannot reach platform services"; else bad "platform reachable from a build"; fi
+check "built image deployed (app serves the repository's page)" "$(for _ in $(seq 1 45); do b=$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/"); echo "$b" | grep -q "built-from-git-$RUN" && { echo yes; break; }; sleep 2; done)" yes
+check "[B->A] B cannot open A's build page (404)" "$(code_of jb "$BASE/o/$A/p/shop/s/web/builds/1")" 404
+HOOK=$(c ja -L "$BASE$SVC_A/build-hook" -d csrf=$CSRF_A | grep -o "$BASE/hooks/build/bh_[A-Za-z0-9_-]*" | head -1)
+if [ -n "$HOOK" ]; then ok "[A] webhook address created (shown once)"; else bad "webhook address missing"; fi
+hook() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' "$@"; }
+check "webhook: unknown token refused (404)" "$(hook -d '{}' "$BASE/hooks/build/bh_wrong")" 404
+check "webhook: GitHub ping answered without a build" "$(hook -H 'X-GitHub-Event: ping' -d '{"zen":"hi"}' "$HOOK")" 200
+check "webhook: push to another branch ignored (202)" "$(hook -d '{"ref":"refs/heads/feature"}' "$HOOK")" 202
+check "webhook: push to main queues a build (202)" "$(hook -d '{"ref":"refs/heads/main"}' "$HOOK")" 202
+LASTB=$(owner_sql "SELECT max(number) FROM builds b JOIN services s ON s.id = b.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'web' AND b.trigger = 'webhook'")
+for _ in $(seq 1 90); do st=$(owner_sql "SELECT b.status FROM builds b JOIN services s ON s.id = b.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'web' AND b.number = ${LASTB:-0}"); [ "$st" = done ] || [ "$st" = failed ] && break; sleep 2; done
+check "webhook build finished" "$st" done
+code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$REPO" -d branch=main -d dir=nope >/dev/null
+OUT=$(pctl build shop/web --no-deploy --wait)
+if echo "$OUT" | grep -q "no Dockerfile found in nope"; then ok "missing Dockerfile reported clearly"; else bad "missing Dockerfile: $(echo "$OUT" | tail -2)"; fi
+code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A -d repo= -d branch=main >/dev/null
+check "builds audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'build.done' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
+docker rm -f e2e-git >/dev/null 2>&1
+
 echo "== Alerts"
 ntfy_has() { # ntfy_has <topic> <text> [tries]: wait until a message on topic contains text
   for _ in $(seq 1 "${3:-30}"); do

@@ -15,6 +15,7 @@
   <a role="tab" href="#security">Security</a>
   {{if .Service.VolumePath}}<a role="tab" href="#backups">Backups</a>{{end}}
   <a role="tab" href="#alerts">Alerts</a>
+  {{if and .BuildsEnabled (not .Service.PreviewName)}}<a role="tab" href="#builds">Builds</a>{{end}}
   {{if not .Service.PreviewName}}<a role="tab" href="#previews">Previews{{with .Previews}} <span class="count">{{len .}}</span>{{end}}</a>{{end}}
 </nav>
 
@@ -339,6 +340,62 @@
     {{else}}<p class="small muted">No incidents.</p>{{end}}
   </div>
 </section>
+
+<!-- ============ builds ============ -->
+{{if and .BuildsEnabled (not .Service.PreviewName)}}
+<section class="pane" id="builds" role="tabpanel" aria-label="Builds">
+  <p class="help"><a href="/docs/user#builds-from-git" target="_blank" rel="noopener">Guide: builds from git ↗</a></p>
+  <div class="section">
+    <h2>Build from git</h2>
+    <p class="small muted">The platform clones the branch, builds its Dockerfile in an isolated sandbox, stores the image in your registry space, scans it and, if you choose, deploys it with this service's settings.</p>
+    {{if .Source.Repo}}
+    <p><code>{{.Source.Repo}}</code> · branch <code>{{.Source.Branch}}</code>{{with .Source.Dir}} · folder <code>{{.}}</code>{{end}}{{if .Source.HasToken}} · token saved{{end}}</p>
+    {{if .CanEdit}}
+    <form method="post" action="{{.Path}}/builds" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label class="check"><input type="checkbox" name="deploy" value="1" checked> deploy when built</label>
+      <button type="submit">Build now</button>
+    </form>
+    {{end}}
+    {{end}}
+    {{if .Builds}}
+    <table>
+      <thead><tr><th>Build</th><th>Commit</th><th>Started by</th><th>When</th></tr></thead>
+      <tbody>
+      {{range .Builds}}
+        <tr><td><span class="st st-{{buildStatus .Status}}">{{.Status}}</span> <a href="{{$.Path}}/builds/{{.Number}}">#{{.Number}}</a></td>
+          <td><code>{{.ShortCommit}}</code></td><td>{{if .By}}{{.By}}{{else}}{{.Trigger}}{{end}}</td><td class="nowrap">{{ago .Created}}{{with .Duration}} · {{.}}{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="muted">No builds yet.</p>{{end}}
+  </div>
+  {{if .CanEdit}}
+  <div class="section">
+    <h2>Source</h2>
+    <form method="post" action="{{.Path}}/source" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Repository <span class="hint">https address; empty turns builds off</span><input name="repo" value="{{.Source.Repo}}" placeholder="https://github.com/acme/web.git" maxlength="300"></label>
+      <label>Branch <input name="branch" value="{{.Source.Branch}}" maxlength="100" required></label>
+      <label>Folder <span class="hint">where the Dockerfile is; empty = repository root</span><input name="dir" value="{{.Source.Dir}}" placeholder="services/web" maxlength="200"></label>
+      <label>Access token <span class="hint">private repositories only: a read-only token; stored encrypted, never shown again</span><input name="token" type="password" autocomplete="off" placeholder="{{if .Source.HasToken}}saved (leave empty to keep){{end}}"></label>
+      {{if .Source.HasToken}}<label class="check"><input type="checkbox" name="clear_token" value="1"> remove the saved token</label>{{end}}
+      <div><button type="submit" class="secondary">Save source</button></div>
+    </form>
+  </div>
+  {{if .Source.Repo}}
+  <div class="section">
+    <h2>Build on every push</h2>
+    <p class="small muted">Add a webhook in GitHub, Gitea, Forgejo or GitLab (push events, content type JSON) with this platform's address. Pushes to other branches are ignored. {{if .Source.HasHook}}A webhook address exists; creating a new one disables the old one.{{end}}</p>
+    <form method="post" action="{{.Path}}/build-hook" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" class="secondary"{{if .Source.HasHook}} data-confirm="Replace the webhook address? The old one stops working."{{end}}>{{if .Source.HasHook}}New webhook address{{else}}Create webhook address{{end}}</button>
+    </form>
+  </div>
+  {{end}}
+  {{end}}
+</section>
+{{end}}
 
 <!-- ============ previews ============ -->
 {{if not .Service.PreviewName}}

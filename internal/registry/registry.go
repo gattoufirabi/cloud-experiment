@@ -33,6 +33,9 @@ const (
 	// AgentUserPrefix: the agent and the scanner log in as "agent/<org-slug>" with a
 	// password derived from a shared secret, so even platform-side pulls are org-scoped.
 	AgentUserPrefix = "agent/"
+	// BuilderUserPrefix: the agent pushes images it built as "builder/<org-slug>",
+	// allowed to push (and pull) only inside that organization's namespace.
+	BuilderUserPrefix = "builder/"
 )
 
 // ---------- signing key ----------
@@ -172,6 +175,13 @@ func ParseScope(scope string) (typ, name string, actions []string, ok bool) {
 func InternalPassword(secret, orgSlug string) string {
 	m := hmac.New(sha256.New, []byte(secret))
 	m.Write([]byte("registry-pull:" + orgSlug))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// BuilderPassword is the agent's push password for one organization's namespace.
+func BuilderPassword(secret, orgSlug string) string {
+	m := hmac.New(sha256.New, []byte(secret))
+	m.Write([]byte("registry-push:" + orgSlug))
 	return hex.EncodeToString(m.Sum(nil))
 }
 

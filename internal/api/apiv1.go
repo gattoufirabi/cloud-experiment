@@ -124,6 +124,8 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET "+svc+"/logs", s.apiAuth("viewer", s.apiLogs))
 	m.HandleFunc("PUT "+svc+"/secrets/{name}", s.apiAuth("developer", s.apiSetSecret))
 	m.HandleFunc("GET "+svc+"/previews", s.apiAuth("viewer", s.apiPreviews))
+	m.HandleFunc("POST "+svc+"/builds", s.apiAuth("developer", s.apiStartBuild))
+	m.HandleFunc("GET "+svc+"/builds/{n}", s.apiAuth("viewer", s.apiBuild))
 	m.HandleFunc("POST "+svc+"/previews", s.apiAuth("developer", s.apiCreatePreview))
 	m.HandleFunc("DELETE "+svc+"/previews/{name}", s.apiAuth("developer", s.apiDeletePreview))
 }

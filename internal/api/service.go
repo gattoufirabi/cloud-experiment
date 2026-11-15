@@ -166,6 +166,8 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 	var cpuPct, memPct *int
 	var prot protection
 	var previews []previewView
+	var source sourceInfo
+	var builds []buildView
 	o, p, sv, err, ok := s.withService(w, r, "viewer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
 		var err error
 		if deps, err = recentDeployments(r, tx, sv.ID, 15); err != nil {
@@ -184,6 +186,12 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if previews, err = s.loadPreviews(r, tx, o, p, sv); err != nil {
+			return err
+		}
+		if source, err = loadSource(r, tx, sv.ID); err != nil {
+			return err
+		}
+		if builds, err = loadBuilds(r, tx, sv.ID, 15); err != nil {
 			return err
 		}
 		var sc scanSummary
@@ -233,6 +241,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		"Backups": backups, "CanRestore": model.RoleAtLeast(o.Role, "admin"),
 		"Incidents": incidents, "AlertCPU": cpuPct, "AlertMem": memPct,
 		"Protection": prot, "Previews": previews, "MaxPreviews": maxPreviewsPerService,
+		"Source": source, "Builds": builds, "BuildsEnabled": s.cfg.BuildsEnabled && s.cfg.RegistryHost != "",
 	})
 }
 

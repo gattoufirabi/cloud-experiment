@@ -29,15 +29,16 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Traffic protection** per service: WAF (Coraza + OWASP Core Rule Set), requests per minute per visitor, blocked IP ranges; enforced by Caddy | done, tested |
 | **Usage metering and invoices**: allocated CPU/memory and network out metered per minute, per-plan prices, monthly invoices (printable), estimate so far, billing details, operator records payments (no payment provider) | done, tested |
 | **Preview environments**: temporary copies of a service with another image at `<name>.<service>-…` (console, API, `platformctl preview`), secrets copied, auto-expiry | done, tested |
+| **Builds from git**: Dockerfile builds in a rootless BuildKit sandbox (no Docker socket, isolated network), push to the org's registry space, optional deploy; console, API, `platformctl build`, push webhooks | done, tested on Docker Desktop; **gVisor build runtime untested** |
 | **Built-in docs** at `/docs/user` and `/docs/admin` (public, filled with this installation's addresses), linked from the header, the login page and a help link on every console tab | done |
 | Console design: sidebar pane + tabs, monochrome style | done |
 | **Alerts**: service down/recovered, CPU and memory thresholds, failed deploys and backups, critical CVEs in running images; ntfy push and signed webhooks per organization | done, tested |
 | gVisor sandbox for tenant containers | production config + installer; **not testable on Windows dev** |
 | Host firewall for tenant networks, isolation test (Phase 0 gate) | scripts written; **run them on the server** |
 
-The end-to-end test (`scripts/e2e-dev.sh`) runs 176 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing and previews. Unit tests: `go test ./...` (outbound request guard).
+The end-to-end test (`scripts/e2e-dev.sh`) runs 192 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews and git builds. Unit tests: `go test ./...` (outbound request guard).
 
-**Not built yet** (next phases in ARCHITECTURE.md): email alerts (needs an SMTP server), disk quotas for volumes and registry storage, registry garbage collection, operator web console (CLI only today), self-service TOTP reset (operator resets it in the database).
+**Not built yet** (next phases in ARCHITECTURE.md): self-signup with abuse controls, buildpacks/Railpack builds without a Dockerfile, email alerts (needs an SMTP server), disk quotas for volumes and registry storage, registry garbage collection, operator web console (CLI only today), self-service TOTP reset (operator resets it in the database).
 
 ---
 

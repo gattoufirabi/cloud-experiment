@@ -61,6 +61,19 @@ type Config struct {
 	// alerts
 	AlertsEnabled bool
 
+	// Builds from git (sandboxed BuildKit); needs the registry.
+	BuildsEnabled   bool
+	BuildkitImage   string
+	GitImage        string
+	BuildRuntime    string // container runtime for build containers ("" = Docker default)
+	BuildTimeout    time.Duration
+	BuildMemoryMB   int
+	BuildCPUMillis  int
+	BuildSubnet     string
+	BuildMaxImageMB int
+	// BuildAllowInsecure (development only): allow http:// and private-address repositories.
+	BuildAllowInsecure bool
+
 	// Billing: usage is always metered; invoices are issued monthly when enabled.
 	BillingEnabled    bool
 	BillingCurrency   string        // ISO 4217 code shown on invoices
@@ -118,6 +131,17 @@ func Load() Config {
 		AlertsEnabled:     envBool("ALERTS_ENABLED", false),
 		AlertInterval:     time.Duration(envInt("ALERT_INTERVAL_SECONDS", 30)) * time.Second,
 		AlertAllowPrivate: envBool("ALERT_ALLOW_PRIVATE_TARGETS", false),
+
+		BuildsEnabled:      envBool("BUILDS_ENABLED", false),
+		BuildkitImage:      env("BUILDKIT_IMAGE", "moby/buildkit:v0.34.1-rootless"),
+		GitImage:           env("GIT_IMAGE", "alpine/git:v2.52.0"),
+		BuildRuntime:       env("BUILD_RUNTIME", ""),
+		BuildTimeout:       time.Duration(envInt("BUILD_TIMEOUT_MINUTES", 15)) * time.Minute,
+		BuildMemoryMB:      envInt("BUILD_MEMORY_MB", 2048),
+		BuildCPUMillis:     envInt("BUILD_CPU_MILLIS", 2000),
+		BuildSubnet:        env("BUILD_SUBNET", "10.207.0.0/24"),
+		BuildMaxImageMB:    envInt("BUILD_MAX_IMAGE_MB", 4096),
+		BuildAllowInsecure: envBool("BUILD_ALLOW_INSECURE_REPOS", false),
 
 		BillingEnabled:    envBool("BILLING_ENABLED", false),
 		BillingCurrency:   strings.ToUpper(env("BILLING_CURRENCY", "EUR")),
