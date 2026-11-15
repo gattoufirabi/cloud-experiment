@@ -290,3 +290,7 @@ pre.log { background: var(--black); color: var(--paper); border-radius: 16px; pa
 
 /* ---------- signup ---------- */
 .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+
+/* ---------- two-step login QR code ---------- */
+.qr-panel { text-align: left; }
+svg.qr { display: block; width: 220px; height: 220px; margin: 0 0 16px; border-radius: 12px; }

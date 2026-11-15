@@ -85,9 +85,13 @@ func (s *Server) totpSetupPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "totp_setup", http.StatusOK, data{
-		"Secret": secret, "URI": secure.TOTPURI("Platform", sess.Email, secret),
-	})
+	uri := secure.TOTPURI("Platform", sess.Email, secret)
+	qr, err := qrSVG(uri, "QR code: scan it with your authenticator app")
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.render(w, r, "totp_setup", http.StatusOK, data{"Secret": secret, "URI": uri, "QR": qr})
 }
 
 // pendingTOTPSecret returns the stored (not yet confirmed) secret, creating one if needed.

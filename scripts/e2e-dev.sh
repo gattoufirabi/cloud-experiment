@@ -34,6 +34,7 @@ onboard() {
         --data-urlencode "password=correct-horse-battery-$org" --data-urlencode "password2=correct-horse-battery-$org")
   check "[$org] invite accepted" "$code" 303
   page=$(c "$jar" "$BASE/totp/setup")
+  if echo "$page" | grep -q '<svg class="qr"'; then ok "[$org] two-step setup shows a QR code"; else bad "[$org] no QR code on the setup page"; fi
   secret=$(echo "$page" | grep -o 'class="select">[A-Z2-7]\{20,\}<' | head -1 | sed 's/.*">//;s/<$//')
   csrf=$(echo "$page" | csrf_of)
   code=$(code_of "$jar" -X POST "$BASE/totp/setup" -d "csrf=$csrf" -d "code=$(admin totp-code --secret "$secret" | tr -d '\r')")

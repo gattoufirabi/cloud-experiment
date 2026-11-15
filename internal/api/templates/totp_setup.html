@@ -2,8 +2,10 @@
 {{define "content"}}
 <section class="narrow">
   <h1>Two-step login</h1>
-  <p class="lede">Required for every account. Add this key to an authenticator app (Aegis, 2FAS, FreeOTP, Google Authenticator), then enter the 6-digit code it shows.</p>
-  <div class="panel">
+  <p class="lede">Required for every account. Scan the code with an authenticator app (Aegis, 2FAS, FreeOTP, Google Authenticator), then enter the 6-digit code it shows.</p>
+  <div class="panel qr-panel">
+    {{.QR}}
+    <p class="small muted">Can't scan? Type this key in the app instead:</p>
     <dl class="kv">
       <dt>key</dt><dd><code class="select">{{.Secret}}</code></dd>
       <dt>type</dt><dd>time-based, 6 digits, 30 seconds</dd>
