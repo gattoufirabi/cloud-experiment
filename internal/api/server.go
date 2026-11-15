@@ -3,6 +3,8 @@
 package api
 
 import (
+	"github.com/go-webauthn/webauthn/webauthn"
+
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -38,17 +40,19 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type Server struct {
-	cfg       config.Config
-	pool      *pgxpool.Pool
-	box       *secure.Box
-	pages     map[string]*template.Template
-	limiter   *rateLimiter
-	log       *slog.Logger
-	dummyHash string
-	hc        *http.Client
-	regKey    *ecdsa.PrivateKey // signs registry tokens; nil when the registry is disabled
-	assetV    string            // content hash of static files, for cache busting
-	docs      map[string]docPage
+	cfg        config.Config
+	pool       *pgxpool.Pool
+	box        *secure.Box
+	pages      map[string]*template.Template
+	limiter    *rateLimiter
+	log        *slog.Logger
+	dummyHash  string
+	hc         *http.Client
+	regKey     *ecdsa.PrivateKey // signs registry tokens; nil when the registry is disabled
+	assetV     string            // content hash of static files, for cache busting
+	docs       map[string]docPage
+	wa         *webauthn.WebAuthn
+	ceremonies *ceremonyStore
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -75,12 +79,17 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("load docs: %w", err)
 	}
+	wa, err := newWebAuthn(cfg)
+	if err != nil {
+		return fmt.Errorf("passkeys: %w", err)
+	}
 	dummy, _ := secure.HashPassword(secure.NewToken())
 	s := &Server{
 		cfg: cfg, pool: pool, box: box, pages: pages,
 		limiter: newRateLimiter(), log: slog.Default().With("component", "api"),
 		dummyHash: dummy, hc: &http.Client{Timeout: 10 * time.Second}, regKey: regKey,
 		assetV: assetVersion(), docs: docs,
+		wa: wa, ceremonies: &ceremonyStore{m: map[string]ceremony{}},
 	}
 
 	public := &http.Server{
@@ -130,6 +139,7 @@ func (s *Server) routes() http.Handler {
 
 	m.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/docs/user", http.StatusSeeOther) })
 	m.HandleFunc("GET /docs/{guide}", s.docsPage)
+	m.HandleFunc("GET /status/{org}/{project}", s.statusPage)
 	m.HandleFunc("GET /login", s.loginPage)
 	m.HandleFunc("POST /login", s.loginSubmit)
 	m.HandleFunc("POST /logout", s.auth(authAny, s.logout))
@@ -160,6 +170,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /o/{org}/p/{project}", s.auth(authFull, s.projectPage))
 	m.HandleFunc("POST /o/{org}/p/{project}/services", s.auth(authFull, s.createService))
 	m.HandleFunc("POST /o/{org}/p/{project}/delete", s.auth(authFull, s.deleteProject))
+	m.HandleFunc("POST /o/{org}/p/{project}/status-page", s.auth(authFull, s.toggleStatusPage))
 
 	m.HandleFunc("POST /o/{org}/p/{project}/databases", s.auth(authFull, s.createDatabase))
 	const dbp = "/o/{org}/p/{project}/d/{db}"
@@ -190,6 +201,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET "+svc+"/metrics.json", s.auth(authFull, s.metricsJSON))
 
 	s.apiRoutes(m)
+	s.passkeyRoutes(m)
 	return s.secureHeaders(m)
 }
 
@@ -315,7 +327,10 @@ func (s *Server) validCSRF(r *http.Request, sess *session) bool {
 	if o := r.Header.Get("Origin"); o != "" && o != "null" && o != s.cfg.BaseURL {
 		return false
 	}
-	tok := r.PostFormValue("csrf")
+	tok := r.Header.Get("X-CSRF-Token") // JSON requests (passkeys)
+	if tok == "" {
+		tok = r.PostFormValue("csrf")
+	}
 	return tok != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(sess.CSRF)) == 1
 }
 

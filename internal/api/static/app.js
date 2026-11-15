@@ -173,3 +173,95 @@ if (toc) {
   });
   mark();
 }
+
+/* ---------- passkeys (WebAuthn) ---------- */
+(function () {
+  var b64u = {
+    dec: function (s) {
+      s = s.replace(/-/g, "+").replace(/_/g, "/");
+      while (s.length % 4) s += "=";
+      var bin = atob(s), out = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out.buffer;
+    },
+    enc: function (buf) {
+      var bytes = new Uint8Array(buf), bin = "";
+      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    }
+  };
+  function post(url, body, csrf) {
+    var h = { "Content-Type": "application/json" };
+    if (csrf) h["X-CSRF-Token"] = csrf;
+    return fetch(url, { method: "POST", headers: h, body: body ? JSON.stringify(body) : "{}", credentials: "same-origin" })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          if (!r.ok) throw new Error(j.error || "request failed (" + r.status + ")");
+          return j;
+        });
+      });
+  }
+  function showErr(root, e) {
+    var p = root.querySelector("[data-passkey-error]");
+    if (!p) return;
+    p.textContent = e && e.name === "NotAllowedError" ? "Cancelled or timed out." : (e && e.message) || String(e);
+    p.hidden = false;
+  }
+  var supported = !!(window.PublicKeyCredential && navigator.credentials);
+
+  var reg = document.querySelector("[data-passkey-register]");
+  if (reg) {
+    if (!supported) {
+      reg.hidden = true;
+      var u = document.querySelector("[data-passkey-unsupported]");
+      if (u) u.hidden = false;
+    }
+    reg.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var csrf = reg.getAttribute("data-csrf"), name = reg.elements.name.value;
+      post("/account/passkeys/begin", null, csrf).then(function (opt) {
+        var pk = opt.publicKey;
+        pk.challenge = b64u.dec(pk.challenge);
+        pk.user.id = b64u.dec(pk.user.id);
+        (pk.excludeCredentials || []).forEach(function (c) { c.id = b64u.dec(c.id); });
+        return navigator.credentials.create({ publicKey: pk });
+      }).then(function (cred) {
+        return post("/account/passkeys/finish?name=" + encodeURIComponent(name), {
+          id: cred.id, rawId: b64u.enc(cred.rawId), type: cred.type,
+          response: {
+            clientDataJSON: b64u.enc(cred.response.clientDataJSON),
+            attestationObject: b64u.enc(cred.response.attestationObject),
+            transports: cred.response.getTransports ? cred.response.getTransports() : []
+          }
+        }, csrf);
+      }).then(function () {
+        location.href = "/account?msg=" + encodeURIComponent("Passkey added.");
+      }).catch(function (e) { showErr(reg, e); });
+    });
+  }
+
+  var login = document.querySelector("[data-passkey-login]");
+  if (login && supported) {
+    login.hidden = false;
+    login.querySelector("[data-passkey-signin]").addEventListener("click", function () {
+      post("/login/passkey/begin").then(function (opt) {
+        var pk = opt.publicKey;
+        pk.challenge = b64u.dec(pk.challenge);
+        (pk.allowCredentials || []).forEach(function (c) { c.id = b64u.dec(c.id); });
+        return navigator.credentials.get({ publicKey: pk });
+      }).then(function (cred) {
+        var r = cred.response;
+        return post("/login/passkey/finish", {
+          id: cred.id, rawId: b64u.enc(cred.rawId), type: cred.type,
+          response: {
+            clientDataJSON: b64u.enc(r.clientDataJSON),
+            authenticatorData: b64u.enc(r.authenticatorData),
+            signature: b64u.enc(r.signature),
+            userHandle: r.userHandle ? b64u.enc(r.userHandle) : null
+          }
+        });
+      }).then(function (j) { location.href = j.redirect || "/"; })
+        .catch(function (e) { showErr(login, e); });
+    });
+  }
+})();

@@ -346,11 +346,15 @@ func (s *Server) auditPage(w http.ResponseWriter, r *http.Request) {
 
 // ---------- projects ----------
 
-type projectInfo struct{ ID, Slug, Name string }
+type projectInfo struct {
+	ID, Slug, Name string
+	StatusPublic   bool
+}
 
 func (s *Server) loadProject(r *http.Request, tx pgx.Tx) (*projectInfo, error) {
 	var p projectInfo
-	err := tx.QueryRow(r.Context(), `SELECT id, slug, name FROM projects WHERE slug = $1`, r.PathValue("project")).Scan(&p.ID, &p.Slug, &p.Name)
+	err := tx.QueryRow(r.Context(), `SELECT id, slug, name, status_public FROM projects WHERE slug = $1`, r.PathValue("project")).
+		Scan(&p.ID, &p.Slug, &p.Name, &p.StatusPublic)
 	return &p, err
 }
 
@@ -399,7 +403,7 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services, "Databases": dbs})
+	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services, "Databases": dbs, "BaseURL": s.cfg.BaseURL})
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {

@@ -296,6 +296,39 @@ TOK_ID=$(owner_sql "SELECT t.id FROM api_tokens t JOIN orgs o ON o.id = t.org_id
 code_of ja -X POST "$BASE/o/$A/api-tokens/$TOK_ID/delete" -d csrf=$CSRF_A >/dev/null
 check "[API] revoked token refused (401)" "$(api_code "$TOK_DEV" "$BASE/api/v1/me")" 401
 
+echo "== Public status pages"
+pub_code() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' "$BASE$1"; }
+check "status page is off by default (404)" "$(pub_code /status/$A/shop)" 404
+check "[B->A] B cannot turn on A's status page" "$(code_of jb -X POST "$BASE/o/$A/p/shop/status-page" -d csrf=$CSRF_B -d public=1)" 404
+check "[A] status page turned on" "$(code_of ja -X POST "$BASE/o/$A/p/shop/status-page" -d csrf=$CSRF_A -d public=1)" 303
+PAGE=$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" "$BASE/status/$A/shop")
+if echo "$PAGE" | grep -q "<strong>web</strong>"; then ok "public status page lists A's services, no login needed"; else bad "status page missing services"; fi
+if echo "$PAGE" | grep -q "tenant-a-secret\|GREETING\|nginx:"; then bad "status page leaks settings"; else ok "status page shows no secrets, env or images"; fi
+check "B's project stays private (404)" "$(pub_code /status/$B/shop)" 404
+check "uptime is being recorded" "$(psql_api "SELECT count(*) > 0 FROM status_page_services('$A','shop') WHERE total > 0" | tr -d '\r')" t
+check "[A] status page turned off" "$(code_of ja -X POST "$BASE/o/$A/p/shop/status-page" -d csrf=$CSRF_A)" 303
+check "status page gone after turning off (404)" "$(pub_code /status/$A/shop)" 404
+
+echo "== Passkeys"
+(cd .. && go build -o "$TMP/softauthn.exe" ./scripts/softauthn) || bad "softauthn did not build"
+SID_A=$(awk -F'\t' '$6 == "sid" {print $7}' "$TMP/ja" | tr -d '\r')
+if "$TMP/softauthn.exe" register -url "$BASE" -sid "$SID_A" -csrf "$CSRF_A" -key "$TMP/pk-a.json" -name "e2e key" | grep -q registered; then ok "[A] passkey registered"; else bad "[A] passkey registration failed"; fi
+if c ja "$BASE/account" | grep -q "e2e key"; then ok "[A] passkey listed on the account page"; else bad "[A] passkey not listed"; fi
+check "registration without the CSRF token refused (403)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -b "sid=$SID_A" -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/account/passkeys/begin")" 403
+NEW_SID=$("$TMP/softauthn.exe" login -url "$BASE" -key "$TMP/pk-a.json" 2>&1)
+check "passkey sign-in opens a full session (no password, no code)" \
+  "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -b "sid=$NEW_SID" "$BASE/o/$A")" 200
+OUT=$("$TMP/softauthn.exe" login -url "$BASE" -key "$TMP/pk-a.json" -tamper 2>&1)
+if echo "$OUT" | grep -q "HTTP 401"; then ok "forged passkey signature refused"; else bad "forged signature accepted"; fi
+check "sign-in from another site refused (403)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -X POST -H 'Origin: https://evil.example' "$BASE/login/passkey/begin")" 403
+check "passkey sign-in audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'login.passkey' AND user_id = (SELECT id FROM users WHERE email = 'owner@$A.test')" | tr -d '\r')" 1
+PKID=$(c ja "$BASE/account" | grep -o '/account/passkeys/[A-Za-z0-9_-]*/delete' | head -1)
+check "[B->A] B cannot remove A's passkey" "$(code_of jb -X POST "$BASE$PKID" -d csrf=$CSRF_B)" 303
+check "A's passkey still there after B's attempt" "$(psql_api "SELECT count(*) FROM passkeys p JOIN users u ON u.id = p.user_id WHERE u.email = 'owner@$A.test'" | tr -d '\r')" 1
+check "[A] passkey removed" "$(code_of ja -X POST "$BASE$PKID" -d csrf=$CSRF_A)" 303
+OUT=$("$TMP/softauthn.exe" login -url "$BASE" -key "$TMP/pk-a.json" 2>&1)
+if echo "$OUT" | grep -q "HTTP 401"; then ok "removed passkey can no longer sign in"; else bad "removed passkey still works"; fi
+
 echo "== Alerts"
 ntfy_has() { # ntfy_has <topic> <text> [tries]: wait until a message on topic contains text
   for _ in $(seq 1 "${3:-30}"); do

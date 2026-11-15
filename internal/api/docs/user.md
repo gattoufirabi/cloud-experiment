@@ -16,6 +16,17 @@ Accounts are created by invitation only, and every account must use two-step log
 - **Lost phone:** ask the platform operator to reset your two-step login, then log in and set it up again.
 - **Several organizations:** after logging in you see the list of organizations you belong to.
 
+### Passkeys
+
+A passkey lets you sign in with your fingerprint, face or device PIN instead of your password and 6-digit code. It works with phones, laptops, security keys and password managers that support passkeys.
+
+1. Open **Account** (top bar) and choose **Add a passkey**. Give it a name you will recognize, such as "Work laptop".
+2. Next time, on the login page, choose **Sign in with a passkey** and confirm on your device.
+
+- Only a public key is stored on the platform; the private key never leaves your device or password manager.
+- Your password and authenticator app keep working: use them if you lose the device, then remove the lost passkey from **Account**.
+- A passkey only works on this platform's address, so a look-alike phishing site cannot use it.
+
 ## How things are organized
 
 Your organization holds projects, projects hold services, and each service is one running container.
@@ -87,6 +98,15 @@ Managed PostgreSQL and Redis run next to your services, on the project's private
 - **Restore** (admins): type the database ID next to a snapshot and click **Restore**. A safety snapshot of the current data is taken first and always kept; the snapshot is then loaded with `pg_restore`, replacing existing tables; Redis is briefly stopped and restarted with the snapshot. Connected applications may see errors for a few seconds.
 - **Redis memory:** Redis uses at most 80% of the memory you give it and then refuses new writes instead of evicting keys, so size it for your data.
 - **Plans:** Starter includes 1 managed database, Pro includes 5 (PostgreSQL and Redis together).
+
+## Public status page
+
+Each project can have a public page that anyone can open, without an account, at `/status/<organization>/<project>`. Share it with your customers.
+
+- Turn it on in the project's **Settings** tab (admins and owners). It is off by default.
+- It shows each service's state (operational, down or not running), daily uptime over the last 30 days and outages from the last 14 days.
+- It never shows logs, error messages, images, environment variables or secrets.
+- Turn it off at any time; the address stops working immediately.
 
 ## Custom domains and HTTPS
 

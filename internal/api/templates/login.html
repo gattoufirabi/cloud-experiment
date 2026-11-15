@@ -8,6 +8,11 @@
     <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
     <div><button type="submit" class="arrow">Continue</button></div>
   </form>
+  <div class="passkey-login" data-passkey-login hidden>
+    <p class="small muted">or</p>
+    <button type="button" class="secondary" data-passkey-signin>Sign in with a passkey</button>
+    <p class="small error-text" data-passkey-error hidden></p>
+  </div>
   <p class="small muted">New here? Read the <a href="/docs/user">user guide</a>.</p>
 </section>
 {{end}}

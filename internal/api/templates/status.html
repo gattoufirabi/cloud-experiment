@@ -1,0 +1,31 @@
+{{define "title"}}{{.ProjectName}} status{{end}}
+{{define "content"}}
+<section class="statuspage">
+  <p class="status-org">{{.OrgName}}</p>
+  <h1>{{.ProjectName}}</h1>
+  <p class="status-overall{{if .AnyDown}} down{{end}}">{{.Overall}}</p>
+
+  <div class="status-list">
+  {{range .Services}}
+    <div class="status-row">
+      <div class="status-head">
+        <strong>{{.Name}}</strong>
+        <span class="st {{if eq .State "up"}}st-live{{else if eq .State "down"}}st-failed{{else}}st-none{{end}}">{{if eq .State "up"}}operational{{else if eq .State "down"}}down{{else}}not running{{end}}</span>
+      </div>
+      <div class="bars" role="img" aria-label="{{.Name}}: daily uptime over the last 30 days">
+        {{range .Cells}}<span class="{{.Class}}" title="{{.Title}}"></span>{{end}}
+      </div>
+      <div class="status-foot"><span>30 days ago</span><span>{{.Uptime}}</span><span>today</span></div>
+    </div>
+  {{end}}
+  </div>
+
+  <h2>Past incidents</h2>
+  {{if .Incidents}}
+  <ul class="list">
+    {{range .Incidents}}<li><strong>{{.Service}}</strong> was down · {{datetime .Started}}{{with .Resolved}} → resolved {{datetime .}}{{else}} · ongoing{{end}}</li>{{end}}
+  </ul>
+  {{else}}<p class="muted">No incidents in the last 14 days.</p>{{end}}
+  <p class="muted small">Updated {{datetime .Updated}}. Checked every few seconds by the platform.</p>
+</section>
+{{end}}

@@ -38,6 +38,18 @@ func (a *Agent) alertLoop(ctx context.Context) {
 	}
 	tick := time.NewTicker(a.cfg.AlertInterval)
 	defer tick.Stop()
+	prune := time.NewTicker(24 * time.Hour)
+	defer prune.Stop()
+	go func() { // keep 90 days of uptime history
+		for {
+			_, _ = a.pool.Exec(ctx, `DELETE FROM service_uptime WHERE hour < now() - interval '90 days'`)
+			select {
+			case <-ctx.Done():
+				return
+			case <-prune.C:
+			}
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -164,6 +176,17 @@ func (a *Agent) checkHealth(ctx context.Context) {
 	for i, t := range targets {
 		seen[t.ServiceID] = true
 		reason := reasons[i]
+		// Hourly uptime totals feed the public status pages (30-day bars and percentages).
+		okInc := 0
+		if reason == "" {
+			okInc = 1
+		}
+		if _, err := a.pool.Exec(ctx, `
+			INSERT INTO service_uptime (org_id, service_id, hour, ok, total) VALUES ($1, $2, date_trunc('hour', now()), $3, 1)
+			ON CONFLICT (service_id, hour) DO UPDATE SET ok = service_uptime.ok + EXCLUDED.ok, total = service_uptime.total + 1`,
+			t.OrgID, t.ServiceID, okInc); err != nil {
+			a.log.Warn("record uptime", "err", err)
+		}
 		a.mu.Lock()
 		if reason == "" {
 			a.probeFails[t.ServiceID] = 0

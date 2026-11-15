@@ -1,0 +1,33 @@
+{{define "title"}}Account{{end}}
+{{define "content"}}
+<section class="narrow">
+  <h1>Account</h1>
+  <p class="lede">{{.User.Name}} · {{.User.Email}}</p>
+
+  <div class="section">
+    <h2>Passkeys</h2>
+    <p class="small muted">A passkey lets you sign in with your fingerprint, face or device PIN instead of your password and 6-digit code. Only a public key is stored here; the private key never leaves your device or password manager.</p>
+    {{if .Passkeys}}
+    <ul class="list">
+      {{range .Passkeys}}
+      <li class="row-between">
+        <span><strong>{{.Name}}</strong>{{if .Synced}} <span class="tag">synced</span>{{end}}<br>
+          <span class="small muted">added {{ago .Created}} · {{with .LastUsed}}last used {{ago .}}{{else}}never used{{end}}</span></span>
+        <form method="post" action="/account/passkeys/{{.ID}}/delete" class="inline">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <button type="submit" class="secondary small" data-confirm="Remove the passkey {{.Name}}?">Remove</button>
+        </form>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<p class="muted">No passkeys yet.</p>{{end}}
+
+    <form class="stack" data-passkey-register data-csrf="{{.CSRF}}">
+      <label>Name <input name="name" maxlength="60" placeholder="e.g. Work laptop" required></label>
+      <div><button type="submit">Add a passkey</button></div>
+      <p class="small error-text" data-passkey-error hidden></p>
+    </form>
+    <p class="small muted" data-passkey-unsupported hidden>This browser does not support passkeys.</p>
+  </div>
+</section>
+{{end}}

@@ -72,6 +72,16 @@
 {{if roleAtLeast .Org.Role "admin"}}
 <section class="pane" id="project-settings" role="tabpanel" aria-label="Settings">
   <div class="section">
+    <h2>Public status page</h2>
+    <p class="small muted">A page anyone can open, showing whether this project's services are up, their uptime over 30 days and recent outages. It never shows logs, error messages or settings.</p>
+    {{if .Project.StatusPublic}}<p><a href="/status/{{.Org.Slug}}/{{.Project.Slug}}" target="_blank" rel="noopener">{{.BaseURL}}/status/{{.Org.Slug}}/{{.Project.Slug}} ↗</a></p>{{end}}
+    <form method="post" action="{{.Org.Path}}/p/{{.Project.Slug}}/status-page" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      {{if .Project.StatusPublic}}<button type="submit" class="secondary">Turn off</button>
+      {{else}}<input type="hidden" name="public" value="1"><button type="submit">Make the status page public</button>{{end}}
+    </form>
+  </div>
+  <div class="section">
     <h2>Delete project</h2>
     <p class="small">Deletes every service in this project and stops their containers. This cannot be undone.</p>
     <form method="post" action="{{.Org.Path}}/p/{{.Project.Slug}}/delete" class="inline">
