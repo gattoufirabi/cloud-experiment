@@ -1,0 +1,13 @@
+[Unit]
+Description=Platform tenant network firewall
+After=docker.service nftables.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/platform/host/tenant-firewall.sh
+
+[Install]
+WantedBy=multi-user.target docker.service

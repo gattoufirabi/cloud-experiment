@@ -1,0 +1,651 @@
+// Package agent is the only component that touches Docker and Caddy. It reads desired
+// state from PostgreSQL and converges the host to it, enforcing a hard policy that does
+// not trust the database: even a compromised API cannot get a privileged container.
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"platform/internal/config"
+	"platform/internal/db"
+	"platform/internal/docker"
+	"platform/internal/model"
+	"platform/internal/registry"
+	"platform/internal/secure"
+)
+
+type Agent struct {
+	cfg   config.Config
+	pool  *pgxpool.Pool
+	dk    *docker.Client
+	box   *secure.Box
+	caddy *caddyClient
+	logs  *logShipper
+	wake  chan struct{}
+	log   *slog.Logger
+
+	scanWake    chan struct{}
+	trivyPulled bool
+
+	backupWake   chan struct{}
+	resticPulled bool
+
+	alertWake  chan struct{}
+	alertHTTP  *http.Client
+	probeFails map[string]int
+	attached   map[string]bool // project networks the proxy and agent are known to be on
+
+	mu        sync.Mutex
+	targets   []target // running live containers, refreshed each reconcile
+	caddyHash string
+	ticks     int
+}
+
+type target struct {
+	ContainerID, DeploymentID, OrgID, ProjectID, ServiceID string
+}
+
+type job struct {
+	ID, OrgID, ServiceID, ProjectID string
+	OrgSlug, ScanPolicy             string
+	Revision                        int
+	Spec                            model.Spec
+	Suspended                       bool
+}
+
+func Run(ctx context.Context, cfg config.Config) error {
+	log := slog.Default().With("component", "agent")
+	if cfg.Runtime != "runsc" {
+		if !cfg.AllowInsecureRuntime {
+			return errors.New("refusing to start: RUNTIME must be runsc (gVisor); set ALLOW_INSECURE_RUNTIME=true only for local development")
+		}
+		log.Warn("INSECURE: tenant containers run WITHOUT the gVisor sandbox. Development only.", "runtime", cfg.Runtime)
+	}
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	box, err := secure.LoadBox(cfg.MasterKeyFile)
+	if err != nil {
+		return err
+	}
+	dk := docker.New(cfg.DockerSocket)
+	a := &Agent{
+		cfg: cfg, pool: pool, dk: dk, box: box,
+		caddy: newCaddyClient(cfg.CaddyAdminSocket),
+		logs:  newLogShipper(dk, cfg.VictoriaLogsURL, log),
+		wake:  make(chan struct{}, 1),
+		log:   log,
+
+		scanWake:   make(chan struct{}, 1),
+		backupWake: make(chan struct{}, 1),
+		alertWake:  make(chan struct{}, 1),
+		alertHTTP:  newAlertHTTP(cfg.AlertAllowPrivate),
+		probeFails: map[string]int{},
+		attached:   map[string]bool{},
+	}
+
+	// A deploy interrupted by a restart is retried from the start.
+	if _, err := pool.Exec(ctx, `UPDATE deployments SET status = 'pending', message = 'retrying after agent restart', updated_at = now() WHERE status = 'deploying'`); err != nil {
+		return err
+	}
+
+	go a.listen(ctx)
+	go a.logs.run(ctx)
+	go a.metricsLoop(ctx)
+	go a.scanLoop(ctx)
+	go a.backupLoop(ctx)
+	go a.alertLoop(ctx)
+
+	a.reconcile(ctx)
+	tick := time.NewTicker(15 * time.Second)
+	defer tick.Stop()
+	for {
+		a.processPending(ctx)
+		a.syncCaddy(ctx, false)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-a.wake:
+		case <-tick.C:
+			a.reconcile(ctx)
+		}
+	}
+}
+
+// listen wakes the main loop on NOTIFY deployments (sent by the API).
+func (a *Agent) listen(ctx context.Context) {
+	for ctx.Err() == nil {
+		conn, err := a.pool.Acquire(ctx)
+		if err == nil {
+			if _, err = conn.Exec(ctx, "LISTEN deployments"); err == nil {
+				for err == nil {
+					var n *pgconn.Notification
+					n, err = conn.Conn().WaitForNotification(ctx)
+					if err == nil {
+						switch n.Payload {
+						case "scan":
+							a.pokeScans()
+						case "backup":
+							a.pokeBackups()
+						case "alert":
+							a.pokeAlerts()
+						default:
+							a.poke()
+						}
+					}
+				}
+			}
+			conn.Release()
+		}
+		if ctx.Err() == nil {
+			a.log.Warn("notification listener restarting", "err", err)
+			time.Sleep(2 * time.Second)
+		}
+	}
+}
+
+func (a *Agent) poke() {
+	select {
+	case a.wake <- struct{}{}:
+	default:
+	}
+}
+
+// ---------- deployments ----------
+
+func (a *Agent) processPending(ctx context.Context) {
+	for ctx.Err() == nil {
+		j, ok, err := a.claim(ctx)
+		if err != nil {
+			a.log.Error("claim deployment", "err", err)
+			return
+		}
+		if !ok {
+			return
+		}
+		a.log.Info("deploying", "deployment", j.ID, "service", j.ServiceID, "revision", j.Revision, "image", j.Spec.Image)
+		if err := a.deploy(ctx, j); err != nil {
+			a.fail(ctx, j, err)
+		}
+	}
+}
+
+func (a *Agent) claim(ctx context.Context) (job, bool, error) {
+	var j job
+	found := false
+	err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
+		var spec []byte
+		err := tx.QueryRow(ctx, `
+			SELECT d.id, d.org_id, d.service_id, s.project_id, d.revision, d.spec, o.suspended, o.slug, o.scan_policy
+			FROM deployments d
+			JOIN services s ON s.id = d.service_id
+			JOIN orgs o ON o.id = d.org_id
+			WHERE d.status = 'pending'
+			ORDER BY d.created_at
+			LIMIT 1
+			FOR UPDATE OF d SKIP LOCKED`).Scan(&j.ID, &j.OrgID, &j.ServiceID, &j.ProjectID, &j.Revision, &spec, &j.Suspended, &j.OrgSlug, &j.ScanPolicy)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(spec, &j.Spec); err != nil {
+			return fmt.Errorf("decode spec: %w", err)
+		}
+		found = true
+		_, err = tx.Exec(ctx, `UPDATE deployments SET status = 'deploying', message = 'starting', updated_at = now() WHERE id = $1`, j.ID)
+		return err
+	})
+	return j, found, err
+}
+
+func (a *Agent) setMessage(ctx context.Context, id, msg string) {
+	_, _ = a.pool.Exec(ctx, `UPDATE deployments SET message = $2, updated_at = now() WHERE id = $1`, id, msg)
+}
+
+func (a *Agent) fail(ctx context.Context, j job, err error) {
+	msg := err.Error()
+	if len(msg) > 2000 {
+		msg = msg[:2000]
+	}
+	a.log.Warn("deployment failed", "deployment", j.ID, "err", msg)
+	_, _ = a.pool.Exec(ctx, `UPDATE deployments SET status = 'failed', message = $2, updated_at = now() WHERE id = $1`, j.ID, msg)
+	_ = db.Audit(ctx, a.pool, j.OrgID, "", "deployment.failed", "service:"+j.ServiceID,
+		map[string]any{"revision": j.Revision, "error": truncate(msg, 300)}, "")
+	a.alertEvent(ctx, j.OrgID, j.ServiceID, "deploy_failed",
+		fmt.Sprintf("Revision %d (%s) failed: %s", j.Revision, j.Spec.Image, truncate(firstLine(msg), 300)))
+}
+
+func containerName(j job) string {
+	return fmt.Sprintf("ps-%s-r%d", model.Compact(j.ServiceID)[:12], j.Revision)
+}
+
+func (a *Agent) deploy(ctx context.Context, j job) error {
+	if j.Suspended {
+		return errors.New("organization is suspended")
+	}
+	if err := a.checkPolicy(j.Spec); err != nil {
+		return fmt.Errorf("rejected by policy: %w", err)
+	}
+	// An organization may only run images from its own registry namespace. Pulls always
+	// hit the registry with org-scoped credentials, so a locally cached image of another
+	// tenant can never be reused through a different spelling of the reference.
+	if err := registry.CheckNamespace(j.Spec.Image, a.cfg.RegistryHost, j.OrgSlug); err != nil {
+		return fmt.Errorf("rejected by policy: %w", err)
+	}
+	netName, err := a.ensureNetwork(ctx, j)
+	if err != nil {
+		return err
+	}
+
+	a.setMessage(ctx, j.ID, "pulling image "+j.Spec.Image)
+	pctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	err = a.dk.ImagePull(pctx, j.Spec.Image, a.pullAuth(j.Spec.Image, j.OrgSlug))
+	cancel()
+	if err != nil {
+		return fmt.Errorf("could not pull image %s: %w", j.Spec.Image, err)
+	}
+	if a.cfg.ScannerEnabled {
+		if err := a.gate(ctx, j); err != nil {
+			return err
+		}
+	}
+
+	env, err := a.buildEnv(ctx, j)
+	if err != nil {
+		return err
+	}
+	name := containerName(j)
+	_ = a.dk.ContainerRemove(ctx, name) // leftover from an interrupted attempt
+
+	a.setMessage(ctx, j.ID, "starting container")
+	id, err := a.dk.ContainerCreate(ctx, name, a.containerConfig(j, netName, env))
+	if err != nil {
+		return fmt.Errorf("create container: %w", err)
+	}
+	cleanup := func() { _ = a.dk.ContainerRemove(context.Background(), id) }
+	if err := a.dk.ContainerStart(ctx, id); err != nil {
+		cleanup()
+		return fmt.Errorf("start container: %w", err)
+	}
+
+	a.setMessage(ctx, j.ID, "waiting for health check")
+	if err := a.waitHealthy(ctx, id, netName, j.Spec); err != nil {
+		cleanup()
+		return err
+	}
+
+	old, err := a.promote(ctx, j, id, name)
+	if err != nil {
+		cleanup()
+		return err
+	}
+	a.syncCaddy(ctx, true) // traffic moves to the new container before the old one stops
+	for _, oid := range old {
+		if oid != "" {
+			_ = a.dk.ContainerStop(ctx, oid, 10)
+			_ = a.dk.ContainerRemove(ctx, oid)
+		}
+	}
+	_ = db.Audit(ctx, a.pool, j.OrgID, "", "deployment.live", "service:"+j.ServiceID,
+		map[string]any{"revision": j.Revision, "image": j.Spec.Image}, "")
+	a.log.Info("deployment live", "deployment", j.ID, "container", name)
+	a.reconcile(ctx)
+	return nil
+}
+
+// checkPolicy is the last line of defence: it re-validates everything the API already checked.
+func (a *Agent) checkPolicy(s model.Spec) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	if s.CPUMillis > a.cfg.MaxCPUMillis {
+		return fmt.Errorf("CPU %d exceeds the host maximum of %d millicores", s.CPUMillis, a.cfg.MaxCPUMillis)
+	}
+	if s.MemoryMB > a.cfg.MaxMemoryMB {
+		return fmt.Errorf("memory %d MB exceeds the host maximum of %d MB", s.MemoryMB, a.cfg.MaxMemoryMB)
+	}
+	if a.cfg.Runtime != "runsc" && !a.cfg.AllowInsecureRuntime {
+		return errors.New("tenant containers must run under gVisor")
+	}
+	return nil
+}
+
+func (a *Agent) ensureNetwork(ctx context.Context, j job) (string, error) {
+	name := model.NetworkName(j.ProjectID)
+	n, err := a.dk.NetworkInspect(ctx, name)
+	switch {
+	case docker.IsNotFound(err):
+		if err := a.dk.NetworkCreate(ctx, name, map[string]string{
+			"platform.managed": "true", "platform.org": j.OrgID, "platform.project": j.ProjectID,
+		}); err != nil {
+			return "", fmt.Errorf("create network: %w", err)
+		}
+	case err != nil:
+		return "", fmt.Errorf("inspect network: %w", err)
+	case n.Labels["platform.org"] != j.OrgID || n.Labels["platform.project"] != j.ProjectID:
+		return "", fmt.Errorf("network %s belongs to another tenant", name)
+	}
+	// Caddy must reach the app; in development the agent container needs it for health checks.
+	if err := a.dk.NetworkConnect(ctx, name, a.cfg.CaddyContainer); err != nil {
+		return "", fmt.Errorf("connect proxy to network: %w", err)
+	}
+	if a.cfg.AgentContainer != "" {
+		if err := a.dk.NetworkConnect(ctx, name, a.cfg.AgentContainer); err != nil {
+			return "", fmt.Errorf("connect agent to network: %w", err)
+		}
+	}
+	return name, nil
+}
+
+func (a *Agent) buildEnv(ctx context.Context, j job) ([]string, error) {
+	env := make([]string, 0, len(j.Spec.Env)+8)
+	keys := make([]string, 0, len(j.Spec.Env))
+	for k := range j.Spec.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		env = append(env, k+"="+j.Spec.Env[k])
+	}
+	rows, err := a.pool.Query(ctx, `SELECT name, value_enc FROM secrets WHERE service_id = $1 ORDER BY name`, j.ServiceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var enc []byte
+		if err := rows.Scan(&name, &enc); err != nil {
+			return nil, err
+		}
+		plain, err := a.box.Open(enc, "secret:"+j.ServiceID+":"+name)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt secret %s: %w", name, err)
+		}
+		env = append(env, name+"="+string(plain))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return append(env, "PORT="+strconv.Itoa(j.Spec.Port)), nil
+}
+
+func (a *Agent) containerConfig(j job, netName string, env []string) docker.ContainerConfig {
+	hc := docker.HostConfig{
+		Runtime:    a.cfg.Runtime,
+		Memory:     int64(j.Spec.MemoryMB) << 20,
+		MemorySwap: int64(j.Spec.MemoryMB) << 20, // no swap
+		NanoCPUs:   int64(j.Spec.CPUMillis) * 1_000_000,
+		PidsLimit:  256,
+		CapDrop:    []string{"ALL"},
+		// Enough for common images (nginx, node, python) to start and drop privileges.
+		// Excluded on purpose: NET_RAW, SYS_*, MKNOD, AUDIT_WRITE, SETFCAP, SETPCAP.
+		CapAdd:        []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID", "NET_BIND_SERVICE", "KILL"},
+		SecurityOpt:   []string{"no-new-privileges:true"},
+		Privileged:    false,
+		NetworkMode:   netName,
+		RestartPolicy: docker.RestartPolicy{Name: "unless-stopped"},
+		LogConfig:     docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "10m", "max-file": "3"}},
+	}
+	if j.Spec.VolumePath != "" {
+		hc.Mounts = []docker.Mount{{Type: "volume", Source: "pv-" + model.Compact(j.ServiceID), Target: j.Spec.VolumePath}}
+	}
+	return docker.ContainerConfig{
+		Image: j.Spec.Image,
+		Env:   env,
+		Labels: map[string]string{
+			"platform.managed":    "true",
+			"platform.org":        j.OrgID,
+			"platform.project":    j.ProjectID,
+			"platform.service":    j.ServiceID,
+			"platform.deployment": j.ID,
+		},
+		HostConfig: hc,
+	}
+}
+
+func (a *Agent) waitHealthy(ctx context.Context, id, netName string, s model.Spec) error {
+	client := &http.Client{
+		Timeout:       3 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	lastErr := errors.New("no answer yet")
+	for time.Now().Before(deadline) {
+		info, err := a.dk.ContainerInspect(ctx, id)
+		if err != nil {
+			return fmt.Errorf("inspect container: %w", err)
+		}
+		if !info.State.Running {
+			reason := fmt.Sprintf("exit code %d", info.State.ExitCode)
+			if info.State.OOMKilled {
+				reason = "killed: out of memory, raise the memory limit"
+			}
+			return fmt.Errorf("container stopped (%s)%s", reason, a.tail(ctx, id))
+		}
+		if ip := info.NetworkSettings.Networks[netName].IPAddress; ip != "" {
+			u := "http://" + net.JoinHostPort(ip, strconv.Itoa(s.Port)) + s.HealthPath
+			resp, err := client.Get(u)
+			if err == nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+				resp.Body.Close()
+				if resp.StatusCode < 500 {
+					return nil
+				}
+				lastErr = fmt.Errorf("health check %s returned HTTP %d", s.HealthPath, resp.StatusCode)
+			} else {
+				lastErr = fmt.Errorf("nothing answering on port %d", s.Port)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return fmt.Errorf("not healthy after 90 s: %v%s", lastErr, a.tail(ctx, id))
+}
+
+// tail returns the last log lines of a container, for failure messages shown to the client.
+func (a *Agent) tail(ctx context.Context, id string) string {
+	rc, err := a.dk.ContainerLogs(ctx, id, 0, false, "15")
+	if err != nil {
+		return ""
+	}
+	defer rc.Close()
+	var lines []string
+	_ = docker.Demux(rc, func(_ byte, line string) {
+		if _, msg, ok := strings.Cut(line, " "); ok {
+			line = msg
+		}
+		lines = append(lines, truncate(line, 200))
+	})
+	if len(lines) == 0 {
+		return ""
+	}
+	return "\n--- last log lines ---\n" + strings.Join(lines, "\n")
+}
+
+func (a *Agent) promote(ctx context.Context, j job, id, name string) ([]string, error) {
+	var old []string
+	err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			UPDATE deployments SET status = 'superseded', updated_at = now()
+			WHERE service_id = $1 AND status = 'live' AND id <> $2
+			RETURNING coalesce(container_id, '')`, j.ServiceID, j.ID)
+		if err != nil {
+			return err
+		}
+		if old, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
+			UPDATE deployments SET status = 'live', message = '', container_id = $2, container_name = $3, updated_at = now()
+			WHERE id = $1`, j.ID, id, name)
+		return err
+	})
+	return old, err
+}
+
+// ---------- reconcile ----------
+
+func (a *Agent) reconcile(ctx context.Context) {
+	type live struct {
+		DepID, ContainerID, OrgID, ProjectID, ServiceID string
+		Suspended                                       bool
+	}
+	rows, err := a.pool.Query(ctx, `
+		SELECT d.id, coalesce(d.container_id, ''), d.org_id, s.project_id, d.service_id, o.suspended
+		FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id
+		WHERE d.status = 'live'`)
+	if err != nil {
+		a.log.Error("reconcile: load live deployments", "err", err)
+		return
+	}
+	lives, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (live, error) {
+		var l live
+		err := r.Scan(&l.DepID, &l.ContainerID, &l.OrgID, &l.ProjectID, &l.ServiceID, &l.Suspended)
+		return l, err
+	})
+	if err != nil {
+		a.log.Error("reconcile: scan", "err", err)
+		return
+	}
+	rows, err = a.pool.Query(ctx, `SELECT id::text FROM deployments WHERE status IN ('live', 'deploying', 'pending')`)
+	if err != nil {
+		a.log.Error("reconcile: load active ids", "err", err)
+		return
+	}
+	activeIDs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return
+	}
+	keep := map[string]bool{}
+	for _, id := range activeIDs {
+		keep[id] = true
+	}
+
+	containers, err := a.dk.ContainerList(ctx, "platform.managed=true")
+	if err != nil {
+		a.log.Error("reconcile: list containers", "err", err)
+		return
+	}
+	byDep := map[string]docker.ContainerSummary{}
+	for _, c := range containers {
+		dep := c.Labels["platform.deployment"]
+		if !keep[dep] {
+			a.log.Info("removing orphan container", "container", strings.Join(c.Names, ","))
+			_ = a.dk.ContainerStop(ctx, c.ID, 10)
+			_ = a.dk.ContainerRemove(ctx, c.ID)
+			continue
+		}
+		byDep[dep] = c
+	}
+
+	a.mu.Lock()
+	a.ticks++
+	force := a.ticks%4 == 0 // re-verify network attachments and push Caddy config every minute
+	a.mu.Unlock()
+
+	// A recreated proxy or agent container loses its tenant network attachments
+	// (on every upgrade, for instance). Re-attach both to every live project network,
+	// otherwise routes break and health probes report healthy apps as down.
+	for _, l := range lives {
+		if l.Suspended {
+			continue
+		}
+		netName := model.NetworkName(l.ProjectID)
+		a.mu.Lock()
+		known := a.attached[netName]
+		a.mu.Unlock()
+		if known && !force {
+			continue
+		}
+		err := a.dk.NetworkConnect(ctx, netName, a.cfg.CaddyContainer)
+		if err == nil && a.cfg.AgentContainer != "" {
+			err = a.dk.NetworkConnect(ctx, netName, a.cfg.AgentContainer)
+		}
+		a.mu.Lock()
+		a.attached[netName] = err == nil
+		a.mu.Unlock()
+		if err != nil {
+			a.log.Warn("attach to project network", "network", netName, "err", err)
+		}
+	}
+
+	var running []target
+	for _, l := range lives {
+		c, ok := byDep[l.DepID]
+		if l.Suspended {
+			if ok && c.State == "running" {
+				a.log.Info("stopping container of suspended organization", "org", l.OrgID)
+				_ = a.dk.ContainerStop(ctx, c.ID, 10)
+			}
+			continue
+		}
+		if !ok {
+			a.log.Warn("live container missing, redeploying", "deployment", l.DepID)
+			_, _ = a.pool.Exec(ctx, `UPDATE deployments SET status = 'pending', message = 'container was lost, redeploying', updated_at = now() WHERE id = $1`, l.DepID)
+			a.poke()
+			continue
+		}
+		if c.State != "running" {
+			if err := a.dk.ContainerStart(ctx, c.ID); err != nil {
+				a.log.Warn("restart container", "deployment", l.DepID, "err", err)
+				continue
+			}
+		}
+		running = append(running, target{c.ID, l.DepID, l.OrgID, l.ProjectID, l.ServiceID})
+	}
+
+	a.mu.Lock()
+	a.targets = running
+	a.mu.Unlock()
+
+	a.logs.ensure(ctx, running)
+	a.syncCaddy(ctx, force)
+}
+
+func (a *Agent) currentTargets() []target {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]target(nil), a.targets...)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+func auditAgent(ctx context.Context, a *Agent, orgID, action, target string, detail any) error {
+	return db.Audit(ctx, a.pool, orgID, "", action, target, detail, "")
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}

@@ -1,0 +1,243 @@
+{{define "title"}}{{.Service.Slug}} · {{.Project.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>{{.Service.Slug}}</h1>
+  <a class="right" href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a>
+</div>
+
+<section class="grid">
+  <div class="card">
+    <h2>Deployments</h2>
+    {{if .CanEdit}}
+    <form method="post" action="{{.Path}}/deploy" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" {{if not .Service.Image}}disabled title="Set an image first"{{end}}>Deploy current settings</button>
+    </form>
+    {{end}}
+    <table id="deployments" data-status-url="{{.Path}}/status.json">
+      <thead><tr><th>Rev</th><th>Status</th><th>Image</th><th>When</th><th></th></tr></thead>
+      <tbody>
+      {{range .Deployments}}
+        <tr>
+          <td>{{.Revision}}</td>
+          <td><span class="status s-{{.Status}}">{{.Status}}</span>{{with .Message}}<pre class="msg">{{.}}</pre>{{end}}</td>
+          <td><code>{{.Image}}</code></td>
+          <td class="nowrap" title="{{datetime .CreatedAt}}">{{ago .CreatedAt}}{{with .By}}<br><span class="muted small">{{.}}</span>{{end}}</td>
+          <td>{{if and $.CanEdit (or (eq .Status "superseded") (eq .Status "failed"))}}
+            <form method="post" action="{{$.Path}}/rollback/{{.Revision}}" data-confirm="Redeploy revision {{.Revision}}?">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">Redeploy</button>
+            </form>{{end}}</td>
+        </tr>
+      {{else}}
+        <tr><td colspan="5" class="muted">Not deployed yet.</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Resource usage <span class="muted small">last hour</span></h2>
+    <div id="metrics" data-url="{{.Path}}/metrics.json">
+      <figure><figcaption>CPU <span data-last="cpu"></span></figcaption><svg data-chart="cpu" viewBox="0 0 300 60" preserveAspectRatio="none" role="img" aria-label="CPU usage"></svg></figure>
+      <figure><figcaption>Memory <span data-last="memory"></span></figcaption><svg data-chart="memory" viewBox="0 0 300 60" preserveAspectRatio="none" role="img" aria-label="Memory usage"></svg></figure>
+      <p class="muted small" data-empty>No data yet. Metrics appear about a minute after the first deployment.</p>
+    </div>
+  </div>
+</section>
+
+{{with .Scan}}
+<section class="card">
+  <h2>Vulnerability scan <span class="muted small">image of the latest deployment</span></h2>
+  <p><code>{{.Image}}</code> · {{if eq .Status "done"}}{{template "sevcounts" .}} <span class="muted small">critical · high · medium · low, scanned {{ago .CreatedAt}}</span>
+    {{else if eq .Status "error"}}<span class="status s-failed">scan failed</span> <span class="muted small">{{.Error}}</span>
+    {{else}}<span class="status s-pending">{{.Status}}</span>{{end}}</p>
+  {{if $.Findings}}
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Severity</th><th>Vulnerability</th><th>Package</th><th>Installed</th><th>Fixed in</th></tr></thead>
+    <tbody>
+    {{range $.Findings}}
+      <tr><td><span class="sev-label sev-{{.Severity}}">{{.Severity}}</span></td>
+        <td><code>{{.ID}}</code><br><span class="muted small">{{.Title}}</span></td>
+        <td>{{.Pkg}}</td><td><code class="small">{{.Installed}}</code></td>
+        <td>{{if .Fixed}}<code class="small">{{.Fixed}}</code>{{else}}<span class="muted small">no fix yet</span>{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">Most severe first, up to 25 shown. Fix by rebuilding on an updated base image, then redeploying.</p>
+  {{else if eq .Status "done"}}<p class="muted small">No known vulnerabilities found.</p>{{end}}
+</section>
+{{end}}
+
+<section class="card">
+  <h2>Alerts</h2>
+  <p class="muted small">The application is checked every few seconds; after 3 failed health checks a "service down" incident opens and is resolved automatically when it answers again. Notifications go to the organization's channels.</p>
+  {{if .CanEdit}}
+  <form method="post" action="{{.Path}}/alerts" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>CPU alert (% of limit, 5 min) <input type="number" name="cpu_pct" min="1" max="100" value="{{with .AlertCPU}}{{.}}{{end}}" placeholder="off"></label>
+    <label>Memory alert (% of limit, 5 min) <input type="number" name="mem_pct" min="1" max="100" value="{{with .AlertMem}}{{.}}{{end}}" placeholder="off"></label>
+    <button type="submit" class="secondary">Save thresholds</button>
+  </form>
+  {{end}}
+  {{if .Incidents}}
+  <table>
+    <thead><tr><th>Incident</th><th>When</th></tr></thead>
+    <tbody>
+    {{range .Incidents}}
+      <tr><td>{{if eq .Status "firing"}}<span class="status s-failed">open</span>{{else if eq .Status "resolved"}}<span class="status s-live">resolved</span>{{else}}<span class="status">event</span>{{end}}
+          <strong>{{.Title}}</strong><br><span class="muted small">{{.Summary}}</span></td>
+        <td class="nowrap">{{ago .StartedAt}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</section>
+
+<section class="card">
+  <h2>Logs</h2>
+  <div class="inline">
+    <input id="log-search" placeholder="Filter text" maxlength="100" aria-label="Filter logs">
+    <label class="check"><input type="checkbox" id="log-follow" checked> Follow</label>
+  </div>
+  <pre id="logs" class="logs" data-url="{{.Path}}/logs.json" aria-live="polite">Loading…</pre>
+</section>
+
+<section class="card">
+  <h2>Settings</h2>
+  <form method="post" action="{{.Path}}/settings" class="settings">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <fieldset {{if not .CanEdit}}disabled{{end}}>
+    <label class="wide">Container image <input name="image" value="{{.Service.Image}}" placeholder="nginx:1.27-alpine or registry.example.com/team/app:1.4.2" required></label>
+    <label>Port the app listens on <input type="number" name="port" min="1" max="65535" value="{{.Service.Port}}" required></label>
+    <label>Health check path <input name="health_path" value="{{.Service.HealthPath}}" required></label>
+    <label>CPU (millicores, 1000 = 1 core) <input type="number" name="cpu_millis" min="50" max="8000" step="50" value="{{.Service.CPUMillis}}" required></label>
+    <label>Memory (MB) <input type="number" name="memory_mb" min="32" max="16384" step="32" value="{{.Service.MemoryMB}}" required></label>
+    <label class="wide">Persistent folder (optional) <input name="volume_path" value="{{.Service.VolumePath}}" placeholder="/data"></label>
+    <label class="wide">Environment variables, one KEY=value per line (not secret)
+      <textarea name="env" rows="5" spellcheck="false">{{.EnvText}}</textarea></label>
+    <div class="wide inline">
+      <button type="submit" name="deploy" value="1">Save and deploy</button>
+      <button type="submit" class="secondary">Save only</button>
+    </div>
+    </fieldset>
+  </form>
+</section>
+
+{{if .Service.VolumePath}}{{with .Backups}}
+<section class="card" id="backups">
+  <h2>Backups <span class="muted small">persistent folder {{$.Service.VolumePath}}</span></h2>
+  <p class="muted small">Encrypted with a key unique to your organization and kept off the application server. Retention: 7 daily, 4 weekly and 6 monthly snapshots; safety snapshots taken before a restore are always kept.</p>
+  {{if $.CanEdit}}
+  <div class="inline">
+    <form method="post" action="{{$.Path}}/backups"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Back up now</button></form>
+    <form method="post" action="{{$.Path}}/backups/settings" class="inline flush">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <label class="check"><input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}}> nightly backup at</label>
+      <select name="hour" aria-label="Backup hour (UTC)">
+        {{range $h := hours}}<option value="{{$h}}" {{if eq $h $.Backups.Hour}}selected{{end}}>{{printf "%02d:00" $h}} UTC</option>{{end}}
+      </select>
+      <button type="submit" class="secondary">Save schedule</button>
+    </form>
+  </div>
+  {{end}}
+
+  {{if .Jobs}}
+  <h3>Recent jobs</h3>
+  <table>
+    <thead><tr><th>Job</th><th>Status</th><th>When</th></tr></thead>
+    <tbody>
+    {{range .Jobs}}
+      <tr><td>{{.Kind}}{{if .Snapshot}} <code class="small">{{slice .Snapshot 0 8}}</code>{{end}} <span class="muted small">{{.Trigger}}</span></td>
+        <td><span class="status s-{{if eq .Status "done"}}live{{else if eq .Status "error"}}failed{{else}}pending{{end}}">{{.Status}}</span>{{with .Message}}<pre class="msg">{{.}}</pre>{{end}}</td>
+        <td class="nowrap">{{ago .CreatedAt}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+
+  <h3>Snapshots</h3>
+  {{if .Snaps}}
+  <table>
+    <thead><tr><th>Snapshot</th><th>Taken (UTC)</th><th>Size</th><th>Files</th><th></th></tr></thead>
+    <tbody>
+    {{range .Snaps}}
+      <tr><td><code>{{.Short}}</code> {{if eq .Tags "pre-restore"}}<span class="badge">before restore</span>{{else if eq .Tags "schedule"}}<span class="badge">nightly</span>{{end}}</td>
+        <td class="nowrap">{{datetime .TakenAt}}</td><td>{{.HumanSize}}</td><td>{{if .Files}}{{.Files}}{{else}}—{{end}}</td>
+        <td>{{if $.CanRestore}}
+          <form method="post" action="{{$.Path}}/backups/restore/{{.ID}}" class="inline flush" data-confirm="Replace the current data of {{$.Service.Slug}} with snapshot {{.Short}}? The application stops briefly. A safety snapshot of the current data is taken first.">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input name="confirm" placeholder="type {{$.Service.Slug}}" required size="12" aria-label="Confirm service ID">
+            <button class="secondary" type="submit">Restore</button>
+          </form>{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted small">No snapshots yet.</p>{{end}}
+</section>
+{{end}}{{end}}
+
+<section class="grid">
+  <div class="card">
+    <h2>Secrets</h2>
+    <p class="muted small">Encrypted at rest and passed to the app as environment variables. Values are never shown again.</p>
+    {{if .Secrets}}
+    <ul class="list">
+      {{range .Secrets}}<li><code>{{.}}</code>
+        {{if $.CanEdit}}<form method="post" action="{{$.Path}}/secrets/{{.}}/delete" class="inline-form" data-confirm="Delete secret {{.}}?">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link danger" type="submit">Delete</button></form>{{end}}</li>{{end}}
+    </ul>
+    {{end}}
+    {{if .CanEdit}}
+    <form method="post" action="{{.Path}}/secrets" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="name" placeholder="NAME (e.g. DATABASE_URL)" pattern="[A-Z_][A-Z0-9_]{0,63}" required aria-label="Secret name">
+      <input type="password" name="value" placeholder="value" maxlength="8192" autocomplete="off" required aria-label="Secret value">
+      <button type="submit">Save secret</button>
+    </form>
+    {{end}}
+  </div>
+
+  <div class="card">
+    <h2>Custom domains</h2>
+    {{range .Domains}}
+      <div class="domain">
+        <strong>{{.Hostname}}</strong>
+        {{if .Verified}}<span class="status s-live">verified</span>{{else}}<span class="status s-pending">waiting for DNS</span>{{end}}
+        {{if not .Verified}}
+        <ol class="small">
+          <li>TXT record <code class="select">_platform-challenge.{{.Hostname}}</code> with value <code class="select">platform-verify={{.Token}}</code></li>
+          <li>CNAME (or A record) for <code>{{.Hostname}}</code> pointing to this platform</li>
+        </ol>
+        {{end}}
+        {{if $.CanEdit}}
+        <div class="inline">
+          {{if not .Verified}}<form method="post" action="{{$.Path}}/domains/{{.ID}}/verify"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary">Verify</button></form>{{end}}
+          <form method="post" action="{{$.Path}}/domains/{{.ID}}/delete" data-confirm="Remove {{.Hostname}}?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link danger" type="submit">Remove</button></form>
+        </div>
+        {{end}}
+      </div>
+    {{else}}<p class="muted small">The app is always reachable at its platform address. Add your own domain here; HTTPS is automatic once it is verified.</p>{{end}}
+    {{if .CanEdit}}
+    <form method="post" action="{{.Path}}/domains" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="hostname" placeholder="shop.example.com" required aria-label="Domain">
+      <button type="submit">Add domain</button>
+    </form>
+    {{end}}
+  </div>
+</section>
+
+{{if .CanEdit}}
+<section class="card danger-zone">
+  <h2>Delete service</h2>
+  <p>Stops the container and deletes the service with its settings, secrets and domains. Data in the persistent folder is kept by the operator until it is cleaned up.</p>
+  <form method="post" action="{{.Path}}/delete" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input name="confirm" placeholder="type {{.Service.Slug}} to confirm" required aria-label="Confirm service ID">
+    <button class="danger" type="submit">Delete service</button>
+  </form>
+</section>
+{{end}}
+{{end}}

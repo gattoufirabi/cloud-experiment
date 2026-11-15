@@ -1,0 +1,17 @@
+{{define "title"}}Set up two-step login{{end}}
+{{define "content"}}
+<section class="narrow card">
+  <h1>Set up two-step login</h1>
+  <p>Two-step login is required for every account. Add this key to an authenticator app (Aegis, FreeOTP, 2FAS, Google Authenticator…), then enter the 6-digit code it shows.</p>
+  <dl class="kv">
+    <dt>Key</dt><dd><code class="select">{{.Secret}}</code></dd>
+    <dt>Type</dt><dd>Time-based, 6 digits, 30 seconds</dd>
+  </dl>
+  <details><summary>Setup link for apps that accept one</summary><code class="select wrap">{{.URI}}</code></details>
+  <form method="post" action="/totp/setup" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>6-digit code <input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required autofocus></label>
+    <button type="submit">Confirm and continue</button>
+  </form>
+</section>
+{{end}}

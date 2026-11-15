@@ -1,0 +1,12 @@
+{{define "title"}}Log in{{end}}
+{{define "content"}}
+<section class="narrow card">
+  <h1>Log in</h1>
+  <form method="post" action="/login" class="stack">
+    <label>Email <input type="email" name="email" value="{{.Email}}" autocomplete="username" required autofocus></label>
+    <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+    <button type="submit">Continue</button>
+  </form>
+  <p class="muted small">Accounts are created by invitation only. A two-step code from your authenticator app is required after your password.</p>
+</section>
+{{end}}

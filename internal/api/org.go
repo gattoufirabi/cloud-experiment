@@ -1,0 +1,424 @@
+package api
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"platform/internal/db"
+	"platform/internal/model"
+	"platform/internal/secure"
+)
+
+func itoa(n int) string                 { return strconv.Itoa(n) }
+func roleAtLeast(role, min string) bool { return model.RoleAtLeast(role, min) }
+
+func isUniqueViolation(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "23505"
+}
+
+type orgInfo struct {
+	ID, Slug, Name, Role, PlanID, ScanPolicy string
+	Suspended                                bool
+}
+
+func (o *orgInfo) Path() string { return "/o/" + o.Slug }
+
+// org resolves the {org} path segment for the current user and enforces a minimum role.
+// Organizations the user does not belong to answer 404, so their existence is not revealed.
+func (s *Server) org(w http.ResponseWriter, r *http.Request, minRole string) (*orgInfo, bool) {
+	var o orgInfo
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT o.id, o.slug, o.name, m.role, o.plan_id, o.scan_policy, o.suspended
+		FROM orgs o JOIN memberships m ON m.org_id = o.id
+		WHERE o.slug = $1 AND m.user_id = $2`, r.PathValue("org"), sessionFrom(r).UserID).
+		Scan(&o.ID, &o.Slug, &o.Name, &o.Role, &o.PlanID, &o.ScanPolicy, &o.Suspended)
+	if err != nil {
+		if !isNoRows(err) {
+			s.serverError(w, r, err)
+		} else {
+			s.notFound(w, r)
+		}
+		return nil, false
+	}
+	if !model.RoleAtLeast(o.Role, minRole) {
+		s.forbidden(w, r)
+		return nil, false
+	}
+	if o.Suspended && r.Method == http.MethodPost {
+		back(w, r, o.Path(), "", "This organization is suspended. Contact the platform operator.")
+		return nil, false
+	}
+	return &o, true
+}
+
+func (s *Server) audit(r *http.Request, q db.Execer, orgID, action, target string, detail any) {
+	if err := db.Audit(r.Context(), q, orgID, sessionFrom(r).UserID, action, target, detail, clientIP(r)); err != nil {
+		s.log.Error("audit", "action", action, "err", err)
+	}
+}
+
+// ---------- home and organization ----------
+
+func (s *Server) home(w http.ResponseWriter, r *http.Request) {
+	type row struct{ Slug, Name, Role string }
+	rows, err := s.pool.Query(r.Context(), `
+		SELECT o.slug, o.name, m.role FROM memberships m JOIN orgs o ON o.id = m.org_id
+		WHERE m.user_id = $1 ORDER BY o.name`, sessionFrom(r).UserID)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	orgs, err := pgx.CollectRows(rows, pgx.RowToStructByPos[row])
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if len(orgs) == 1 && r.URL.Query().Get("msg") == "" {
+		http.Redirect(w, r, "/o/"+orgs[0].Slug, http.StatusSeeOther)
+		return
+	}
+	s.render(w, r, "home", http.StatusOK, data{"Orgs": orgs})
+}
+
+type plan struct {
+	Name                                       string
+	MaxServices, MaxCPU, MaxMemory, MaxDomains int
+}
+
+func (s *Server) loadPlan(r *http.Request, q pgx.Tx, id string) (plan, error) {
+	var p plan
+	err := q.QueryRow(r.Context(), `SELECT name, max_services, max_cpu_millis, max_memory_mb, max_domains FROM plans WHERE id = $1`, id).
+		Scan(&p.Name, &p.MaxServices, &p.MaxCPU, &p.MaxMemory, &p.MaxDomains)
+	return p, err
+}
+
+func (s *Server) orgPage(w http.ResponseWriter, r *http.Request) {
+	o, ok := s.org(w, r, "viewer")
+	if !ok {
+		return
+	}
+	s.renderOrg(w, r, o, http.StatusOK, data{})
+}
+
+func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, status int, d data) {
+	type project struct {
+		Slug, Name string
+		Services   int
+	}
+	type usage struct{ Services, CPU, Memory int }
+	type regToken struct {
+		ID, Name string
+		CanPush  bool
+		Created  time.Time
+		LastUsed *time.Time
+	}
+	var projects []project
+	var u usage
+	var p plan
+	var tokens []regToken
+	var scans []scanSummary
+	var channels []channelView
+	var incidents []incidentView
+	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(r.Context(), `
+			SELECT p.slug, p.name, (SELECT count(*) FROM services s WHERE s.project_id = p.id)
+			FROM projects p ORDER BY p.name`)
+		if err != nil {
+			return err
+		}
+		if projects, err = pgx.CollectRows(rows, pgx.RowToStructByPos[project]); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(r.Context(), `SELECT count(*), coalesce(sum(cpu_millis), 0), coalesce(sum(memory_mb), 0) FROM services`).
+			Scan(&u.Services, &u.CPU, &u.Memory); err != nil {
+			return err
+		}
+		if p, err = s.loadPlan(r, tx, o.PlanID); err != nil {
+			return err
+		}
+		rows, err = tx.Query(r.Context(), `SELECT id, name, can_push, created_at, last_used_at FROM registry_tokens ORDER BY created_at DESC`)
+		if err != nil {
+			return err
+		}
+		if tokens, err = pgx.CollectRows(rows, pgx.RowToStructByPos[regToken]); err != nil {
+			return err
+		}
+		rows, err = tx.Query(r.Context(), `SELECT `+scanColumns+` FROM image_scans ORDER BY created_at DESC LIMIT 10`)
+		if err != nil {
+			return err
+		}
+		if scans, err = pgx.CollectRows(rows, pgx.RowToStructByPos[scanSummary]); err != nil {
+			return err
+		}
+		if channels, err = loadChannels(r, tx); err != nil {
+			return err
+		}
+		incidents, err = loadIncidents(r, tx, "", 12)
+		return err
+	})
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	type member struct{ ID, Name, Email, Role string }
+	rows, err := s.pool.Query(r.Context(), `
+		SELECT u.id, u.name, u.email, m.role FROM memberships m JOIN users u ON u.id = m.user_id
+		WHERE m.org_id = $1 ORDER BY u.name`, o.ID)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	members, err := pgx.CollectRows(rows, pgx.RowToStructByPos[member])
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	type pending struct {
+		Email, Role string
+		Expires     time.Time
+	}
+	var invites []pending
+	if model.RoleAtLeast(o.Role, "admin") {
+		rows, err := s.pool.Query(r.Context(), `
+			SELECT email, role, expires_at FROM invites
+			WHERE org_id = $1 AND accepted_at IS NULL AND expires_at > now() ORDER BY created_at DESC`, o.ID)
+		if err != nil {
+			s.serverError(w, r, err)
+			return
+		}
+		if invites, err = pgx.CollectRows(rows, pgx.RowToStructByPos[pending]); err != nil {
+			s.serverError(w, r, err)
+			return
+		}
+	}
+	d["Org"], d["Projects"], d["Members"], d["Invites"], d["Usage"], d["Plan"] = o, projects, members, invites, u, p
+	d["RegistryHost"], d["RegistryTokens"], d["Scans"] = s.cfg.RegistryHost, tokens, scans
+	d["Channels"], d["Incidents"], d["AlertKinds"] = channels, incidents, alertKinds
+	s.render(w, r, "org", status, d)
+}
+
+func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
+	o, ok := s.org(w, r, "admin")
+	if !ok {
+		return
+	}
+	slug := strings.TrimSpace(r.PostFormValue("slug"))
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	if name == "" {
+		name = slug
+	}
+	if !model.ValidSlug(slug) || len(name) > 100 {
+		back(w, r, o.Path(), "", "Project ID: 2 to 20 characters, lowercase letters, digits and dashes, starting with a letter or digit.")
+		return
+	}
+	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(r.Context(), `INSERT INTO projects (org_id, slug, name) VALUES ($1, $2, $3)`, o.ID, slug, name); err != nil {
+			return err
+		}
+		s.audit(r, tx, o.ID, "project.created", "project:"+slug, nil)
+		return nil
+	})
+	if isUniqueViolation(err) {
+		back(w, r, o.Path(), "", "A project with this ID already exists.")
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	back(w, r, o.Path()+"/p/"+slug, "Project created.", "")
+}
+
+func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
+	o, ok := s.org(w, r, "admin")
+	if !ok {
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(r.PostFormValue("email")))
+	role := r.PostFormValue("role")
+	if !strings.Contains(email, "@") || len(email) > 254 || !model.ValidRole(role) {
+		back(w, r, o.Path(), "", "Enter a valid email address and role.")
+		return
+	}
+	if role == "owner" && o.Role != "owner" {
+		back(w, r, o.Path(), "", "Only owners can invite other owners.")
+		return
+	}
+	token := secure.NewToken()
+	if _, err := s.pool.Exec(r.Context(), `
+		INSERT INTO invites (org_id, email, role, token_hash, created_by, expires_at)
+		VALUES ($1, $2, $3, $4, $5, now() + interval '7 days')`,
+		o.ID, email, role, secure.HashToken(token), sessionFrom(r).UserID); err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.audit(r, s.pool, o.ID, "invite.created", "email:"+email, map[string]string{"role": role})
+	// Shown once, never stored in clear: the admin sends it to the person over a channel they trust.
+	s.renderOrg(w, r, o, http.StatusOK, data{"InviteLink": s.cfg.BaseURL + "/invite/" + token, "InviteEmail": email})
+}
+
+func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {
+	o, ok := s.org(w, r, "admin")
+	if !ok {
+		return
+	}
+	userID := r.PathValue("user")
+	var role string
+	if err := s.pool.QueryRow(r.Context(), `SELECT role FROM memberships WHERE org_id = $1 AND user_id = $2`, o.ID, userID).Scan(&role); err != nil {
+		back(w, r, o.Path(), "", "Member not found.")
+		return
+	}
+	if role == "owner" {
+		var owners int
+		_ = s.pool.QueryRow(r.Context(), `SELECT count(*) FROM memberships WHERE org_id = $1 AND role = 'owner'`, o.ID).Scan(&owners)
+		if o.Role != "owner" || owners <= 1 {
+			back(w, r, o.Path(), "", "Only an owner can remove an owner, and the last owner cannot be removed.")
+			return
+		}
+	}
+	if _, err := s.pool.Exec(r.Context(), `DELETE FROM memberships WHERE org_id = $1 AND user_id = $2`, o.ID, userID); err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.audit(r, s.pool, o.ID, "member.removed", "user:"+userID, nil)
+	back(w, r, o.Path(), "Member removed.", "")
+}
+
+func (s *Server) auditPage(w http.ResponseWriter, r *http.Request) {
+	o, ok := s.org(w, r, "admin")
+	if !ok {
+		return
+	}
+	type event struct {
+		At                          time.Time
+		Who, Action, Target, Detail string
+		IP                          string
+	}
+	var events []event
+	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(r.Context(), `
+			SELECT a.created_at, coalesce(u.email, 'platform'), a.action, a.target, a.detail::text, coalesce(a.ip, '')
+			FROM audit_events a LEFT JOIN users u ON u.id = a.user_id
+			ORDER BY a.id DESC LIMIT 300`)
+		if err != nil {
+			return err
+		}
+		events, err = pgx.CollectRows(rows, pgx.RowToStructByPos[event])
+		return err
+	})
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.render(w, r, "audit", http.StatusOK, data{"Org": o, "Events": events})
+}
+
+// ---------- projects ----------
+
+type projectInfo struct{ ID, Slug, Name string }
+
+func (s *Server) loadProject(r *http.Request, tx pgx.Tx) (*projectInfo, error) {
+	var p projectInfo
+	err := tx.QueryRow(r.Context(), `SELECT id, slug, name FROM projects WHERE slug = $1`, r.PathValue("project")).Scan(&p.ID, &p.Slug, &p.Name)
+	return &p, err
+}
+
+func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
+	o, ok := s.org(w, r, "viewer")
+	if !ok {
+		return
+	}
+	type svc struct {
+		Slug, Image, Status string
+	}
+	var p *projectInfo
+	var services []svc
+	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+		var err error
+		if p, err = s.loadProject(r, tx); err != nil {
+			return err
+		}
+		rows, err := tx.Query(r.Context(), `
+			SELECT s.slug, s.image,
+			       coalesce((SELECT d.status FROM deployments d WHERE d.service_id = s.id ORDER BY d.revision DESC LIMIT 1), 'not deployed')
+			FROM services s WHERE s.project_id = $1 ORDER BY s.slug`, p.ID)
+		if err != nil {
+			return err
+		}
+		services, err = pgx.CollectRows(rows, pgx.RowToStructByPos[svc])
+		return err
+	})
+	if isNoRows(err) {
+		s.notFound(w, r)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services})
+}
+
+func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
+	o, ok := s.org(w, r, "admin")
+	if !ok {
+		return
+	}
+	slug := r.PathValue("project")
+	if r.PostFormValue("confirm") != slug {
+		back(w, r, o.Path()+"/p/"+slug, "", "Type the project ID exactly to confirm deletion.")
+		return
+	}
+	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(r.Context(), `DELETE FROM projects WHERE slug = $1`, slug)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return pgx.ErrNoRows
+		}
+		s.audit(r, tx, o.ID, "project.deleted", "project:"+slug, nil)
+		_, err = tx.Exec(r.Context(), `SELECT pg_notify('deployments', '')`)
+		return err
+	})
+	if err != nil && !isNoRows(err) {
+		s.serverError(w, r, err)
+		return
+	}
+	back(w, r, o.Path(), "Project deleted. Its applications are being stopped.", "")
+}
+
+// checkQuota verifies the plan allows the change. excludeID skips the service being edited.
+func (s *Server) checkQuota(r *http.Request, tx pgx.Tx, o *orgInfo, excludeID string, cpu, mem int, newService bool) error {
+	p, err := s.loadPlan(r, tx, o.PlanID)
+	if err != nil {
+		return err
+	}
+	var n, usedCPU, usedMem int
+	if err := tx.QueryRow(r.Context(), `
+		SELECT count(*), coalesce(sum(cpu_millis), 0), coalesce(sum(memory_mb), 0)
+		FROM services WHERE id::text <> $1`, excludeID).Scan(&n, &usedCPU, &usedMem); err != nil {
+		return err
+	}
+	switch {
+	case newService && n+1 > p.MaxServices:
+		return quotaError(fmt.Sprintf("Your %s plan allows %d services.", p.Name, p.MaxServices))
+	case usedCPU+cpu > p.MaxCPU:
+		return quotaError(fmt.Sprintf("CPU limit reached: your plan allows %d millicores in total and %d are already allocated to other services.", p.MaxCPU, usedCPU))
+	case usedMem+mem > p.MaxMemory:
+		return quotaError(fmt.Sprintf("Memory limit reached: your plan allows %d MB in total and %d MB are already allocated to other services.", p.MaxMemory, usedMem))
+	}
+	return nil
+}
+
+type quotaError string
+
+func (e quotaError) Error() string { return string(e) }

@@ -1,0 +1,177 @@
+# Production stack (single server). Requires Phase 0 on the host:
+#   host/install-gvisor.sh, host/tenant-firewall.sh (+ its systemd unit), host/isolation-test.sh passing.
+# Configure deploy/.env from deploy/.env.example, create the master key, then:
+#   docker compose -f compose.prod.yml up -d --build
+name: platform
+
+x-app: &app
+  build: ..
+  image: platform:${PLATFORM_VERSION:-local}
+  restart: unless-stopped
+  read_only: true
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  logging: &logging
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+  environment: &env
+    BASE_URL: https://${CONSOLE_HOST:?set CONSOLE_HOST}
+    CONSOLE_HOST: ${CONSOLE_HOST}
+    APPS_DOMAIN: ${APPS_DOMAIN:?set APPS_DOMAIN}
+    COOKIE_SECURE: "true"
+    MASTER_KEY_FILE: /run/secrets/master.key
+    VICTORIALOGS_URL: http://victorialogs:9428
+    VICTORIAMETRICS_URL: http://victoriametrics:8428
+    REGISTRY_HOST: ${REGISTRY_HOST:?set REGISTRY_HOST}
+    REGISTRY_INTERNAL_SECRET: ${REGISTRY_INTERNAL_SECRET:?set REGISTRY_INTERNAL_SECRET}
+  volumes:
+    - ./secrets/master.key:/run/secrets/master.key:ro
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: platform_owner
+      POSTGRES_PASSWORD: ${OWNER_DB_PASSWORD:?set OWNER_DB_PASSWORD}
+      POSTGRES_DB: platform
+      API_DB_PASSWORD: ${API_DB_PASSWORD:?set API_DB_PASSWORD}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:?set AGENT_DB_PASSWORD}
+    volumes:
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      - /srv/platform/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform_owner -d platform"]
+      interval: 5s
+      retries: 20
+    deploy: { resources: { limits: { memory: 512M } } }
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      <<: *env
+      ADMIN_DATABASE_URL: postgres://platform_owner:${OWNER_DB_PASSWORD}@postgres:5432/platform
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    <<: *app
+    command: ["api"]
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://platform_api:${API_DB_PASSWORD}@postgres:5432/platform
+      ADMIN_DATABASE_URL: postgres://platform_owner:${OWNER_DB_PASSWORD}@postgres:5432/platform
+      REGISTRY_EVENTS_SECRET: ${REGISTRY_EVENTS_SECRET:?set REGISTRY_EVENTS_SECRET}
+      REGISTRY_TOKEN_KEY_FILE: /run/secrets/registry-token.key
+    volumes:
+      - ./secrets/master.key:/run/secrets/master.key:ro
+      - ./secrets/registry-token.key:/run/secrets/registry-token.key:ro
+    healthcheck:
+      test: ["CMD", "/platform", "healthcheck"]
+      interval: 15s
+      retries: 5
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy: { resources: { limits: { memory: 256M, cpus: "1.0" } } }
+
+  agent:
+    <<: *app
+    container_name: platform-agent
+    command: ["agent"]
+    user: "0:0"
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://platform_agent:${AGENT_DB_PASSWORD}@postgres:5432/platform
+      RUNTIME: runsc
+      AGENT_CONTAINER: platform-agent
+      CADDY_CONTAINER: platform-caddy
+      TLS_MODE: acme
+      SCANNER_ENABLED: "true"
+      BACKUPS_ENABLED: "true"
+      ALERTS_ENABLED: "true"
+      # Off-site repositories (rest-server on a machine you own, reached over WireGuard).
+      # Leave empty to keep repositories in the local "platform-backups" volume (not off-site).
+      BACKUP_REST_URL: ${BACKUP_REST_URL:-}
+      BACKUP_VOLUME: platform-backups
+      TRIVY_TOKEN: ${TRIVY_TOKEN:?set TRIVY_TOKEN}
+      MAX_CPU_MILLIS: ${MAX_CPU_MILLIS:-4000}
+      MAX_MEMORY_MB: ${MAX_MEMORY_MB:-8192}
+    volumes:
+      - ./secrets/master.key:/run/secrets/master.key:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - caddy-admin:/run/caddy
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      caddy: { condition: service_started }
+    deploy: { resources: { limits: { memory: 256M } } }
+
+  caddy:
+    image: caddy:2.10-alpine
+    container_name: platform-caddy
+    restart: unless-stopped
+    logging: *logging
+    command: ["caddy", "run", "--config", "/etc/caddy/initial.json"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./caddy/initial-prod.json:/etc/caddy/initial.json:ro
+      - caddy-admin:/run/caddy
+      - /srv/platform/caddy:/data
+    deploy: { resources: { limits: { memory: 256M } } }
+
+  registry:
+    image: registry:2.8.3
+    restart: unless-stopped
+    logging: *logging
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["/bin/sh", "-c", "sed \"s|__EVENTS_SECRET__|$${REGISTRY_EVENTS_SECRET}|\" /etc/registry/config.tmpl.yml > /tmp/config.yml && exec registry serve /tmp/config.yml"]
+    environment:
+      REGISTRY_EVENTS_SECRET: ${REGISTRY_EVENTS_SECRET}
+      REGISTRY_AUTH_TOKEN_REALM: https://${REGISTRY_HOST}/token
+    volumes:
+      - ./registry/config.tmpl.yml:/etc/registry/config.tmpl.yml:ro
+      - ./secrets/registry-token.crt:/etc/registry/token.crt:ro
+      - /srv/platform/registry:/var/lib/registry
+    deploy: { resources: { limits: { memory: 256M } } }
+
+  trivy:
+    image: aquasec/trivy:0.58.1
+    restart: unless-stopped
+    logging: *logging
+    command: ["server", "--listen", "0.0.0.0:4954", "--cache-dir", "/cache"]
+    environment:
+      TRIVY_TOKEN: ${TRIVY_TOKEN}
+    volumes: ["/srv/platform/trivy:/cache"]
+    deploy: { resources: { limits: { memory: 1G } } }
+
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.15.0-victorialogs
+    restart: unless-stopped
+    logging: *logging
+    command: ["-storageDataPath=/vlogs", "-retentionPeriod=14d"]
+    volumes: ["/srv/platform/vlogs:/vlogs"]
+    deploy: { resources: { limits: { memory: 512M } } }
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.110.0
+    restart: unless-stopped
+    logging: *logging
+    command: ["-storageDataPath=/vmdata", "-retentionPeriod=30d"]
+    volumes: ["/srv/platform/vmdata:/vmdata"]
+    deploy: { resources: { limits: { memory: 512M } } }
+
+networks:
+  default:
+    name: platform-core
+
+volumes:
+  caddy-admin:
+  backups:
+    name: platform-backups

@@ -1,0 +1,19 @@
+{{define "title"}}Join {{.Invite.OrgName}}{{end}}
+{{define "content"}}
+<section class="narrow card">
+  <h1>Join {{.Invite.OrgName}}</h1>
+  <p>You are invited as <strong>{{.Invite.Role}}</strong> with the address <strong>{{.Invite.Email}}</strong>.</p>
+  <form method="post" class="stack">
+    {{if .Invite.UserExists}}
+      <p class="muted">You already have an account. Enter its password to accept.</p>
+      <label>Password <input type="password" name="password" autocomplete="current-password" required autofocus></label>
+    {{else}}
+      <label>Your name <input name="name" maxlength="100" autocomplete="name" required autofocus></label>
+      <label>Password (at least 12 characters) <input type="password" name="password" minlength="12" maxlength="256" autocomplete="new-password" required></label>
+      <label>Repeat password <input type="password" name="password2" minlength="12" maxlength="256" autocomplete="new-password" required></label>
+    {{end}}
+    <button type="submit">Accept invitation</button>
+  </form>
+  <p class="muted small">Next, you will set up two-step login with an authenticator app.</p>
+</section>
+{{end}}

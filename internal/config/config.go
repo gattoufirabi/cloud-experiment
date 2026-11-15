@@ -1,0 +1,139 @@
+// Package config reads all settings from environment variables.
+package config
+
+import (
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type Config struct {
+	DatabaseURL      string // role-specific: platform_api for the API, platform_agent for the agent
+	AdminDatabaseURL string // owner role: migrations and admin commands only
+
+	ListenAddr   string // public HTTP (behind Caddy)
+	InternalAddr string // internal HTTP: TLS ask endpoint, health; never proxied
+	BaseURL      string // public console URL, e.g. https://console.example.com
+	ConsoleHost  string
+	AppsDomain   string // default app hosts: <service>-<project>-<org>.<AppsDomain>
+	CookieSecure bool
+
+	MasterKeyFile      string
+	VictoriaLogsURL    string
+	VictoriaMetricsURL string
+
+	// agent
+	DockerSocket         string
+	Runtime              string // runsc (gVisor) in production
+	AllowInsecureRuntime bool   // development only: allows runc
+	CaddyAdminSocket     string
+	CaddyContainer       string
+	AgentContainer       string // set when the agent itself runs in a container (dev)
+	TLSMode              string // off | acme
+	APIUpstream          string
+	APIInternalURL       string
+	ACMECA               string
+	MaxCPUMillis         int
+	MaxMemoryMB          int
+
+	// registry and scanning
+	RegistryHost           string // public host[:port] clients push to, e.g. registry.example.com
+	RegistryUpstream       string // registry container address for Caddy
+	RegistryInternalSecret string // derives the agent's org-scoped pull passwords
+	RegistryEventsSecret   string // bearer secret of the registry push webhook
+	RegistryTokenKeyFile   string // ECDSA key signing registry tokens (API only)
+	ScannerEnabled         bool
+	TrivyImage             string
+	TrivyServerURL         string
+	TrivyToken             string
+	ScannerNetwork         string // network of the short-lived scan containers
+	ScannerInsecure        bool   // dev only: registry served over plain HTTP
+
+	// per-client backups (restic)
+	BackupsEnabled bool
+	ResticImage    string
+	BackupVolume   string // local mode: Docker volume holding one repository per org
+	BackupRestURL  string // off-site mode: rest:http(s)://user:pass@host:8000 (org ID is appended)
+	BackupNetwork  string // network for off-site mode; local mode runs with no network
+	BackupKeep     string // restic forget policy
+
+	// alerts
+	AlertsEnabled     bool
+	AlertInterval     time.Duration // health probe / evaluation period
+	AlertAllowPrivate bool          // dev only: let notifications reach private addresses
+}
+
+func Load() Config {
+	return Config{
+		DatabaseURL:          env("DATABASE_URL", ""),
+		AdminDatabaseURL:     env("ADMIN_DATABASE_URL", ""),
+		ListenAddr:           env("LISTEN_ADDR", ":8080"),
+		InternalAddr:         env("INTERNAL_ADDR", ":8081"),
+		BaseURL:              strings.TrimRight(env("BASE_URL", "http://console.localhost:8088"), "/"),
+		ConsoleHost:          env("CONSOLE_HOST", "console.localhost"),
+		AppsDomain:           env("APPS_DOMAIN", "apps.localhost"),
+		CookieSecure:         envBool("COOKIE_SECURE", false),
+		MasterKeyFile:        env("MASTER_KEY_FILE", "/run/secrets/master.key"),
+		VictoriaLogsURL:      strings.TrimRight(env("VICTORIALOGS_URL", ""), "/"),
+		VictoriaMetricsURL:   strings.TrimRight(env("VICTORIAMETRICS_URL", ""), "/"),
+		DockerSocket:         env("DOCKER_SOCKET", "/var/run/docker.sock"),
+		Runtime:              env("RUNTIME", "runsc"),
+		AllowInsecureRuntime: envBool("ALLOW_INSECURE_RUNTIME", false),
+		CaddyAdminSocket:     env("CADDY_ADMIN_SOCKET", "/run/caddy/admin.sock"),
+		CaddyContainer:       env("CADDY_CONTAINER", "platform-caddy"),
+		AgentContainer:       env("AGENT_CONTAINER", ""),
+		TLSMode:              env("TLS_MODE", "off"),
+		APIUpstream:          env("API_UPSTREAM", "api:8080"),
+		APIInternalURL:       strings.TrimRight(env("API_INTERNAL_URL", "http://api:8081"), "/"),
+		ACMECA:               env("ACME_CA", "https://acme-v02.api.letsencrypt.org/directory"),
+		MaxCPUMillis:         envInt("MAX_CPU_MILLIS", 4000),
+		MaxMemoryMB:          envInt("MAX_MEMORY_MB", 8192),
+
+		RegistryHost:           env("REGISTRY_HOST", ""),
+		RegistryUpstream:       env("REGISTRY_UPSTREAM", "registry:5000"),
+		RegistryInternalSecret: env("REGISTRY_INTERNAL_SECRET", ""),
+		RegistryEventsSecret:   env("REGISTRY_EVENTS_SECRET", ""),
+		RegistryTokenKeyFile:   env("REGISTRY_TOKEN_KEY_FILE", "/run/secrets/registry-token.key"),
+		ScannerEnabled:         envBool("SCANNER_ENABLED", false),
+		TrivyImage:             env("TRIVY_IMAGE", "aquasec/trivy:0.58.1"),
+		TrivyServerURL:         env("TRIVY_SERVER_URL", "http://trivy:4954"),
+		TrivyToken:             env("TRIVY_TOKEN", ""),
+		ScannerNetwork:         env("SCANNER_NETWORK", "platform-core"),
+		ScannerInsecure:        envBool("SCANNER_INSECURE", false),
+
+		BackupsEnabled: envBool("BACKUPS_ENABLED", false),
+		ResticImage:    env("RESTIC_IMAGE", "restic/restic:0.17.3"),
+		BackupVolume:   env("BACKUP_VOLUME", "platform-backups"),
+		BackupRestURL:  strings.TrimRight(env("BACKUP_REST_URL", ""), "/"),
+		BackupNetwork:  env("BACKUP_NETWORK", "platform-core"),
+		BackupKeep:     env("BACKUP_KEEP", "--keep-daily 7 --keep-weekly 4 --keep-monthly 6"),
+
+		AlertsEnabled:     envBool("ALERTS_ENABLED", false),
+		AlertInterval:     time.Duration(envInt("ALERT_INTERVAL_SECONDS", 30)) * time.Second,
+		AlertAllowPrivate: envBool("ALERT_ALLOW_PRIVATE_TARGETS", false),
+	}
+}
+
+func env(k, def string) string {
+	if v, ok := os.LookupEnv(k); ok && v != "" {
+		return v
+	}
+	return def
+}
+
+func envBool(k string, def bool) bool {
+	v, err := strconv.ParseBool(env(k, strconv.FormatBool(def)))
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+func envInt(k string, def int) int {
+	v, err := strconv.Atoi(env(k, strconv.Itoa(def)))
+	if err != nil {
+		return def
+	}
+	return v
+}

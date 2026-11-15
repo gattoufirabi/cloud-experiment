@@ -1,0 +1,20 @@
+{
+  "admin": { "listen": "unix//run/caddy/admin.sock", "origins": ["caddy"] },
+  "apps": {
+    "http": {
+      "servers": {
+        "main": {
+          "listen": [":80"],
+          "automatic_https": { "disable": true },
+          "routes": [
+            {
+              "match": [{ "host": ["console.localhost"] }],
+              "handle": [{ "handler": "reverse_proxy", "upstreams": [{ "dial": "api:8080" }] }],
+              "terminal": true
+            }
+          ]
+        }
+      }
+    }
+  }
+}

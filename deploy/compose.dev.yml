@@ -1,0 +1,182 @@
+# Local development stack. Console: http://console.localhost:8088
+# Tenant apps: http://<service>-<project>-<org>.apps.localhost:8088
+#
+# DEVELOPMENT ONLY: tenant containers run with runc (no gVisor sandbox), passwords are
+# fixed, and TLS is off. See README "Production" for the hardened setup.
+name: platform-dev
+
+x-app: &app
+  build: ..
+  image: platform:dev
+  restart: unless-stopped
+  read_only: true
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  environment: &env
+    BASE_URL: http://console.localhost:8088
+    CONSOLE_HOST: console.localhost
+    APPS_DOMAIN: apps.localhost
+    MASTER_KEY_FILE: /run/secrets/master.key
+    VICTORIALOGS_URL: http://victorialogs:9428
+    VICTORIAMETRICS_URL: http://victoriametrics:8428
+    # Registry: "localhost:8088" because Docker allows plain HTTP only for localhost.
+    REGISTRY_HOST: localhost:8088
+    REGISTRY_INTERNAL_SECRET: dev-registry-internal-secret
+    # Dev only: lets alert channels point at the local ntfy container (a private address).
+    ALERT_ALLOW_PRIVATE_TARGETS: "true"
+  volumes:
+    - ./dev-secrets/master.key:/run/secrets/master.key:ro
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: platform_owner
+      POSTGRES_PASSWORD: dev-owner-password
+      POSTGRES_DB: platform
+      API_DB_PASSWORD: dev-api-password
+      AGENT_DB_PASSWORD: dev-agent-password
+    volumes:
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform_owner -d platform"]
+      interval: 3s
+      retries: 20
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      <<: *env
+      ADMIN_DATABASE_URL: postgres://platform_owner:dev-owner-password@postgres:5432/platform
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    <<: *app
+    command: ["api"]
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://platform_api:dev-api-password@postgres:5432/platform
+      ADMIN_DATABASE_URL: postgres://platform_owner:dev-owner-password@postgres:5432/platform
+      REGISTRY_EVENTS_SECRET: dev-registry-events-secret
+      REGISTRY_TOKEN_KEY_FILE: /run/secrets/registry-token.key
+    volumes:
+      - ./dev-secrets/master.key:/run/secrets/master.key:ro
+      - ./dev-secrets/registry-token.key:/run/secrets/registry-token.key:ro
+    healthcheck:
+      test: ["CMD", "/platform", "healthcheck"]
+      interval: 10s
+      retries: 5
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  agent:
+    <<: *app
+    container_name: platform-agent
+    command: ["agent"]
+    user: "0:0" # Docker socket access; in production the agent runs the same way, never exposed
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://platform_agent:dev-agent-password@postgres:5432/platform
+      RUNTIME: runc
+      ALLOW_INSECURE_RUNTIME: "true"
+      AGENT_CONTAINER: platform-agent
+      CADDY_CONTAINER: platform-caddy
+      TLS_MODE: "off"
+      SCANNER_ENABLED: "true"
+      TRIVY_TOKEN: dev-trivy-token
+      # Dev only: scan containers share the Docker VM's network so they reach the registry
+      # at localhost:8088 and the Trivy server at 127.0.0.1:4954, like the Docker daemon does.
+      SCANNER_NETWORK: host
+      TRIVY_SERVER_URL: http://127.0.0.1:4954
+      SCANNER_INSECURE: "true"
+      # Per-client backups: one restic repository per organization in this volume.
+      # Production: set BACKUP_REST_URL to a rest-server you own (off-site, over WireGuard).
+      BACKUPS_ENABLED: "true"
+      BACKUP_VOLUME: platform-backups
+      ALERTS_ENABLED: "true"
+      ALERT_INTERVAL_SECONDS: "5"
+    volumes:
+      - ./dev-secrets/master.key:/run/secrets/master.key:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - caddy-admin:/run/caddy
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      caddy: { condition: service_started }
+
+  caddy:
+    image: caddy:2.10-alpine
+    container_name: platform-caddy
+    restart: unless-stopped
+    command: ["caddy", "run", "--config", "/etc/caddy/initial.json"]
+    ports: ["8088:80"]
+    volumes:
+      - ./caddy/initial.json:/etc/caddy/initial.json:ro
+      - caddy-admin:/run/caddy
+      - caddy-data:/data
+
+  registry:
+    image: registry:2.8.3
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    entrypoint: ["/bin/sh", "-c", "sed \"s|__EVENTS_SECRET__|$${REGISTRY_EVENTS_SECRET}|\" /etc/registry/config.tmpl.yml > /tmp/config.yml && exec registry serve /tmp/config.yml"]
+    environment:
+      REGISTRY_EVENTS_SECRET: dev-registry-events-secret
+      REGISTRY_AUTH_TOKEN_REALM: http://localhost:8088/token
+    volumes:
+      - ./registry/config.tmpl.yml:/etc/registry/config.tmpl.yml:ro
+      - ./dev-secrets/registry-token.crt:/etc/registry/token.crt:ro
+      - registry-data:/var/lib/registry
+
+  trivy:
+    image: aquasec/trivy:0.58.1
+    restart: unless-stopped
+    command: ["server", "--listen", "0.0.0.0:4954", "--cache-dir", "/cache"]
+    environment:
+      TRIVY_TOKEN: dev-trivy-token
+    ports: ["127.0.0.1:4954:4954"] # dev: reachable by scan containers on the VM network
+    volumes: [trivy-cache:/cache]
+
+  # Local notification receiver for testing alert channels: http://localhost:8090
+  ntfy:
+    image: binwiederhier/ntfy:v2.11.0
+    restart: unless-stopped
+    command: ["serve"]
+    environment:
+      NTFY_BASE_URL: http://localhost:8090
+      NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
+    ports: ["127.0.0.1:8090:80"]
+    volumes: [ntfy-data:/var/lib/ntfy]
+
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.15.0-victorialogs
+    restart: unless-stopped
+    command: ["-storageDataPath=/vlogs", "-retentionPeriod=14d"]
+    volumes: [vlogs:/vlogs]
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.110.0
+    restart: unless-stopped
+    command: ["-storageDataPath=/vmdata", "-retentionPeriod=30d"]
+    volumes: [vmdata:/vmdata]
+
+networks:
+  default:
+    name: platform-core
+
+volumes:
+  pgdata:
+  caddy-admin:
+  caddy-data:
+  vlogs:
+  vmdata:
+  registry-data:
+  trivy-cache:
+  backups:
+    name: platform-backups
+  ntfy-data:

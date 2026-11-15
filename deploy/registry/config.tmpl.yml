@@ -1,0 +1,34 @@
+# CNCF Distribution registry. __EVENTS_SECRET__ is filled in at start from
+# REGISTRY_EVENTS_SECRET; the token realm comes from REGISTRY_AUTH_TOKEN_REALM.
+version: 0.1
+log:
+  level: info
+  formatter: json
+storage:
+  filesystem:
+    rootdirectory: /var/lib/registry
+  delete:
+    enabled: true
+  redirect:
+    disable: true
+http:
+  addr: :5000
+  headers:
+    X-Content-Type-Options: [nosniff]
+auth:
+  token:
+    realm: https://registry.example.com/token
+    service: platform-registry
+    issuer: platform
+    rootcertbundle: /etc/registry/token.crt
+notifications:
+  endpoints:
+    - name: platform
+      url: http://api:8081/internal/registry-events
+      headers:
+        Authorization: [Bearer __EVENTS_SECRET__]
+      timeout: 5s
+      threshold: 5
+      backoff: 10s
+      ignore:
+        actions: [pull]

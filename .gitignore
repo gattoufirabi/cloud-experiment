@@ -1,0 +1,5 @@
+deploy/dev-secrets/
+deploy/secrets/
+deploy/.env
+/platform
+/platform.exe

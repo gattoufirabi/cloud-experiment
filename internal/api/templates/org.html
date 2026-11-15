@@ -1,0 +1,194 @@
+{{define "title"}}{{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>{{.Org.Name}}</h1>
+  <span class="badge">{{.Org.Role}}</span>
+  {{if .Org.Suspended}}<span class="badge bad">suspended</span>{{end}}
+  {{if roleAtLeast .Org.Role "admin"}}<a class="right" href="{{.Org.Path}}/audit">Audit log</a>{{end}}
+</div>
+
+{{with .InviteLink}}
+<div class="card highlight">
+  <h2>Invitation link for {{$.InviteEmail}}</h2>
+  <p>Send this link privately. It works once and expires in 7 days. It will not be shown again.</p>
+  <code class="select wrap">{{.}}</code>
+</div>
+{{end}}
+
+<section class="grid">
+  <div class="card">
+    <h2>Plan: {{.Plan.Name}}</h2>
+    <table class="meters">
+      <tr><td>Services</td><td>{{.Usage.Services}} / {{.Plan.MaxServices}}</td></tr>
+      <tr><td>CPU allocated</td><td>{{.Usage.CPU}} / {{.Plan.MaxCPU}} millicores</td></tr>
+      <tr><td>Memory allocated</td><td>{{.Usage.Memory}} / {{.Plan.MaxMemory}} MB</td></tr>
+      <tr><td>Custom domains</td><td>up to {{.Plan.MaxDomains}}</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Projects</h2>
+    {{if .Projects}}
+    <ul class="list">
+      {{range .Projects}}<li><a href="{{$.Org.Path}}/p/{{.Slug}}"><strong>{{.Name}}</strong></a> <span class="muted">{{.Services}} service{{if ne .Services 1}}s{{end}}</span></li>{{end}}
+    </ul>
+    {{else}}<p class="muted">No projects yet.</p>{{end}}
+    {{if roleAtLeast .Org.Role "admin"}}
+    <form method="post" action="{{.Org.Path}}/projects" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="slug" placeholder="project-id" pattern="[a-z0-9][a-z0-9-]{1,19}" required aria-label="Project ID">
+      <input name="name" placeholder="Display name" maxlength="100" aria-label="Display name">
+      <button type="submit">Create project</button>
+    </form>
+    {{end}}
+  </div>
+</section>
+
+{{if .RegistryHost}}
+{{with .RegistryToken}}
+<div class="card highlight">
+  <h2>Registry token "{{$.RegistryTokenName}}"</h2>
+  <p>Copy it now: it will not be shown again. Store it in your CI secrets.</p>
+  <code class="select wrap">{{.}}</code>
+</div>
+{{end}}
+<section class="grid">
+  <div class="card">
+    <h2>Image registry</h2>
+    <p class="muted small">Private images for this organization live under <code>{{.RegistryHost}}/{{.Org.Slug}}/</code>. Every pushed image is scanned for known vulnerabilities.</p>
+    <pre class="msg">docker login {{.RegistryHost}} -u {{.Org.Slug}}
+docker tag myapp:1.0 {{.RegistryHost}}/{{.Org.Slug}}/myapp:1.0
+docker push {{.RegistryHost}}/{{.Org.Slug}}/myapp:1.0</pre>
+    <p class="small">Scan policy: <strong>{{if eq .Org.ScanPolicy "block-critical"}}deployments with critical vulnerabilities are refused{{else}}vulnerabilities are reported, deployments are not blocked{{end}}</strong></p>
+    {{if .RegistryTokens}}
+    <table>
+      <thead><tr><th>Token</th><th>Access</th><th>Last used</th><th></th></tr></thead>
+      <tbody>
+      {{range .RegistryTokens}}
+        <tr><td>{{.Name}}</td><td>{{if .CanPush}}push + pull{{else}}pull{{end}}</td>
+          <td class="nowrap">{{with .LastUsed}}{{ago .}}{{else}}never{{end}}</td>
+          <td>{{if roleAtLeast $.Org.Role "admin"}}<form method="post" action="{{$.Org.Path}}/registry-tokens/{{.ID}}/delete" data-confirm="Revoke token {{.Name}}?">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link danger" type="submit">Revoke</button></form>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
+    {{if roleAtLeast .Org.Role "admin"}}
+    <form method="post" action="{{.Org.Path}}/registry-tokens" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="name" placeholder="token name, e.g. ci" maxlength="60" required aria-label="Token name">
+      <label class="check"><input type="checkbox" name="push" value="1" checked> can push</label>
+      <button type="submit">Create token</button>
+    </form>
+    {{end}}
+  </div>
+
+  <div class="card">
+    <h2>Recent image scans</h2>
+    {{if .Scans}}
+    <table>
+      <thead><tr><th>Image</th><th>Findings</th><th>When</th></tr></thead>
+      <tbody>
+      {{range .Scans}}
+        <tr><td><code class="small">{{.Image}}</code><br><span class="muted small">{{.Source}}</span></td>
+          <td>{{if eq .Status "done"}}{{template "sevcounts" .}}{{else if eq .Status "error"}}<span class="status s-failed" title="{{.Error}}">scan failed</span>{{else}}<span class="status s-pending">{{.Status}}</span>{{end}}</td>
+          <td class="nowrap">{{ago .CreatedAt}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="muted small">No images scanned yet. Pushes and deployments are scanned automatically.</p>{{end}}
+  </div>
+</section>
+{{end}}
+
+<section class="grid" id="alerts">
+  <div class="card">
+    <h2>Incidents</h2>
+    {{if .Incidents}}
+    <table>
+      <thead><tr><th>What</th><th>Service</th><th>When</th></tr></thead>
+      <tbody>
+      {{range .Incidents}}
+        <tr><td>{{if eq .Status "firing"}}<span class="status s-failed">open</span>{{else if eq .Status "resolved"}}<span class="status s-live">resolved</span>{{else}}<span class="status">event</span>{{end}}
+            <strong>{{.Title}}</strong><br><span class="muted small">{{.Summary}}</span></td>
+          <td>{{.Service}}</td>
+          <td class="nowrap">{{ago .StartedAt}}{{if eq .Status "resolved"}}{{with .ResolvedAt}}<br><span class="muted small">resolved {{ago .}}</span>{{end}}{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="muted small">No incidents. Every live application is checked continuously.</p>{{end}}
+  </div>
+
+  <div class="card">
+    <h2>Notification channels</h2>
+    {{if .Channels}}
+    <ul class="list">
+    {{range .Channels}}
+      <li class="channel">
+        <strong>{{.Name}}</strong> <span class="badge">{{.Kind}}</span>
+        <span class="muted small wrap-inline">{{.URL}}{{if .Topic}}/{{.Topic}}{{end}}{{if .HasSecret}} · {{if eq .Kind "webhook"}}signed{{else}}token{{end}}{{end}}</span>
+        <div class="muted small">{{range $i, $e := .Events}}{{if $i}}, {{end}}{{$e}}{{end}}</div>
+        {{if .LastStatus}}<div class="small">last delivery: {{if eq .LastStatus "sent"}}<span class="status s-live">sent</span>{{else}}<span class="status s-failed" title="{{.LastStatus}}">failed</span> <span class="muted">{{.LastStatus}}</span>{{end}}{{with .LastDelivery}} {{ago .}}{{end}}</div>{{end}}
+        {{if roleAtLeast $.Org.Role "admin"}}
+        <div class="inline flush">
+          <form method="post" action="{{$.Org.Path}}/alerts/channels/{{.ID}}/test"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">Send test</button></form>
+          <form method="post" action="{{$.Org.Path}}/alerts/channels/{{.ID}}/delete" data-confirm="Remove channel {{.Name}}?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link danger" type="submit">Remove</button></form>
+        </div>
+        {{end}}
+      </li>
+    {{end}}
+    </ul>
+    {{else}}<p class="muted small">No channels yet: incidents are only visible here.</p>{{end}}
+    {{if roleAtLeast .Org.Role "admin"}}
+    <form method="post" action="{{.Org.Path}}/alerts/channels" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="inline flush">
+        <input name="name" placeholder="name, e.g. on-call" maxlength="60" required aria-label="Channel name">
+        <select name="kind" aria-label="Channel type"><option value="ntfy">ntfy push</option><option value="webhook">webhook (JSON)</option></select>
+      </div>
+      <input name="url" placeholder="https://ntfy.example.com or https://hooks.example.com/platform" required aria-label="URL">
+      <div class="inline flush">
+        <input name="topic" placeholder="ntfy topic" maxlength="64" aria-label="ntfy topic">
+        <input type="password" name="secret" placeholder="webhook signing secret or ntfy token (optional)" autocomplete="off" aria-label="Secret">
+      </div>
+      <div class="inline flush small">{{range .AlertKinds}}<label class="check"><input type="checkbox" name="events" value="{{.}}" checked> {{.}}</label>{{end}}</div>
+      <button type="submit">Add channel</button>
+      <p class="muted small">Webhooks receive JSON with an <code>X-Platform-Signature: sha256=…</code> header (HMAC of the body with your secret). Private and internal addresses are refused.</p>
+    </form>
+    {{end}}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Members</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+    <tbody>
+    {{range .Members}}
+      <tr><td>{{.Name}}</td><td>{{.Email}}</td><td>{{.Role}}</td>
+        <td>{{if and (roleAtLeast $.Org.Role "admin") (ne .Email $.User.Email)}}
+          <form method="post" action="{{$.Org.Path}}/members/{{.ID}}/remove" data-confirm="Remove {{.Email}} from {{$.Org.Name}}?">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link danger" type="submit">Remove</button>
+          </form>{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{if roleAtLeast .Org.Role "admin"}}
+    {{if .Invites}}
+    <h3>Pending invitations</h3>
+    <ul class="list">{{range .Invites}}<li>{{.Email}} <span class="badge">{{.Role}}</span> <span class="muted">expires {{datetime .Expires}}</span></li>{{end}}</ul>
+    {{end}}
+    <form method="post" action="{{.Org.Path}}/invites" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="email" name="email" placeholder="person@example.com" required aria-label="Email">
+      <select name="role" aria-label="Role">
+        <option value="viewer">Viewer: read only</option>
+        <option value="developer" selected>Developer: deploy and configure</option>
+        <option value="admin">Admin: projects and members</option>
+        {{if eq .Org.Role "owner"}}<option value="owner">Owner: everything</option>{{end}}
+      </select>
+      <button type="submit">Create invitation</button>
+    </form>
+  {{end}}
+</section>
+{{end}}
