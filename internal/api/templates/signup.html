@@ -1,0 +1,21 @@
+{{define "title"}}Create an account{{end}}
+{{define "content"}}
+<section class="narrow">
+  <h1>Create an account</h1>
+  <p class="lede">Start with a free {{.TrialDays}}-day trial: 2 services, half a CPU and 512 MB of memory. You will confirm your email address, then set up two-step login.</p>
+  <form method="post" action="/signup" class="stack" data-pow>
+    <input type="hidden" name="challenge" value="{{.Challenge}}">
+    <input type="hidden" name="nonce" value="">
+    <div class="hp" aria-hidden="true"><label>Website <input name="website" tabindex="-1" autocomplete="off"></label></div>
+    <label>Your name <input name="name" value="{{.Name}}" maxlength="100" autocomplete="name" required autofocus></label>
+    <label>Email <input type="email" name="email" value="{{.Email}}" maxlength="200" autocomplete="email" required></label>
+    <label>Password <span class="hint">at least 12 characters</span><input type="password" name="password" minlength="12" maxlength="256" autocomplete="new-password" required></label>
+    <label>Repeat password <input type="password" name="password2" minlength="12" maxlength="256" autocomplete="new-password" required></label>
+    <label>Organization name <span class="hint">your company or project</span><input name="org_name" value="{{.OrgName}}" maxlength="100" required></label>
+    <label>Organization ID <span class="hint">2–20 lowercase letters, digits, dashes; used in your app addresses</span><input name="org_slug" value="{{.OrgSlug}}" pattern="[a-z0-9][a-z0-9-]{1,19}" maxlength="20" required></label>
+    <div><button type="submit" class="arrow" data-pow-button>Create account</button></div>
+    <p class="small muted" data-pow-status hidden>Checking your browser… a few seconds.</p>
+  </form>
+  <p class="small muted">Already have an account? <a href="/login">Log in</a>. Read the <a href="/docs/user">user guide</a>.</p>
+</section>
+{{end}}

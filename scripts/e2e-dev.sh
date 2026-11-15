@@ -451,6 +451,73 @@ code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A -d repo= -d branch=main 
 check "builds audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'build.done' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 docker rm -f e2e-git >/dev/null 2>&1
 
+echo "== Self-signup and trials"
+T=t$RUN; TEMAIL="owner@$T.test"; TPW=correct-horse-battery-trial
+pow() { # pow <challenge>: nonce for SIGNUP_POW_BITS=8 (sha256 starting with two zero hex digits)
+  local n=0 h; while :; do h=$(printf '%s' "$1:$n" | sha256sum); [ "${h:0:2}" = 00 ] && { echo "$n"; return; }; n=$((n+1)); done; }
+challenge() { c "$1" "$BASE/signup" | grep -o 'name="challenge" value="[^"]*"' | sed 's/.*value="//;s/"$//'; }
+mail_body() { # mail_body <to> <subject text>: body of the newest matching message (Mailpit API)
+  local id; for _ in $(seq 1 20); do
+    id=$(curl -s -G "http://localhost:8025/api/v1/search" --data-urlencode "query=to:$1 subject:\"$2\"" | grep -o '"ID":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [ -n "$id" ]; then curl -s "http://localhost:8025/api/v1/message/$id"; return; fi; sleep 1
+  done; }
+signup() { # signup <jar> <email> <slug> <challenge> <nonce> [extra curl args]: prints the page
+  local jar=$1 em=$2 sl=$3 ch=$4 n=$5; shift 5
+  c "$jar" -X POST "$BASE/signup" --data-urlencode "challenge=$ch" -d "nonce=$n" -d "name=Trial Owner" --data-urlencode "email=$em" \
+    -d "password=$TPW" -d "password2=$TPW" -d "org_name=Trial $sl" -d "org_slug=$sl" "$@"; }
+CH=$(challenge jt); N=$(pow "$CH")
+if signup jt "$TEMAIL" "$T" "$CH" "$N" | grep -q "Check your email"; then ok "signup accepted, confirmation email requested"; else bad "signup form refused"; fi
+LINK=$(mail_body "$TEMAIL" "Confirm your email" | grep -o "$BASE/signup/verify/[A-Za-z0-9_-]*" | head -1)
+if [ -n "$LINK" ]; then ok "confirmation email delivered (SMTP)"; else bad "no confirmation email"; fi
+if c jt "$LINK" | grep -q "Confirm and continue"; then ok "opening the link only shows a confirm button"; else bad "verify page missing"; fi
+check "opening the link alone creates nothing" "$(owner_sql "SELECT count(*) FROM orgs WHERE slug = '$T'")" 0
+check "replayed proof of work refused" "$(signup jt "x1@$T.test" "${T}x" "$CH" "$N" | grep -c 'browser check')" 1
+check "[signup] confirmed: on to two-step login setup" "$(c jt -o /dev/null -w '%{redirect_url}' -X POST "$LINK")" "$BASE/totp/setup"
+PAGE=$(c jt "$BASE/totp/setup"); SEC=$(echo "$PAGE" | grep -o 'class="select">[A-Z2-7]\{20,\}<' | head -1 | sed 's/.*">//;s/<$//')
+check "[signup] two-step login enrolled" "$(code_of jt -X POST "$BASE/totp/setup" -d "csrf=$(echo "$PAGE" | csrf_of)" -d "code=$(admin totp-code --secret "$SEC" | tr -d '\r')")" 303
+check "confirmation link works only once" "$(code_of jx "$LINK")" 404
+check "new organization is on the Trial plan" "$(owner_sql "SELECT plan_id || ':' || (trial_ends_at > now() + interval '13 days') FROM orgs WHERE slug = '$T'")" "trial:true"
+if c jt "$BASE/o/$T" | grep -q "Trial: 14 days left"; then ok "trial banner shows the days left"; else bad "trial banner missing"; fi
+CH=$(challenge jx); N=$(pow "$CH")
+if signup jx "spam@mailinator.com" "${T}d" "$CH" "$N" | grep -q "permanent email"; then ok "disposable email domain refused"; else bad "disposable email accepted"; fi
+CH=$(challenge jx)
+if signup jx "x2@$T.test" "${T}p" "$CH" "" | grep -q "browser check"; then ok "signup without proof of work refused"; else bad "missing proof of work accepted"; fi
+CH=$(challenge jx); N=$(pow "$CH")
+signup jx "bot@$T.test" "${T}h" "$CH" "$N" -d website=http://spam.example >/dev/null
+check "honeypot: bot gets the same answer, nothing stored" "$(owner_sql "SELECT count(*) FROM signups WHERE email = 'bot@$T.test'")" 0
+CH=$(challenge jx); N=$(pow "$CH")
+if signup jx "$TEMAIL" "${T}e" "$CH" "$N" | grep -q "Check your email" && mail_body "$TEMAIL" "Your Platform account" | grep -q "already has an account"; then
+  ok "existing address: same answer on screen, owner told by email"; else bad "existing-account handling"; fi
+CSRF_T=$(c jt "$BASE/o/$T" | csrf_of)
+code_of jt -X POST "$BASE/o/$T/projects" -d csrf=$CSRF_T -d slug=app -d name=App >/dev/null
+code_of jt -X POST "$BASE/o/$T/p/app/services" -d csrf=$CSRF_T -d slug=burn -d image=nginx:1.27-alpine >/dev/null
+SVC_T=/o/$T/p/app/s/burn
+code_of jt -X POST "$BASE$SVC_T/source" -d csrf=$CSRF_T --data-urlencode "repo=https://github.com/example/app.git" -d branch=main >/dev/null
+if c jt -L "$BASE$SVC_T/builds" -d csrf=$CSRF_T -d deploy=1 | grep -q "not included in your plan"; then ok "trial: builds from git refused"; else bad "trial could start a build"; fi
+code_of jt -X POST "$BASE$SVC_T/domains" -d csrf=$CSRF_T -d hostname=shop.example.com >/dev/null
+check "trial: custom domains refused" "$(owner_sql "SELECT count(*) FROM domains d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$T'")" 0
+# A container that burns its whole CPU allowance, like a crypto miner (ANOMALY_MINUTES=2 in dev).
+mkdir -p "$TMP/burn"; printf '%s\n' 'FROM nginx:1.27-alpine' 'CMD ["sh", "-c", "yes > /dev/null & exec nginx -g \"daemon off;\""]' > "$TMP/burn/Dockerfile"
+docker build -q -t "$REG/$T/burn:1" "$(cygpath -w "$TMP/burn")" >/dev/null
+TOK_T=$(new_token jt "$T" "$CSRF_T")
+echo "$TOK_T" | dk login $REG -u "$T" --password-stdin >/dev/null; dk push "$REG/$T/burn:1" >/dev/null
+code_of jt -X POST "$BASE$SVC_T/settings" -d csrf=$CSRF_T -d "image=$REG/$T/burn:1" -d port=80 -d health_path=%2F \
+  -d cpu_millis=250 -d memory_mb=128 -d volume_path= -d env= -d deploy=1 >/dev/null
+check "[trial] CPU-burning app deployed" "$(wait_status jt $SVC_T)" live
+for _ in $(seq 1 100); do R=$(owner_sql "SELECT suspend_reason FROM orgs WHERE slug = '$T'"); [ "$R" = cpu_anomaly ] && break; sleep 3; done
+check "trial suspended automatically for sustained full CPU" "$R" cpu_anomaly
+check "suspension stops the app" "$(for _ in $(seq 1 30); do x=$(curl -s -o /dev/null -w '%{http_code}' --resolve "burn-app-$T.apps.localhost:$PORT:127.0.0.1" "http://burn-app-$T.apps.localhost:$PORT/"); [ "$x" = 404 ] && { echo stopped; break; }; sleep 2; done)" stopped
+if MSYS_NO_PATHCONV=1 docker compose -f compose.dev.yml exec -T ntfy wget -qO- "http://localhost/platform-operator/json?poll=1&since=all" 2>/dev/null | grep -q "Trial suspended: $T"; then ok "operator notified"; else bad "no operator notice"; fi
+if c jt "$BASE/o/$T" | grep -q "crypto-mining"; then ok "owner sees why the organization is suspended"; else bad "suspension reason not shown"; fi
+admin suspend-org --slug "$T" --undo >/dev/null
+owner_sql "UPDATE orgs SET trial_ends_at = now() - interval '1 minute' WHERE slug = '$T'" >/dev/null
+for _ in $(seq 1 40); do R=$(owner_sql "SELECT suspend_reason FROM orgs WHERE slug = '$T'"); [ "$R" = trial_ended ] && break; sleep 3; done
+check "expired trial suspended" "$R" trial_ended
+if mail_body "$TEMAIL" "Your trial has ended" | grep -q "has ended"; then ok "owner emailed when the trial ends"; else bad "no trial-ended email"; fi
+admin set-plan --slug "$T" --plan starter >/dev/null
+check "upgrading lifts the trial suspension" "$(owner_sql "SELECT suspended::text || ':' || suspend_reason || ':' || (trial_ends_at IS NULL) FROM orgs WHERE slug = '$T'")" "false::true"
+code_of jt -X POST "$BASE$SVC_T/delete" -d csrf=$CSRF_T -d confirm=burn >/dev/null
+
 echo "== Alerts"
 ntfy_has() { # ntfy_has <topic> <text> [tries]: wait until a message on topic contains text
   for _ in $(seq 1 "${3:-30}"); do

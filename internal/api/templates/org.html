@@ -5,6 +5,8 @@
   <span class="badge">{{.Org.Role}}</span>
   {{if .Org.Suspended}}<span class="st st-failed">suspended</span>{{end}}
 </div>
+{{if .Org.Suspended}}<p class="flash err">{{.SuspendedMessage}}</p>
+{{else if .Org.TrialEnds}}<p class="notice">Trial: {{.Org.TrialDaysLeft}} day{{if ne .Org.TrialDaysLeft 1}}s{{end}} left. Custom domains and builds from git come with a paid plan; contact the platform operator to upgrade.</p>{{end}}
 <p class="lede">Plan {{.Plan.Name}} · {{.Usage.Services}}/{{.Plan.MaxServices}} services · {{.Usage.CPU}}/{{.Plan.MaxCPU}} millicores · {{.Usage.Memory}}/{{.Plan.MaxMemory}} MB</p>
 
 <nav class="tabs" role="tablist" aria-label="Organization sections" data-default="{{.Tab}}">

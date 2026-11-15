@@ -1,0 +1,11 @@
+{{define "title"}}Confirm your account{{end}}
+{{define "content"}}
+<section class="narrow">
+  <h1>Confirm your account</h1>
+  <p class="lede">Create the organization <strong>{{.OrgName}}</strong> for <strong>{{.Email}}</strong>?</p>
+  <form method="post" action="/signup/verify/{{.Token}}" class="stack">
+    <div><button type="submit" class="arrow">Confirm and continue</button></div>
+  </form>
+  <p class="small muted">Next, you will set up two-step login with an authenticator app.</p>
+</section>
+{{end}}

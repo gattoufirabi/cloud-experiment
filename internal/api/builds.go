@@ -109,8 +109,14 @@ func (s *Server) queueBuild(r *http.Request, tx pgx.Tx, o *orgInfo, serviceID, t
 		return 0, false, apiErr{http.StatusConflict, "Builds from git are not enabled on this platform."}
 	}
 	var repo string
-	if err := tx.QueryRow(r.Context(), `SELECT source_repo FROM services WHERE id = $1`, serviceID).Scan(&repo); err != nil {
+	var allowed bool
+	if err := tx.QueryRow(r.Context(), `
+		SELECT s.source_repo, p.allow_builds FROM services s JOIN orgs o ON o.id = s.org_id JOIN plans p ON p.id = o.plan_id
+		WHERE s.id = $1`, serviceID).Scan(&repo, &allowed); err != nil {
 		return 0, false, err
+	}
+	if !allowed {
+		return 0, false, apiErr{http.StatusForbidden, "Builds from git are not included in your plan (trial). Push an image instead, or upgrade."}
 	}
 	if repo == "" {
 		return 0, false, apiErr{http.StatusConflict, "Set the git repository first (Builds tab)."}

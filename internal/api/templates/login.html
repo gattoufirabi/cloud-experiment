@@ -13,6 +13,6 @@
     <button type="button" class="secondary" data-passkey-signin>Sign in with a passkey</button>
     <p class="small error-text" data-passkey-error hidden></p>
   </div>
-  <p class="small muted">New here? Read the <a href="/docs/user">user guide</a>.</p>
+  <p class="small muted">New here? {{if .SignupEnabled}}<a href="/signup">Create an account</a> or read{{else}}Read{{end}} the <a href="/docs/user">user guide</a>.</p>
 </section>
 {{end}}

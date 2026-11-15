@@ -270,3 +270,44 @@ if (toc) {
 document.addEventListener("click", function (e) {
   if (e.target.closest && e.target.closest("[data-print]")) window.print();
 });
+
+/* ---------- signup: proof of work (privacy-friendly bot check, no third party) ---------- */
+(function () {
+  var form = document.querySelector("form[data-pow]");
+  if (!form || !window.crypto || !crypto.subtle) return;
+  var solving = false;
+  function zeroBits(buf) {
+    var b = new Uint8Array(buf), n = 0;
+    for (var i = 0; i < b.length; i++) {
+      if (b[i] === 0) { n += 8; continue; }
+      for (var m = 128; m && !(b[i] & m); m >>= 1) n++;
+      return n;
+    }
+    return n;
+  }
+  form.addEventListener("submit", function (ev) {
+    if (form.elements.nonce.value) return;
+    ev.preventDefault();
+    if (solving) return;
+    solving = true;
+    var ch = form.elements.challenge.value, need = parseInt(ch.split(".")[2], 10) || 16;
+    var status = form.querySelector("[data-pow-status]"), btn = form.querySelector("[data-pow-button]");
+    if (status) status.hidden = false;
+    if (btn) btn.disabled = true;
+    var enc = new TextEncoder(), nonce = 0;
+    (function batch() {
+      var tries = [];
+      for (var i = 0; i < 256; i++, nonce++) {
+        (function (n) {
+          tries.push(crypto.subtle.digest("SHA-256", enc.encode(ch + ":" + n)).then(function (h) { return zeroBits(h) >= need ? n : -1; }));
+        })(nonce);
+      }
+      Promise.all(tries).then(function (res) {
+        for (var j = 0; j < res.length; j++) {
+          if (res[j] >= 0) { form.elements.nonce.value = String(res[j]); form.submit(); return; }
+        }
+        batch();
+      });
+    })();
+  });
+})();

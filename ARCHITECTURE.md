@@ -2,7 +2,7 @@
 
 A self-hosted mini cloud. External clients sign in to a web console, create projects, deploy containers, attach domains and databases, and see their own logs, metrics, alerts, backups and security reports. They never see each other or the host.
 
-> **Implementation status (2026-11-15):** Phase 0 scripts and the Phase 1 scope are built, plus all of Phase 2: private registry with Trivy scanning, per-client backups, alerts, managed PostgreSQL and Redis, API tokens with a CLI, public status pages and passkeys, covered by `scripts/e2e-dev.sh`. Still to verify on a Linux server: gVisor, the host firewall and ACME TLS. See README.md for what is built and what is not.
+> **Implementation status (2026-11-15):** Phase 0 scripts and the Phase 1 scope are built, plus all of Phase 2: private registry with Trivy scanning, per-client backups, alerts, managed PostgreSQL and Redis, API tokens with a CLI, public status pages and passkeys, covered by `scripts/e2e-dev.sh`; Phase 3 too: traffic protection, usage metering and invoices, preview environments, sandboxed git builds and self-signup with abuse controls. Still to verify on a Linux server: gVisor, the host firewall and ACME TLS. See README.md for what is built and what is not.
 
 **Decisions taken**
 | Decision | Choice |

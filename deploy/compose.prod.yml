@@ -18,6 +18,19 @@ x-app: &app
     BASE_URL: https://${CONSOLE_HOST:?set CONSOLE_HOST}
     CONSOLE_HOST: ${CONSOLE_HOST}
     APPS_DOMAIN: ${APPS_DOMAIN:?set APPS_DOMAIN}
+    # Self-signup (off by default). Needs an SMTP server for confirmation emails.
+    SIGNUP_ENABLED: ${SIGNUP_ENABLED:-false}
+    SIGNUP_DAILY_LIMIT: ${SIGNUP_DAILY_LIMIT:-50}
+    SIGNUP_TRIAL_DAYS: ${SIGNUP_TRIAL_DAYS:-14}
+    SIGNUP_BLOCKED_DOMAINS: ${SIGNUP_BLOCKED_DOMAINS:-}
+    SIGNUP_ALLOWED_DOMAINS: ${SIGNUP_ALLOWED_DOMAINS:-}
+    SMTP_HOST: ${SMTP_HOST:-}
+    SMTP_PORT: ${SMTP_PORT:-587}
+    SMTP_USERNAME: ${SMTP_USERNAME:-}
+    SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    SMTP_FROM: ${SMTP_FROM:-}
+    SMTP_TLS: ${SMTP_TLS:-starttls}
+    OPERATOR_NTFY_URL: ${OPERATOR_NTFY_URL:-}
     # Builds from git (rootless BuildKit sandbox, network pt-build). Verify on the server
     # before enabling; BUILD_RUNTIME=runsc runs the build containers under gVisor.
     BUILDS_ENABLED: ${BUILDS_ENABLED:-false}

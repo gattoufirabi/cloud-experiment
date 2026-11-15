@@ -18,12 +18,15 @@ import (
 
 func (a *Agent) meterLoop(ctx context.Context) {
 	lastTx := map[string]uint64{} // container ID -> tx bytes at the last reading
+	abuse := newAbuseState()
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	invoicedMonth := ""
 	for {
 		a.meterMinute(ctx)
-		a.meterEgress(ctx, lastTx)
+		a.meterEgress(ctx, lastTx, abuse)
+		a.expireTrials(ctx)
+		a.watchCPU(ctx, abuse)
 		if a.cfg.BillingEnabled {
 			prev, _ := billing.MonthBounds(time.Now().UTC().AddDate(0, 0, -1))
 			if key := prev.Format("2006-01"); key != invoicedMonth && time.Now().UTC().Day() == 1 {
@@ -84,7 +87,7 @@ func (a *Agent) meterMinute(ctx context.Context) {
 	_, _ = a.pool.Exec(ctx, `DELETE FROM meter_ticks WHERE minute < now() - interval '7 days'`)
 }
 
-func (a *Agent) meterEgress(ctx context.Context, last map[string]uint64) {
+func (a *Agent) meterEgress(ctx context.Context, last map[string]uint64, abuse *abuseState) {
 	seen := map[string]bool{}
 	for _, t := range a.currentTargets() {
 		seen[t.ContainerID] = true
@@ -92,6 +95,7 @@ func (a *Agent) meterEgress(ctx context.Context, last map[string]uint64) {
 		if err != nil {
 			continue
 		}
+		abuse.sample(t.ContainerID, st.CPUStats.CPUUsage.TotalUsage)
 		var tx uint64
 		for _, n := range st.Networks {
 			tx += n.TxBytes

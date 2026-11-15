@@ -11,6 +11,7 @@ Accounts are created by invitation only, and every account must use two-step log
 3. **Set up two-step login.** Add the key shown on screen to an authenticator app such as Aegis, 2FAS, FreeOTP or Google Authenticator, then type the 6-digit code it shows.
 4. **Log in next time** with your email, password and the current 6-digit code.
 
+- **No invitation?** If the platform allows it, choose **Create an account** on the login page: confirm your email address, then set up two-step login. You get your own organization on a free trial (see below).
 - **Sessions** last up to 12 hours and end after 2 hours without activity.
 - **Lockout:** after 5 wrong passwords, the account is locked for 15 minutes.
 - **Lost phone:** ask the platform operator to reset your two-step login, then log in and set it up again.
@@ -26,6 +27,14 @@ A passkey lets you sign in with your fingerprint, face or device PIN instead of 
 - Only a public key is stored on the platform; the private key never leaves your device or password manager.
 - Your password and authenticator app keep working: use them if you lose the device, then remove the lost passkey from **Account**.
 - A passkey only works on this platform's address, so a look-alike phishing site cannot use it.
+
+## Free trial
+
+Organizations created with **Create an account** start on the **Trial** plan: 2 services, half a CPU, 512 MB of memory and one database, free for 14 days. The organization page shows the days left.
+
+- Not included in the trial: custom domains and builds from git (push an image instead).
+- When the trial ends, your applications stop and changes are blocked; your data is kept. Contact the platform operator to choose a plan and everything starts again.
+- Applications that use all their CPU for a long time (typical of crypto-mining) get a trial organization suspended automatically. The organization page says why; contact the operator if it was legitimate work.
 
 ## How things are organized
 

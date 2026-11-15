@@ -102,7 +102,8 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
   invite --org S --email E [--role owner|admin|developer|viewer]
                                              print a new invite link for an existing organization
   suspend-org --slug S [--undo]              stop (or restore) all applications of an organization
-  set-plan --slug S --plan P                 change an organization's plan
+  set-plan --slug S --plan P                 change an organization's plan (leaving "trial" lifts a trial-ended suspension)
+  trials                                     list trial organizations, their owner and status
   set-scan-policy --slug S --policy warn|block-critical
                                              refuse (or only report) images with critical vulnerabilities
   init-registry-key --file KEY --cert CERT   create the registry token signing key and certificate
@@ -207,7 +208,7 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
 		}
 		fmt.Printf("%s/invite/%s\n", cfg.BaseURL, token)
 	case "suspend-org":
-		tag, err := pool.Exec(ctx, `UPDATE orgs SET suspended = $2 WHERE slug = $1`, *slug, !*undo)
+		tag, err := pool.Exec(ctx, `UPDATE orgs SET suspended = $2, suspend_reason = CASE WHEN $2 THEN 'operator' ELSE '' END WHERE slug = $1`, *slug, !*undo)
 		if err != nil {
 			return err
 		}
@@ -260,14 +261,50 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
 		}
 		fmt.Printf("repository: %s\npassword:   %s\n", repo, key)
 	case "set-plan":
-		tag, err := pool.Exec(ctx, `UPDATE orgs SET plan_id = $2 WHERE slug = $1`, *slug, *plan)
+		// Leaving the trial ends its clock and lifts a "trial ended" suspension.
+		tag, err := pool.Exec(ctx, `
+			UPDATE orgs SET plan_id = $2,
+			       trial_ends_at = CASE WHEN $2 = 'trial' THEN coalesce(trial_ends_at, now() + interval '14 days') END,
+			       suspended = CASE WHEN suspend_reason = 'trial_ended' AND $2 <> 'trial' THEN false ELSE suspended END,
+			       suspend_reason = CASE WHEN suspend_reason = 'trial_ended' AND $2 <> 'trial' THEN '' ELSE suspend_reason END
+			WHERE slug = $1`, *slug, *plan)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() == 0 {
 			return fmt.Errorf("organization %q not found", *slug)
 		}
+		_, _ = pool.Exec(ctx, `SELECT pg_notify('deployments', '')`)
+		_ = db.Audit(ctx, pool, "", "", "org.plan_changed", "org:"+*slug, map[string]string{"plan": *plan}, "")
 		fmt.Println("plan of", *slug, "set to", *plan)
+	case "trials":
+		rows, err := pool.Query(ctx, `
+			SELECT o.slug, coalesce((SELECT u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.org_id = o.id AND m.role = 'owner' LIMIT 1), ''),
+			       o.created_at, o.trial_ends_at, o.suspended, o.suspend_reason
+			FROM orgs o WHERE o.plan_id = 'trial' ORDER BY o.created_at DESC LIMIT 200`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		fmt.Printf("%-20s %-32s %-12s %-12s %s\n", "ORG", "OWNER", "CREATED", "TRIAL ENDS", "STATUS")
+		for rows.Next() {
+			var slugV, owner, reason string
+			var created time.Time
+			var ends *time.Time
+			var susp bool
+			if err := rows.Scan(&slugV, &owner, &created, &ends, &susp, &reason); err != nil {
+				return err
+			}
+			st, end := "active", "-"
+			if susp {
+				st = "suspended (" + reason + ")"
+			}
+			if ends != nil {
+				end = ends.Format("2006-01-02")
+			}
+			fmt.Printf("%-20s %-32s %-12s %-12s %s\n", slugV, owner, created.Format("2006-01-02"), end, st)
+		}
+		return rows.Err()
 	case "set-prices":
 		set := func(col string, v float64) error {
 			if v < 0 {

@@ -74,6 +74,21 @@ type Config struct {
 	// BuildAllowInsecure (development only): allow http:// and private-address repositories.
 	BuildAllowInsecure bool
 
+	// Outgoing email (any SMTP server). Used for signup verification and trial notices.
+	SMTPHost, SMTPUser, SMTPPassword, SMTPFrom, SMTPTLS string
+	SMTPPort                                            int
+
+	// Self-signup and abuse controls.
+	SignupEnabled        bool
+	SignupPowBits        int // proof-of-work difficulty (leading zero bits)
+	SignupDailyLimit     int // signups accepted per day, all IPs together
+	SignupTrialDays      int
+	SignupBlockedDomains []string // added to the built-in disposable-email list
+	SignupAllowedDomains []string // if set, only these email domains may sign up
+	AnomalyCPUPercent    int      // trial containers above this share of their CPU limit...
+	AnomalyMinutes       int      // ...for this many minutes in a row get the org suspended
+	OperatorNtfyURL      string   // ntfy topic URL for operator notices (optional)
+
 	// Billing: usage is always metered; invoices are issued monthly when enabled.
 	BillingEnabled    bool
 	BillingCurrency   string        // ISO 4217 code shown on invoices
@@ -143,6 +158,23 @@ func Load() Config {
 		BuildMaxImageMB:    envInt("BUILD_MAX_IMAGE_MB", 4096),
 		BuildAllowInsecure: envBool("BUILD_ALLOW_INSECURE_REPOS", false),
 
+		SMTPHost:     env("SMTP_HOST", ""),
+		SMTPPort:     envInt("SMTP_PORT", 587),
+		SMTPUser:     env("SMTP_USERNAME", ""),
+		SMTPPassword: env("SMTP_PASSWORD", ""),
+		SMTPFrom:     env("SMTP_FROM", ""),
+		SMTPTLS:      env("SMTP_TLS", "starttls"),
+
+		SignupEnabled:        envBool("SIGNUP_ENABLED", false),
+		SignupPowBits:        envInt("SIGNUP_POW_BITS", 16),
+		SignupDailyLimit:     envInt("SIGNUP_DAILY_LIMIT", 50),
+		SignupTrialDays:      envInt("SIGNUP_TRIAL_DAYS", 14),
+		SignupBlockedDomains: envList("SIGNUP_BLOCKED_DOMAINS"),
+		SignupAllowedDomains: envList("SIGNUP_ALLOWED_DOMAINS"),
+		AnomalyCPUPercent:    envInt("ANOMALY_CPU_PERCENT", 90),
+		AnomalyMinutes:       envInt("ANOMALY_MINUTES", 30),
+		OperatorNtfyURL:      env("OPERATOR_NTFY_URL", ""),
+
 		BillingEnabled:    envBool("BILLING_ENABLED", false),
 		BillingCurrency:   strings.ToUpper(env("BILLING_CURRENCY", "EUR")),
 		BillingTaxPercent: envFloat("BILLING_TAX_PERCENT", 0),
@@ -179,4 +211,14 @@ func envFloat(k string, def float64) float64 {
 		return def
 	}
 	return v
+}
+
+func envList(k string) []string {
+	var out []string
+	for _, f := range strings.Split(env(k, ""), ",") {
+		if f = strings.ToLower(strings.TrimSpace(f)); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }

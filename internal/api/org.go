@@ -27,6 +27,30 @@ func isUniqueViolation(err error) bool {
 type orgInfo struct {
 	ID, Slug, Name, Role, PlanID, ScanPolicy string
 	Suspended                                bool
+	SuspendReason                            string
+	TrialEnds                                *time.Time
+}
+
+// TrialDaysLeft is shown on the organization page during a trial.
+func (o *orgInfo) TrialDaysLeft() int {
+	if o.TrialEnds == nil {
+		return 0
+	}
+	d := int(time.Until(*o.TrialEnds).Hours()/24) + 1
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+func (o *orgInfo) suspendedMessage() string {
+	switch o.SuspendReason {
+	case "trial_ended":
+		return "Your trial has ended: your applications are stopped and changes are blocked. Contact the platform operator to choose a plan."
+	case "cpu_anomaly":
+		return "This organization was suspended automatically because its applications used all their CPU for a long time (this looks like crypto-mining). Contact the platform operator."
+	}
+	return "This organization is suspended. Contact the platform operator."
 }
 
 func (o *orgInfo) Path() string { return "/o/" + o.Slug }
@@ -36,10 +60,10 @@ func (o *orgInfo) Path() string { return "/o/" + o.Slug }
 func (s *Server) org(w http.ResponseWriter, r *http.Request, minRole string) (*orgInfo, bool) {
 	var o orgInfo
 	err := s.pool.QueryRow(r.Context(), `
-		SELECT o.id, o.slug, o.name, m.role, o.plan_id, o.scan_policy, o.suspended
+		SELECT o.id, o.slug, o.name, m.role, o.plan_id, o.scan_policy, o.suspended, o.suspend_reason, o.trial_ends_at
 		FROM orgs o JOIN memberships m ON m.org_id = o.id
 		WHERE o.slug = $1 AND m.user_id = $2`, r.PathValue("org"), sessionFrom(r).UserID).
-		Scan(&o.ID, &o.Slug, &o.Name, &o.Role, &o.PlanID, &o.ScanPolicy, &o.Suspended)
+		Scan(&o.ID, &o.Slug, &o.Name, &o.Role, &o.PlanID, &o.ScanPolicy, &o.Suspended, &o.SuspendReason, &o.TrialEnds)
 	if err != nil {
 		if !isNoRows(err) {
 			s.serverError(w, r, err)
@@ -53,7 +77,7 @@ func (s *Server) org(w http.ResponseWriter, r *http.Request, minRole string) (*o
 		return nil, false
 	}
 	if o.Suspended && r.Method == http.MethodPost {
-		back(w, r, o.Path(), "", "This organization is suspended. Contact the platform operator.")
+		back(w, r, o.Path(), "", o.suspendedMessage())
 		return nil, false
 	}
 	return &o, true
@@ -113,6 +137,7 @@ func (s *Server) orgPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, status int, d data) {
+	d["SuspendedMessage"] = o.suspendedMessage()
 	type project struct {
 		Slug, Name string
 		Services   int

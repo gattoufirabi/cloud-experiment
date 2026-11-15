@@ -30,6 +30,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Usage metering and invoices**: allocated CPU/memory and network out metered per minute, per-plan prices, monthly invoices (printable), estimate so far, billing details, operator records payments (no payment provider) | done, tested |
 | **Preview environments**: temporary copies of a service with another image at `<name>.<service>-…` (console, API, `platformctl preview`), secrets copied, auto-expiry | done, tested |
 | **Builds from git**: Dockerfile builds in a rootless BuildKit sandbox (no Docker socket, isolated network), push to the org's registry space, optional deploy; console, API, `platformctl build`, push webhooks | done, tested on Docker Desktop; **gVisor build runtime untested** |
+| **Self-signup with abuse controls**: email confirmation (any SMTP server), proof-of-work instead of CAPTCHA, honeypot, IP/daily limits, disposable-domain block, 14-day trial plan (no custom domains or builds), auto-suspension of expired trials and CPU-maxing (mining-like) trial apps, operator notices | done, tested |
 | **Built-in docs** at `/docs/user` and `/docs/admin` (public, filled with this installation's addresses), linked from the header, the login page and a help link on every console tab | done |
 | Console design: sidebar pane + tabs, monochrome style | done |
 | **Alerts**: service down/recovered, CPU and memory thresholds, failed deploys and backups, critical CVEs in running images; ntfy push and signed webhooks per organization | done, tested |
@@ -38,7 +39,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 
 The end-to-end test (`scripts/e2e-dev.sh`) runs 192 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews and git builds. Unit tests: `go test ./...` (outbound request guard).
 
-**Not built yet** (next phases in ARCHITECTURE.md): self-signup with abuse controls, buildpacks/Railpack builds without a Dockerfile, email alerts (needs an SMTP server), disk quotas for volumes and registry storage, registry garbage collection, operator web console (CLI only today), self-service TOTP reset (operator resets it in the database).
+**Not built yet** (next phases in ARCHITECTURE.md): Phase 4 (multiple servers), buildpacks/Railpack builds without a Dockerfile, email alerts (needs an SMTP server), disk quotas for volumes and registry storage, registry garbage collection, operator web console (CLI only today), self-service TOTP reset (operator resets it in the database).
 
 ---
 

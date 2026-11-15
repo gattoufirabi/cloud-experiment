@@ -55,6 +55,7 @@ type Server struct {
 	docs       map[string]docPage
 	wa         *webauthn.WebAuthn
 	ceremonies *ceremonyStore
+	pow        *powStore
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -91,7 +92,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		limiter: newRateLimiter(), log: slog.Default().With("component", "api"),
 		dummyHash: dummy, hc: &http.Client{Timeout: 10 * time.Second}, regKey: regKey,
 		assetV: assetVersion(), docs: docs,
-		wa: wa, ceremonies: &ceremonyStore{m: map[string]ceremony{}},
+		wa: wa, ceremonies: &ceremonyStore{m: map[string]ceremony{}}, pow: newPowStore(),
 	}
 
 	public := &http.Server{
@@ -143,6 +144,10 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /docs/{guide}", s.docsPage)
 	m.HandleFunc("GET /status/{org}/{project}", s.statusPage)
 	m.HandleFunc("POST /hooks/build/{token}", s.buildHook)
+	m.HandleFunc("GET /signup", s.signupPage)
+	m.HandleFunc("POST /signup", s.signupSubmit)
+	m.HandleFunc("GET /signup/verify/{token}", s.signupVerifyPage)
+	m.HandleFunc("POST /signup/verify/{token}", s.signupVerifySubmit)
 	m.HandleFunc("GET /login", s.loginPage)
 	m.HandleFunc("POST /login", s.loginSubmit)
 	m.HandleFunc("POST /logout", s.auth(authAny, s.logout))
@@ -470,6 +475,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, sta
 		d = data{}
 	}
 	d["V"] = s.assetV
+	d["SignupEnabled"] = s.cfg.SignupEnabled
 	s.addNav(r, d)
 	if sess := sessionFrom(r); sess != nil {
 		d["User"] = sess
