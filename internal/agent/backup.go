@@ -24,13 +24,16 @@ import (
 //
 //   - One repository per organization, with its own random password (stored encrypted
 //     with the master key). Restoring one client can never read or touch another's data.
-//   - Inside a repository, snapshots are grouped by service (restic "host" = service ID).
-//   - Every job is a short-lived restic container. Local mode: no network at all.
+//   - Inside a repository, snapshots are grouped by target (restic "host" = service or
+//     database ID).
+//   - Service targets: the persistent folder volume, taken while the app runs.
+//   - Database targets: a consistent pg_dump written to a dump volume first, then backed
+//     up; restore = restic restore of the dump + pg_restore.
+//   - Every restic job is a short-lived container. Local mode: no network at all.
 //     Off-site mode (rest-server): only the platform network. No Docker socket, read-only
-//     root filesystem, only the capabilities needed (read files for backup; write and
-//     chown for restore).
-//   - A restore always targets the service's own volume, chosen by the agent, and is
-//     preceded by a safety snapshot.
+//     root filesystem, only the capabilities needed.
+//   - A restore always targets the job's own volume or database, chosen by the agent, and
+//     is preceded by a safety snapshot.
 
 var (
 	snapshotRe = regexp.MustCompile(`^[0-9a-f]{8,64}$`)
@@ -38,7 +41,15 @@ var (
 )
 
 type backupJob struct {
-	ID, OrgID, ServiceID, Kind, Snapshot string
+	ID, OrgID, ServiceID, DatabaseID, Kind, Snapshot string
+}
+
+// target returns the restic host name and the column that owns snapshots.
+func (j backupJob) target() (string, string) {
+	if j.DatabaseID != "" {
+		return j.DatabaseID, "database_id"
+	}
+	return j.ServiceID, "service_id"
 }
 
 func volumeName(serviceID string) string { return "pv-" + model.Compact(serviceID) }
@@ -73,25 +84,37 @@ func (a *Agent) pokeBackups() {
 	}
 }
 
-// scheduleBackups queues the nightly backup of every service with a volume, once a day
-// after its backup hour (UTC). backup_attempted_at prevents retry storms on failure.
+// scheduleBackups queues the nightly backup of every service with a volume and every
+// running database, once a day after its backup hour (UTC). backup_attempted_at prevents
+// retry storms on failure.
 func (a *Agent) scheduleBackups(ctx context.Context) {
+	const due = `extract(hour FROM now() AT TIME ZONE 'UTC') >= t.backup_hour
+		AND (t.backup_attempted_at IS NULL OR t.backup_attempted_at <
+		     (date_trunc('day', now() AT TIME ZONE 'UTC') + make_interval(hours => t.backup_hour)) AT TIME ZONE 'UTC')`
 	_, err := a.pool.Exec(ctx, `
-		WITH due AS (
-			UPDATE services s SET backup_attempted_at = now()
+		WITH d AS (
+			UPDATE services t SET backup_attempted_at = now()
 			FROM orgs o
-			WHERE o.id = s.org_id AND NOT o.suspended
-			  AND s.volume_path <> '' AND s.backup_enabled
-			  AND extract(hour FROM now() AT TIME ZONE 'UTC') >= s.backup_hour
-			  AND (s.backup_attempted_at IS NULL OR s.backup_attempted_at <
-			       (date_trunc('day', now() AT TIME ZONE 'UTC') + make_interval(hours => s.backup_hour)) AT TIME ZONE 'UTC')
-			  AND EXISTS (SELECT 1 FROM deployments d WHERE d.service_id = s.id AND d.status = 'live')
-			  AND NOT EXISTS (SELECT 1 FROM backup_jobs j WHERE j.service_id = s.id AND j.status IN ('queued', 'running'))
-			RETURNING s.id, s.org_id
+			WHERE o.id = t.org_id AND NOT o.suspended AND t.volume_path <> '' AND t.backup_enabled AND `+due+`
+			  AND EXISTS (SELECT 1 FROM deployments x WHERE x.service_id = t.id AND x.status = 'live')
+			  AND NOT EXISTS (SELECT 1 FROM backup_jobs j WHERE j.service_id = t.id AND j.status IN ('queued', 'running'))
+			RETURNING t.id, t.org_id
 		)
-		INSERT INTO backup_jobs (org_id, service_id, kind, trigger) SELECT org_id, id, 'backup', 'schedule' FROM due`)
+		INSERT INTO backup_jobs (org_id, service_id, kind, trigger) SELECT org_id, id, 'backup', 'schedule' FROM d`)
 	if err != nil {
-		a.log.Error("schedule backups", "err", err)
+		a.log.Error("schedule service backups", "err", err)
+	}
+	_, err = a.pool.Exec(ctx, `
+		WITH d AS (
+			UPDATE databases t SET backup_attempted_at = now()
+			FROM orgs o
+			WHERE o.id = t.org_id AND NOT o.suspended AND t.status = 'running' AND t.backup_enabled AND `+due+`
+			  AND NOT EXISTS (SELECT 1 FROM backup_jobs j WHERE j.database_id = t.id AND j.status IN ('queued', 'running'))
+			RETURNING t.id, t.org_id
+		)
+		INSERT INTO backup_jobs (org_id, database_id, kind, trigger) SELECT org_id, id, 'backup', 'schedule' FROM d`)
+	if err != nil {
+		a.log.Error("schedule database backups", "err", err)
 	}
 }
 
@@ -101,9 +124,9 @@ func (a *Agent) processBackups(ctx context.Context) {
 		found := false
 		err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 			err := tx.QueryRow(ctx, `
-				SELECT id, org_id, service_id, kind, snapshot_id FROM backup_jobs
-				WHERE status = 'queued' ORDER BY created_at LIMIT 1
-				FOR UPDATE SKIP LOCKED`).Scan(&j.ID, &j.OrgID, &j.ServiceID, &j.Kind, &j.Snapshot)
+				SELECT id, org_id, coalesce(service_id::text, ''), coalesce(database_id::text, ''), kind, snapshot_id
+				FROM backup_jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1
+				FOR UPDATE SKIP LOCKED`).Scan(&j.ID, &j.OrgID, &j.ServiceID, &j.DatabaseID, &j.Kind, &j.Snapshot)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
@@ -121,22 +144,32 @@ func (a *Agent) processBackups(ctx context.Context) {
 		if !found {
 			return
 		}
-		a.log.Info("backup job", "job", j.ID, "kind", j.Kind, "service", j.ServiceID)
+		host, _ := j.target()
+		a.log.Info("backup job", "job", j.ID, "kind", j.Kind, "target", host)
 		var msg string
-		if j.Kind == "restore" {
+		switch {
+		case j.DatabaseID != "" && j.Kind == "restore":
+			msg, err = a.restoreDatabase(ctx, j)
+		case j.DatabaseID != "":
+			msg, err = a.backupDatabase(ctx, j, "")
+		case j.Kind == "restore":
 			msg, err = a.restore(ctx, j)
-		} else {
+		default:
 			msg, err = a.backup(ctx, j, "")
 		}
 		status, action := "done", "backup."+j.Kind
+		targetLabel := "service:" + j.ServiceID
+		if j.DatabaseID != "" {
+			targetLabel = "database:" + j.DatabaseID
+		}
 		if err != nil {
 			status, msg, action = "error", truncate(err.Error(), 1500), "backup."+j.Kind+".failed"
 			a.log.Warn("backup job failed", "job", j.ID, "err", err)
 			a.alertEvent(ctx, j.OrgID, j.ServiceID, "backup_failed",
-				fmt.Sprintf("The %s job failed: %s", j.Kind, truncate(firstLine(err.Error()), 300)))
+				fmt.Sprintf("The %s job of %s failed: %s", j.Kind, targetLabel, truncate(firstLine(err.Error()), 300)))
 		}
 		_, _ = a.pool.Exec(ctx, `UPDATE backup_jobs SET status = $2, message = $3, finished_at = now() WHERE id = $1`, j.ID, status, msg)
-		_ = auditAgent(ctx, a, j.OrgID, action, "service:"+j.ServiceID, map[string]string{"job": j.ID, "snapshot": j.Snapshot})
+		_ = auditAgent(ctx, a, j.OrgID, action, targetLabel, map[string]string{"job": j.ID, "snapshot": j.Snapshot})
 	}
 }
 
@@ -168,8 +201,9 @@ func (a *Agent) orgBackupKey(ctx context.Context, orgID string) (string, error) 
 	return string(plain), err
 }
 
-// resticRun runs one shell script in a restic container against the org's repository.
-func (a *Agent) resticRun(ctx context.Context, orgID, serviceID, script string, write bool, extraEnv ...string) (string, error) {
+// resticRun runs one shell script in a restic container against the org's repository,
+// with volume mounted at /data (read-only unless write).
+func (a *Agent) resticRun(ctx context.Context, orgID, host, volume, script string, write bool, extraEnv ...string) (string, error) {
 	key, err := a.orgBackupKey(ctx, orgID)
 	if err != nil {
 		return "", fmt.Errorf("backup key: %w", err)
@@ -185,8 +219,7 @@ func (a *Agent) resticRun(ctx context.Context, orgID, serviceID, script string, 
 		a.resticPulled = true
 		a.mu.Unlock()
 	}
-	vol := volumeName(serviceID)
-	mounts := []docker.Mount{{Type: "volume", Source: vol, Target: "/data", ReadOnly: !write}}
+	mounts := []docker.Mount{{Type: "volume", Source: volume, Target: "/data", ReadOnly: !write}}
 	network := "none"
 	repo := a.cfg.BackupRestURL + "/" + orgID
 	if a.cfg.BackupRestURL == "" {
@@ -201,14 +234,14 @@ func (a *Agent) resticRun(ctx context.Context, orgID, serviceID, script string, 
 	}
 	env := append([]string{
 		"RESTIC_REPOSITORY=" + repo, "RESTIC_PASSWORD=" + key, "RESTIC_CACHE_DIR=/tmp/cache",
-		"HOME=/tmp", "SVC=" + serviceID, "KEEP=" + a.cfg.BackupKeep,
+		"HOME=/tmp", "SVC=" + host, "KEEP=" + a.cfg.BackupKeep,
 	}, extraEnv...)
 	cfg := docker.ContainerConfig{
 		Image:      a.cfg.ResticImage,
 		Entrypoint: []string{"/bin/sh", "-c"},
 		Cmd:        []string{script},
 		Env:        env,
-		Labels:     map[string]string{"platform.backup": "true", "platform.org": orgID, "platform.service": serviceID},
+		Labels:     map[string]string{"platform.backup": "true", "platform.org": orgID, "platform.target": host},
 		HostConfig: docker.HostConfig{
 			NetworkMode:    network,
 			Memory:         1 << 30,
@@ -250,16 +283,17 @@ func (a *Agent) resticRun(ctx context.Context, orgID, serviceID, script string, 
 	return string(stdout), nil
 }
 
-// backup snapshots the service volume, applies retention, and syncs the snapshot list.
-func (a *Agent) backup(ctx context.Context, j backupJob, tag string) (string, error) {
-	if ok, err := a.dk.VolumeExists(ctx, volumeName(j.ServiceID)); err != nil {
+// backupVolume snapshots volume, applies retention, and syncs the snapshot list.
+func (a *Agent) backupVolume(ctx context.Context, j backupJob, volume, tag string) (string, error) {
+	if ok, err := a.dk.VolumeExists(ctx, volume); err != nil {
 		return "", err
 	} else if !ok {
-		return "", errors.New("nothing to back up yet: the service has no persistent folder data (deploy it first)")
+		return "", errors.New("nothing to back up yet: there is no data (deploy or start it first)")
 	}
 	if tag == "" {
 		tag = "manual"
 	}
+	host, _ := j.target()
 	script := `set -e
 restic cat config >/dev/null 2>&1 || restic init >/dev/null
 echo @@BACKUP
@@ -268,7 +302,7 @@ echo @@FORGET
 restic forget --host "$SVC" --keep-tag pre-restore $KEEP --prune --quiet >/dev/null
 echo @@SNAPSHOTS
 restic snapshots --host "$SVC" --json`
-	out, err := a.resticRun(ctx, j.OrgID, j.ServiceID, script, false, "TAG="+tag)
+	out, err := a.resticRun(ctx, j.OrgID, host, volume, script, false, "TAG="+tag)
 	if err != nil {
 		return "", err
 	}
@@ -291,6 +325,10 @@ restic snapshots --host "$SVC" --json`
 		short(summary.SnapshotID), summary.Files, humanBytes(summary.Bytes), humanBytes(summary.Added)), nil
 }
 
+func (a *Agent) backup(ctx context.Context, j backupJob, tag string) (string, error) {
+	return a.backupVolume(ctx, j, volumeName(j.ServiceID), tag)
+}
+
 func (a *Agent) syncSnapshots(ctx context.Context, j backupJob, raw, newID string, size, files int64) error {
 	var snaps []struct {
 		ID   string    `json:"id"`
@@ -300,6 +338,7 @@ func (a *Agent) syncSnapshots(ctx context.Context, j backupJob, raw, newID strin
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &snaps); err != nil {
 		return fmt.Errorf("read snapshot list: %w", err)
 	}
+	host, col := j.target() // col is one of two constants, never user input
 	return pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 		ids := make([]string, 0, len(snaps))
 		for _, s := range snaps {
@@ -309,26 +348,29 @@ func (a *Agent) syncSnapshots(ctx context.Context, j backupJob, raw, newID strin
 				sz, fl = size, files
 			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO backup_snapshots (org_id, service_id, snapshot_id, taken_at, size_bytes, files, tags)
+				INSERT INTO backup_snapshots (org_id, `+col+`, snapshot_id, taken_at, size_bytes, files, tags)
 				VALUES ($1, $2, $3, $4, $5, $6, $7)
-				ON CONFLICT (service_id, snapshot_id) DO UPDATE SET tags = EXCLUDED.tags`,
-				j.OrgID, j.ServiceID, s.ID, s.Time, sz, fl, strings.Join(s.Tags, ",")); err != nil {
+				ON CONFLICT (org_id, snapshot_id) DO UPDATE SET tags = EXCLUDED.tags`,
+				j.OrgID, host, s.ID, s.Time, sz, fl, strings.Join(s.Tags, ",")); err != nil {
 				return err
 			}
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM backup_snapshots WHERE service_id = $1 AND NOT (snapshot_id = ANY($2))`, j.ServiceID, ids)
+		_, err := tx.Exec(ctx, `DELETE FROM backup_snapshots WHERE `+col+` = $1 AND NOT (snapshot_id = ANY($2))`, host, ids)
 		return err
 	})
 }
 
+func (a *Agent) snapshotBelongs(ctx context.Context, j backupJob) bool {
+	host, col := j.target()
+	var known bool
+	err := a.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM backup_snapshots WHERE `+col+` = $1 AND snapshot_id LIKE $2 || '%')`,
+		host, j.Snapshot).Scan(&known)
+	return err == nil && known && snapshotRe.MatchString(j.Snapshot)
+}
+
 // restore replaces the service volume with a snapshot: safety snapshot, stop, restore, start.
 func (a *Agent) restore(ctx context.Context, j backupJob) (string, error) {
-	if !snapshotRe.MatchString(j.Snapshot) {
-		return "", errors.New("invalid snapshot id")
-	}
-	var known bool
-	if err := a.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM backup_snapshots WHERE service_id = $1 AND snapshot_id LIKE $2 || '%')`,
-		j.ServiceID, j.Snapshot).Scan(&known); err != nil || !known {
+	if !a.snapshotBelongs(ctx, j) {
 		return "", errors.New("this snapshot does not belong to the service")
 	}
 	if _, err := a.backup(ctx, j, "pre-restore"); err != nil {
@@ -346,13 +388,19 @@ func (a *Agent) restore(ctx context.Context, j backupJob) (string, error) {
 			}
 		}()
 	}
-	script := `set -e
-find /data -mindepth 1 -delete
-restic restore "$SNAP" --host "$SVC" --target /`
-	if _, err := a.resticRun(ctx, j.OrgID, j.ServiceID, script, true, "SNAP="+j.Snapshot); err != nil {
+	if err := a.restoreVolume(ctx, j, volumeName(j.ServiceID)); err != nil {
 		return "", err
 	}
 	return "restored snapshot " + short(j.Snapshot) + " (a pre-restore snapshot of the previous data was kept)", nil
+}
+
+func (a *Agent) restoreVolume(ctx context.Context, j backupJob, volume string) error {
+	host, _ := j.target()
+	script := `set -e
+find /data -mindepth 1 -delete
+restic restore "$SNAP" --host "$SVC" --target /`
+	_, err := a.resticRun(ctx, j.OrgID, host, volume, script, true, "SNAP="+j.Snapshot)
+	return err
 }
 
 func splitSections(out string) map[string]string {

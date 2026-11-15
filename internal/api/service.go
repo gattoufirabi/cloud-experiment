@@ -309,7 +309,7 @@ func (s *Server) createDeployment(r *http.Request, tx pgx.Tx, o *orgInfo, servic
 	var rev int
 	if err := tx.QueryRow(r.Context(), `
 		INSERT INTO deployments (org_id, service_id, revision, spec, created_by)
-		VALUES ($1, $2, (SELECT coalesce(max(revision), 0) + 1 FROM deployments WHERE service_id = $2), $3, $4)
+		VALUES ($1, $2, (SELECT coalesce(max(revision), 0) + 1 FROM deployments WHERE service_id = $2), $3, nullif($4, '')::uuid)
 		RETURNING revision`, o.ID, serviceID, b, sessionFrom(r).UserID).Scan(&rev); err != nil {
 		return 0, err
 	}

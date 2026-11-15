@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -49,13 +50,21 @@ func (sn snapshotView) HumanSize() string {
 }
 
 func loadBackups(r *http.Request, tx pgx.Tx, serviceID string) (*backupView, error) {
-	var b backupView
-	if err := tx.QueryRow(r.Context(), `SELECT backup_enabled, backup_hour FROM services WHERE id = $1`, serviceID).Scan(&b.Enabled, &b.Hour); err != nil {
+	var enabled bool
+	var hour int
+	if err := tx.QueryRow(r.Context(), `SELECT backup_enabled, backup_hour FROM services WHERE id = $1`, serviceID).Scan(&enabled, &hour); err != nil {
 		return nil, err
 	}
+	return loadTargetBackups(r, tx, "service_id", serviceID, enabled, hour)
+}
+
+// loadTargetBackups lists jobs and snapshots of a service or a database.
+// col is one of two constants ("service_id", "database_id"), never user input.
+func loadTargetBackups(r *http.Request, tx pgx.Tx, col, id string, enabled bool, hour int) (*backupView, error) {
+	b := backupView{Enabled: enabled, Hour: hour}
 	rows, err := tx.Query(r.Context(), `
 		SELECT kind, trigger, snapshot_id, status, message, created_at, finished_at
-		FROM backup_jobs WHERE service_id = $1 ORDER BY created_at DESC LIMIT 6`, serviceID)
+		FROM backup_jobs WHERE `+col+` = $1 ORDER BY created_at DESC LIMIT 6`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +73,7 @@ func loadBackups(r *http.Request, tx pgx.Tx, serviceID string) (*backupView, err
 	}
 	rows, err = tx.Query(r.Context(), `
 		SELECT snapshot_id, taken_at, size_bytes, files, tags FROM backup_snapshots
-		WHERE service_id = $1 ORDER BY taken_at DESC LIMIT 60`, serviceID)
+		WHERE `+col+` = $1 ORDER BY taken_at DESC LIMIT 60`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -73,17 +82,23 @@ func loadBackups(r *http.Request, tx pgx.Tx, serviceID string) (*backupView, err
 }
 
 func (s *Server) queueBackupJob(r *http.Request, tx pgx.Tx, o *orgInfo, sv *serviceInfo, kind, snapshot string) (bool, error) {
+	return s.queueTargetJob(r, tx, o, "service_id", sv.ID, sv.Slug, kind, snapshot)
+}
+
+// queueTargetJob queues a backup or restore of a service or database unless one runs.
+func (s *Server) queueTargetJob(r *http.Request, tx pgx.Tx, o *orgInfo, col, id, label, kind, snapshot string) (bool, error) {
 	var busy bool
-	if err := tx.QueryRow(r.Context(), `SELECT EXISTS (SELECT 1 FROM backup_jobs WHERE service_id = $1 AND status IN ('queued', 'running'))`,
-		sv.ID).Scan(&busy); err != nil || busy {
+	if err := tx.QueryRow(r.Context(), `SELECT EXISTS (SELECT 1 FROM backup_jobs WHERE `+col+` = $1 AND status IN ('queued', 'running'))`,
+		id).Scan(&busy); err != nil || busy {
 		return busy, err
 	}
 	if _, err := tx.Exec(r.Context(), `
-		INSERT INTO backup_jobs (org_id, service_id, kind, snapshot_id, requested_by) VALUES ($1, $2, $3, $4, $5)`,
-		o.ID, sv.ID, kind, snapshot, sessionFrom(r).UserID); err != nil {
+		INSERT INTO backup_jobs (org_id, `+col+`, kind, snapshot_id, requested_by) VALUES ($1, $2, $3, $4, $5)`,
+		o.ID, id, kind, snapshot, sessionFrom(r).UserID); err != nil {
 		return false, err
 	}
-	s.audit(r, tx, o.ID, "backup."+kind+".requested", "service:"+sv.Slug, map[string]string{"snapshot": snapshot})
+	target := strings.TrimSuffix(col, "_id") + ":" + label
+	s.audit(r, tx, o.ID, "backup."+kind+".requested", target, map[string]string{"snapshot": snapshot})
 	_, err := tx.Exec(r.Context(), `SELECT pg_notify('deployments', 'backup')`)
 	return false, err
 }

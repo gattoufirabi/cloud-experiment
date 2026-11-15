@@ -45,20 +45,36 @@ func (s *Server) logsJSON(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err != nil || s.cfg.VictoriaLogsURL == "" {
-		writeJSON(w, []any{})
+	if err != nil {
+		writeJSON(w, []logLine{})
 		return
 	}
-	search := strings.Map(func(r rune) rune {
+	writeJSON(w, s.queryLogs(o.ID, sv.ID, r.URL.Query().Get("q")))
+}
+
+type logLine struct {
+	Time   string `json:"time"`
+	Msg    string `json:"msg"`
+	Stream string `json:"stream"`
+}
+
+// queryLogs returns up to 300 lines of the last 6 hours for one service, oldest first.
+// The tenant and service filters are fixed here; the search text is always quoted.
+func (s *Server) queryLogs(orgID, serviceID, search string) []logLine {
+	out := []logLine{}
+	if s.cfg.VictoriaLogsURL == "" {
+		return out
+	}
+	search = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return -1
 		}
 		return r
-	}, r.URL.Query().Get("q"))
+	}, search)
 	if len(search) > 100 {
 		search = search[:100]
 	}
-	q := fmt.Sprintf(`_time:6h org_id:=%s service_id:=%s`, strconv.Quote(o.ID), strconv.Quote(sv.ID))
+	q := fmt.Sprintf(`_time:6h org_id:=%s service_id:=%s`, strconv.Quote(orgID), strconv.Quote(serviceID))
 	if search != "" {
 		q += " " + strconv.Quote(search)
 	}
@@ -66,31 +82,21 @@ func (s *Server) logsJSON(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.hc.Get(s.cfg.VictoriaLogsURL + "/select/logsql/query?" + url.Values{"query": {q}}.Encode())
 	if err != nil {
 		s.log.Warn("query logs", "err", err)
-		writeJSON(w, []any{})
-		return
+		return out
 	}
 	defer resp.Body.Close()
-	type line struct {
-		Time   string `json:"time"`
-		Msg    string `json:"msg"`
-		Stream string `json:"stream"`
-	}
-	var out []line
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
 		var m map[string]string
 		if json.Unmarshal(sc.Bytes(), &m) == nil {
-			out = append(out, line{Time: m["_time"], Msg: m["_msg"], Stream: m["stream"]})
+			out = append(out, logLine{Time: m["_time"], Msg: m["_msg"], Stream: m["stream"]})
 		}
 	}
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 { // oldest first
 		out[i], out[j] = out[j], out[i]
 	}
-	if out == nil {
-		out = []line{}
-	}
-	writeJSON(w, out)
+	return out
 }
 
 // metricsJSON returns the last hour of CPU (% of one core) and memory (MB) for the service.

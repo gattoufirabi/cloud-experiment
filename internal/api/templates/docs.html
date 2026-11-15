@@ -1,0 +1,18 @@
+{{define "title"}}{{.DocTitle}}{{end}}
+{{define "content"}}
+<div class="docs">
+  <div class="head"><h1>Documentation</h1></div>
+  <p class="lede">How to use the platform, and how to run it.</p>
+  <nav class="tabs" aria-label="Guides">
+    <a href="/docs/user"{{if eq .Guide "user"}} aria-selected="true" aria-current="page"{{end}}>User guide</a>
+    <a href="/docs/admin"{{if eq .Guide "admin"}} aria-selected="true" aria-current="page"{{end}}>Admin guide</a>
+  </nav>
+  <div class="docs-layout">
+    <aside class="side docs-toc" aria-label="Sections of the {{.DocTitle}}">
+      <div class="side-h">{{.DocTitle}}</div>
+      {{range .TOC}}<a href="#{{.ID}}">{{.Title}}</a>{{end}}
+    </aside>
+    <article class="doc">{{.Body}}</article>
+  </div>
+</div>
+{{end}}

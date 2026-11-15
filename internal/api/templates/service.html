@@ -18,6 +18,8 @@
 
 <!-- ============ overview ============ -->
 <section class="pane" id="overview" role="tabpanel" aria-label="Overview">
+  <p class="help"><a href="/docs/user#updates-and-rollbacks" target="_blank" rel="noopener">Guide: updates and rollbacks ↗</a></p>
+
   <div class="section">
     <div class="head">
       <h2>Deployments</h2>
@@ -44,7 +46,7 @@
             </form>{{end}}</td>
         </tr>
       {{else}}
-        <tr><td colspan="5" class="muted">[*] not deployed yet: check the settings, then deploy.</td></tr>
+        <tr><td colspan="5" class="muted">Not deployed yet: check the settings, then deploy.</td></tr>
       {{end}}
       </tbody>
     </table>
@@ -55,10 +57,10 @@
     <div id="metrics" data-url="{{.Path}}/metrics.json">
       <h2>Resource usage</h2>
       <figure><svg data-chart="cpu" viewBox="0 0 300 72" preserveAspectRatio="none" role="img" aria-label="CPU usage, last hour"></svg>
-        <figcaption><span>Fig 1. <b>CPU</b>, last hour</span><span data-last="cpu"></span></figcaption></figure>
+        <figcaption><span><b>CPU</b> · last hour</span><span data-last="cpu"></span></figcaption></figure>
       <figure><svg data-chart="memory" viewBox="0 0 300 72" preserveAspectRatio="none" role="img" aria-label="Memory usage, last hour"></svg>
-        <figcaption><span>Fig 2. <b>Memory</b>, last hour</span><span data-last="memory"></span></figcaption></figure>
-      <p class="muted small" data-empty>[*] metrics appear about a minute after the first deployment.</p>
+        <figcaption><span><b>Memory</b> · last hour</span><span data-last="memory"></span></figcaption></figure>
+      <p class="muted small" data-empty>Metrics appear about a minute after the first deployment.</p>
     </div>
     <div>
       <h2>At a glance</h2>
@@ -75,6 +77,8 @@
 
 <!-- ============ logs ============ -->
 <section class="pane" id="logs-pane" role="tabpanel" aria-label="Logs">
+  <p class="help"><a href="/docs/user#logs-and-metrics" target="_blank" rel="noopener">Guide: logs and metrics ↗</a></p>
+
   <div class="section">
     <h2>Logs</h2>
     <p class="small muted">Standard output and error of the application, last 6 hours.</p>
@@ -88,6 +92,8 @@
 
 <!-- ============ settings ============ -->
 <section class="pane" id="settings" role="tabpanel" aria-label="Settings">
+  <p class="help"><a href="/docs/user#service-settings" target="_blank" rel="noopener">Guide: service settings ↗</a></p>
+
   <div class="section">
     <h2>Container</h2>
     <p class="small muted">Changes apply at the next deployment.</p>
@@ -145,6 +151,8 @@
 
 <!-- ============ domains ============ -->
 <section class="pane" id="domains" role="tabpanel" aria-label="Domains">
+  <p class="help"><a href="/docs/user#custom-domains-and-https" target="_blank" rel="noopener">Guide: custom domains ↗</a></p>
+
   <div class="section">
     <h2>Platform address</h2>
     <p><a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a></p>
@@ -154,7 +162,7 @@
     <h2>Custom domains</h2>
     {{range .Domains}}
       <div class="panel{{if not .Verified}} strong{{end}}">
-        <div class="head"><strong>{{.Hostname}}</strong>{{if .Verified}}<span class="st">[verified]</span>{{else}}<span class="st st-pending">[waiting for DNS]</span>{{end}}</div>
+        <div class="head"><strong>{{.Hostname}}</strong>{{if .Verified}}<span class="st st-verified">verified</span>{{else}}<span class="st st-pending">waiting for DNS</span>{{end}}</div>
         {{if not .Verified}}
         <ul class="brackets small">
           <li>TXT record <code class="select">_platform-challenge.{{.Hostname}}</code> with value <code class="select">platform-verify={{.Token}}</code></li>
@@ -168,7 +176,7 @@
         </div>
         {{end}}
       </div>
-    {{else}}<p class="small muted">[*] add your own domain; HTTPS is issued automatically once it is verified.</p>{{end}}
+    {{else}}<p class="small muted">Add your own domain; HTTPS is issued automatically once it is verified.</p>{{end}}
     {{if .CanEdit}}
     <form method="post" action="{{.Path}}/domains" class="inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -181,11 +189,13 @@
 
 <!-- ============ security ============ -->
 <section class="pane" id="security" role="tabpanel" aria-label="Security">
+  <p class="help"><a href="/docs/user#security-scanning" target="_blank" rel="noopener">Guide: security scanning ↗</a></p>
+
   <div class="section">
     <h2>Vulnerability scan</h2>
     {{with .Scan}}
     <p class="small">Image of the latest deployment: <code>{{.Image}}</code></p>
-    <p>{{if eq .Status "done"}}{{template "sevcounts" .}} <span class="muted small">critical · high · medium · low · scanned {{ago .CreatedAt}}</span>
+    <p>{{if eq .Status "done"}}{{template "sevcounts" .}} <span class="muted small">scanned {{ago .CreatedAt}}</span>
       {{else if eq .Status "error"}}{{template "status" "error"}} <span class="muted small">{{.Error}}</span>
       {{else}}{{template "status" .Status}}{{end}}</p>
     {{if $.Findings}}
@@ -203,9 +213,9 @@
     </table>
     </div>
     <p class="muted small">Most severe first, up to 25 shown. Fix by rebuilding on an updated base image, then redeploying.</p>
-    {{else if eq .Status "done"}}<p class="small">[*] no known vulnerabilities found.</p>{{end}}
+    {{else if eq .Status "done"}}<p class="small">No known vulnerabilities found.</p>{{end}}
     {{else}}
-    <p class="small muted">[*] the image is scanned at each deployment, on push to the registry, and every night while it runs.</p>
+    <p class="small muted">The image is scanned at each deployment, on push to the registry, and every night while it runs.</p>
     {{end}}
   </div>
 </section>
@@ -213,6 +223,8 @@
 <!-- ============ backups ============ -->
 {{if .Service.VolumePath}}{{with .Backups}}
 <section class="pane" id="backups" role="tabpanel" aria-label="Backups">
+  <p class="help"><a href="/docs/user#backups-and-restore" target="_blank" rel="noopener">Guide: backups and restore ↗</a></p>
+
   <div class="section">
     <h2>Backups of {{$.Service.VolumePath}}</h2>
     <p class="small muted">Encrypted with a key unique to your organization. Retention: 7 daily, 4 weekly and 6 monthly snapshots; safety snapshots taken before a restore are always kept.</p>
@@ -251,7 +263,7 @@
       </tbody>
     </table>
     </div>
-    {{else}}<p class="small muted">[*] no snapshots yet.</p>{{end}}
+    {{else}}<p class="small muted">No snapshots yet.</p>{{end}}
   </div>
 
   {{if .Jobs}}
@@ -274,6 +286,8 @@
 
 <!-- ============ alerts ============ -->
 <section class="pane" id="alerts" role="tabpanel" aria-label="Alerts">
+  <p class="help"><a href="/docs/user#alerts" target="_blank" rel="noopener">Guide: alerts ↗</a></p>
+
   <div class="section">
     <h2>Health and thresholds</h2>
     <p class="small muted">The app is checked every few seconds. After 3 failed health checks a "service down" incident opens; it resolves by itself when the app answers again. Notifications go to the organization's channels.</p>
@@ -298,7 +312,7 @@
       {{end}}
       </tbody>
     </table>
-    {{else}}<p class="small muted">[*] no incidents.</p>{{end}}
+    {{else}}<p class="small muted">No incidents.</p>{{end}}
   </div>
 </section>
 {{end}}

@@ -60,6 +60,10 @@ func (s *Server) org(w http.ResponseWriter, r *http.Request, minRole string) (*o
 }
 
 func (s *Server) audit(r *http.Request, q db.Execer, orgID, action, target string, detail any) {
+	// Actions made with an API token are recorded under the token's creator, with the token named.
+	if tok, ok := r.Context().Value(apiTokenKey).(string); ok && tok != "" {
+		detail = map[string]any{"via_api_token": tok, "detail": detail}
+	}
 	if err := db.Audit(r.Context(), q, orgID, sessionFrom(r).UserID, action, target, detail, clientIP(r)); err != nil {
 		s.log.Error("audit", "action", action, "err", err)
 	}
@@ -89,14 +93,14 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 }
 
 type plan struct {
-	Name                                       string
-	MaxServices, MaxCPU, MaxMemory, MaxDomains int
+	Name                                                     string
+	MaxServices, MaxCPU, MaxMemory, MaxDomains, MaxDatabases int
 }
 
 func (s *Server) loadPlan(r *http.Request, q pgx.Tx, id string) (plan, error) {
 	var p plan
-	err := q.QueryRow(r.Context(), `SELECT name, max_services, max_cpu_millis, max_memory_mb, max_domains FROM plans WHERE id = $1`, id).
-		Scan(&p.Name, &p.MaxServices, &p.MaxCPU, &p.MaxMemory, &p.MaxDomains)
+	err := q.QueryRow(r.Context(), `SELECT name, max_services, max_cpu_millis, max_memory_mb, max_domains, max_databases FROM plans WHERE id = $1`, id).
+		Scan(&p.Name, &p.MaxServices, &p.MaxCPU, &p.MaxMemory, &p.MaxDomains, &p.MaxDatabases)
 	return p, err
 }
 
@@ -113,7 +117,7 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 		Slug, Name string
 		Services   int
 	}
-	type usage struct{ Services, CPU, Memory int }
+	type usage struct{ Services, CPU, Memory, Databases int }
 	type regToken struct {
 		ID, Name string
 		CanPush  bool
@@ -127,6 +131,13 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 	var scans []scanSummary
 	var channels []channelView
 	var incidents []incidentView
+	type apiToken struct {
+		ID, Name, Role string
+		Created        time.Time
+		LastUsed       *time.Time
+		Expires        *time.Time
+	}
+	var apiTokens []apiToken
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `
 			SELECT p.slug, p.name, (SELECT count(*) FROM services s WHERE s.project_id = p.id)
@@ -137,8 +148,12 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 		if projects, err = pgx.CollectRows(rows, pgx.RowToStructByPos[project]); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(r.Context(), `SELECT count(*), coalesce(sum(cpu_millis), 0), coalesce(sum(memory_mb), 0) FROM services`).
-			Scan(&u.Services, &u.CPU, &u.Memory); err != nil {
+		if err := tx.QueryRow(r.Context(), `
+			SELECT (SELECT count(*) FROM services),
+			       (SELECT coalesce(sum(cpu_millis), 0) FROM services) + (SELECT coalesce(sum(cpu_millis), 0) FROM databases),
+			       (SELECT coalesce(sum(memory_mb), 0) FROM services) + (SELECT coalesce(sum(memory_mb), 0) FROM databases),
+			       (SELECT count(*) FROM databases)`).
+			Scan(&u.Services, &u.CPU, &u.Memory, &u.Databases); err != nil {
 			return err
 		}
 		if p, err = s.loadPlan(r, tx, o.PlanID); err != nil {
@@ -161,7 +176,14 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 		if channels, err = loadChannels(r, tx); err != nil {
 			return err
 		}
-		incidents, err = loadIncidents(r, tx, "", 12)
+		if incidents, err = loadIncidents(r, tx, "", 12); err != nil {
+			return err
+		}
+		rows, err = tx.Query(r.Context(), `SELECT id, name, role, created_at, last_used_at, expires_at FROM api_tokens ORDER BY created_at DESC`)
+		if err != nil {
+			return err
+		}
+		apiTokens, err = pgx.CollectRows(rows, pgx.RowToStructByPos[apiToken])
 		return err
 	})
 	if err != nil {
@@ -202,6 +224,7 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 	d["Org"], d["Projects"], d["Members"], d["Invites"], d["Usage"], d["Plan"] = o, projects, members, invites, u, p
 	d["RegistryHost"], d["RegistryTokens"], d["Scans"] = s.cfg.RegistryHost, tokens, scans
 	d["Channels"], d["Incidents"], d["AlertKinds"] = channels, incidents, alertKinds
+	d["APITokens"], d["BaseURL"] = apiTokens, s.cfg.BaseURL
 	s.render(w, r, "org", status, d)
 }
 
@@ -339,11 +362,23 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 	type svc struct {
 		Slug, Image, Status string
 	}
+	type dbRow struct {
+		Slug, Version, Status string
+		CPUMillis, MemoryMB   int
+	}
 	var p *projectInfo
 	var services []svc
+	var dbs []dbRow
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		var err error
 		if p, err = s.loadProject(r, tx); err != nil {
+			return err
+		}
+		drows, err := tx.Query(r.Context(), `SELECT slug, version, status, cpu_millis, memory_mb FROM databases WHERE project_id = $1 ORDER BY slug`, p.ID)
+		if err != nil {
+			return err
+		}
+		if dbs, err = pgx.CollectRows(drows, pgx.RowToStructByPos[dbRow]); err != nil {
 			return err
 		}
 		rows, err := tx.Query(r.Context(), `
@@ -364,7 +399,7 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services})
+	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services, "Databases": dbs})
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
@@ -403,9 +438,14 @@ func (s *Server) checkQuota(r *http.Request, tx pgx.Tx, o *orgInfo, excludeID st
 		return err
 	}
 	var n, usedCPU, usedMem int
+	// Services and managed databases share the plan's CPU and memory; excludeID skips
+	// the service or database being edited.
 	if err := tx.QueryRow(r.Context(), `
-		SELECT count(*), coalesce(sum(cpu_millis), 0), coalesce(sum(memory_mb), 0)
-		FROM services WHERE id::text <> $1`, excludeID).Scan(&n, &usedCPU, &usedMem); err != nil {
+		SELECT (SELECT count(*) FROM services WHERE id::text <> $1),
+		       (SELECT coalesce(sum(cpu_millis), 0) FROM services WHERE id::text <> $1) +
+		       (SELECT coalesce(sum(cpu_millis), 0) FROM databases WHERE id::text <> $1),
+		       (SELECT coalesce(sum(memory_mb), 0) FROM services WHERE id::text <> $1) +
+		       (SELECT coalesce(sum(memory_mb), 0) FROM databases WHERE id::text <> $1)`, excludeID).Scan(&n, &usedCPU, &usedMem); err != nil {
 		return err
 	}
 	switch {

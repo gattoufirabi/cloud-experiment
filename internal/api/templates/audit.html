@@ -10,7 +10,7 @@
   {{range .Events}}
     <tr><td class="nowrap">{{datetime .At}}</td><td>{{.Who}}</td><td><code>{{.Action}}</code></td><td>{{.Target}}</td><td><code>{{.Detail}}</code></td><td>{{.IP}}</td></tr>
   {{else}}
-    <tr><td colspan="6" class="muted">[*] no events yet.</td></tr>
+    <tr><td colspan="6" class="muted">No events yet.</td></tr>
   {{end}}
   </tbody>
 </table>

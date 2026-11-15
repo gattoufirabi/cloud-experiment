@@ -48,6 +48,7 @@ type Server struct {
 	hc        *http.Client
 	regKey    *ecdsa.PrivateKey // signs registry tokens; nil when the registry is disabled
 	assetV    string            // content hash of static files, for cache busting
+	docs      map[string]docPage
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -70,12 +71,16 @@ func Run(ctx context.Context, cfg config.Config) error {
 			return fmt.Errorf("registry token key: %w", err)
 		}
 	}
+	docs, err := loadDocs(cfg)
+	if err != nil {
+		return fmt.Errorf("load docs: %w", err)
+	}
 	dummy, _ := secure.HashPassword(secure.NewToken())
 	s := &Server{
 		cfg: cfg, pool: pool, box: box, pages: pages,
 		limiter: newRateLimiter(), log: slog.Default().With("component", "api"),
 		dummyHash: dummy, hc: &http.Client{Timeout: 10 * time.Second}, regKey: regKey,
-		assetV: assetVersion(),
+		assetV: assetVersion(), docs: docs,
 	}
 
 	public := &http.Server{
@@ -123,6 +128,8 @@ func (s *Server) routes() http.Handler {
 	static, _ := fs.Sub(staticFS, "static")
 	m.Handle("GET /static/", http.StripPrefix("/static/", cacheStatic(http.FileServerFS(static))))
 
+	m.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/docs/user", http.StatusSeeOther) })
+	m.HandleFunc("GET /docs/{guide}", s.docsPage)
 	m.HandleFunc("GET /login", s.loginPage)
 	m.HandleFunc("POST /login", s.loginSubmit)
 	m.HandleFunc("POST /logout", s.auth(authAny, s.logout))
@@ -140,6 +147,8 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /o/{org}/invites", s.auth(authFull, s.createInvite))
 	m.HandleFunc("POST /o/{org}/members/{user}/remove", s.auth(authFull, s.removeMember))
 	m.HandleFunc("POST /o/{org}/registry-tokens", s.auth(authFull, s.createRegistryToken))
+	m.HandleFunc("POST /o/{org}/api-tokens", s.auth(authFull, s.createAPIToken))
+	m.HandleFunc("POST /o/{org}/api-tokens/{id}/delete", s.auth(authFull, s.deleteAPIToken))
 	m.HandleFunc("POST /o/{org}/alerts/channels", s.auth(authFull, s.createChannel))
 	m.HandleFunc("POST /o/{org}/alerts/channels/{id}/delete", s.auth(authFull, s.deleteChannel))
 	m.HandleFunc("POST /o/{org}/alerts/channels/{id}/test", s.auth(authFull, s.testChannel))
@@ -151,6 +160,15 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /o/{org}/p/{project}", s.auth(authFull, s.projectPage))
 	m.HandleFunc("POST /o/{org}/p/{project}/services", s.auth(authFull, s.createService))
 	m.HandleFunc("POST /o/{org}/p/{project}/delete", s.auth(authFull, s.deleteProject))
+
+	m.HandleFunc("POST /o/{org}/p/{project}/databases", s.auth(authFull, s.createDatabase))
+	const dbp = "/o/{org}/p/{project}/d/{db}"
+	m.HandleFunc("GET "+dbp, s.auth(authFull, s.databasePage))
+	m.HandleFunc("POST "+dbp+"/settings", s.auth(authFull, s.databaseSettings))
+	m.HandleFunc("POST "+dbp+"/attach", s.auth(authFull, s.attachDatabase))
+	m.HandleFunc("POST "+dbp+"/backups", s.auth(authFull, s.databaseBackupNow))
+	m.HandleFunc("POST "+dbp+"/backups/restore/{snap}", s.auth(authFull, s.databaseRestore))
+	m.HandleFunc("POST "+dbp+"/delete", s.auth(authFull, s.deleteDatabase))
 
 	const svc = "/o/{org}/p/{project}/s/{service}"
 	m.HandleFunc("GET "+svc, s.auth(authFull, s.servicePage))
@@ -171,6 +189,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET "+svc+"/logs.json", s.auth(authFull, s.logsJSON))
 	m.HandleFunc("GET "+svc+"/metrics.json", s.auth(authFull, s.metricsJSON))
 
+	s.apiRoutes(m)
 	return s.secureHeaders(m)
 }
 
@@ -354,6 +373,12 @@ func parseTemplates() (map[string]*template.Template, error) {
 		},
 		"datetime":    func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") },
 		"roleAtLeast": func(role, min string) bool { return roleAtLeast(role, min) },
+		"dbStatus": func(s string) string {
+			if s == "running" {
+				return "live"
+			}
+			return s
+		},
 		"hours": func() []int {
 			h := make([]int, 24)
 			for i := range h {

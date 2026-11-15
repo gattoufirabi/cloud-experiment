@@ -16,6 +16,7 @@ type navService struct{ Slug, Status string }
 type navProject struct {
 	Slug, Name string
 	Services   []navService
+	Databases  []navService
 }
 
 func (s *Server) loadNav(r *http.Request, o *orgInfo) []navProject {
@@ -42,7 +43,28 @@ func (s *Server) loadNav(r *http.Request, o *orgInfo) []navProject {
 				out[len(out)-1].Services = append(out[len(out)-1].Services, navService{Slug: ss, Status: st})
 			}
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		drows, err := tx.Query(r.Context(), `
+			SELECT p.slug, d.slug, CASE d.status WHEN 'running' THEN 'live' WHEN 'failed' THEN 'failed' ELSE 'pending' END
+			FROM databases d JOIN projects p ON p.id = d.project_id ORDER BY d.slug`)
+		if err != nil {
+			return err
+		}
+		defer drows.Close()
+		for drows.Next() {
+			var ps, ds, st string
+			if err := drows.Scan(&ps, &ds, &st); err != nil {
+				return err
+			}
+			for i := range out {
+				if out[i].Slug == ps {
+					out[i].Databases = append(out[i].Databases, navService{Slug: ds, Status: st})
+				}
+			}
+		}
+		return drows.Err()
 	})
 	return out
 }
@@ -57,5 +79,6 @@ func (s *Server) addNav(r *http.Request, d data) {
 	d["Nav"] = s.loadNav(r, o)
 	d["CurProject"] = r.PathValue("project")
 	d["CurService"] = r.PathValue("service")
+	d["CurDB"] = r.PathValue("db")
 	d["RegistryHostNav"] = s.cfg.RegistryHost != ""
 }

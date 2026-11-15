@@ -115,12 +115,14 @@ func (c *Client) NetworkInspect(ctx context.Context, name string) (*Network, err
 	return &n, err
 }
 
-func (c *Client) NetworkCreate(ctx context.Context, name string, labels map[string]string) error {
+// NetworkCreate creates a bridge network with an explicit subnet (CIDR).
+func (c *Client) NetworkCreate(ctx context.Context, name, subnet string, labels map[string]string) error {
 	return c.call(ctx, http.MethodPost, "/networks/create", nil, map[string]any{
 		"Name":           name,
 		"Driver":         "bridge",
 		"CheckDuplicate": true,
 		"Labels":         labels,
+		"IPAM":           map[string]any{"Driver": "default", "Config": []map[string]string{{"Subnet": subnet}}},
 		"Options": map[string]string{
 			"com.docker.network.bridge.name":       name, // lets host firewall rules match pt-*
 			"com.docker.network.bridge.enable_icc": "true",
@@ -422,4 +424,79 @@ func (c *Client) VolumeExists(ctx context.Context, name string) (bool, error) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// NetworkList returns networks carrying the given label (key=value).
+func (c *Client) NetworkList(ctx context.Context, label string) ([]Network, error) {
+	f, _ := json.Marshal(map[string][]string{"label": {label}})
+	var out []Network
+	err := c.call(ctx, http.MethodGet, "/networks", url.Values{"filters": {string(f)}}, nil, &out)
+	return out, err
+}
+
+func (c *Client) NetworkDisconnect(ctx context.Context, network, container string) error {
+	err := c.call(ctx, http.MethodPost, "/networks/"+url.PathEscape(network)+"/disconnect", nil,
+		map[string]any{"Container": container, "Force": true}, nil)
+	if IsNotFound(err) || (err != nil && strings.Contains(err.Error(), "not connected")) {
+		return nil
+	}
+	return err
+}
+
+func (c *Client) NetworkRemove(ctx context.Context, network string) error {
+	err := c.call(ctx, http.MethodDelete, "/networks/"+url.PathEscape(network), nil, nil, nil)
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// ContainerExec runs cmd inside a running container and returns its output and exit code.
+func (c *Client) ContainerExec(ctx context.Context, id string, cmd, env []string) ([]byte, []byte, int, error) {
+	var created struct {
+		ID string `json:"Id"`
+	}
+	if err := c.call(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/exec", nil, map[string]any{
+		"AttachStdout": true, "AttachStderr": true, "Cmd": cmd, "Env": env,
+	}, &created); err != nil {
+		return nil, nil, -1, err
+	}
+	resp, err := c.req(ctx, http.MethodPost, "/exec/"+url.PathEscape(created.ID)+"/start", nil, map[string]any{"Detach": false, "Tty": false})
+	if err != nil {
+		return nil, nil, -1, err
+	}
+	stdout, stderr, err := readMux(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return stdout, stderr, -1, err
+	}
+	var info struct {
+		ExitCode int `json:"ExitCode"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/exec/"+url.PathEscape(created.ID)+"/json", nil, nil, &info); err != nil {
+		return stdout, stderr, -1, err
+	}
+	return stdout, stderr, info.ExitCode, nil
+}
+
+// readMux splits Docker's multiplexed stdout/stderr stream.
+func readMux(r io.Reader) ([]byte, []byte, error) {
+	var stdout, stderr bytes.Buffer
+	br := bufio.NewReaderSize(r, 64<<10)
+	hdr := make([]byte, 8)
+	for {
+		if _, err := io.ReadFull(br, hdr); err != nil {
+			if err == io.EOF {
+				return stdout.Bytes(), stderr.Bytes(), nil
+			}
+			return stdout.Bytes(), stderr.Bytes(), err
+		}
+		dst := &stdout
+		if hdr[0] == 2 {
+			dst = &stderr
+		}
+		if _, err := io.CopyN(dst, br, int64(binary.BigEndian.Uint32(hdr[4:]))); err != nil {
+			return stdout.Bytes(), stderr.Bytes(), err
+		}
+	}
 }

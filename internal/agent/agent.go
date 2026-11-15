@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net"
@@ -120,6 +121,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	for {
 		a.processPending(ctx)
 		a.syncCaddy(ctx, false)
+		a.reconcileDatabases(ctx)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -335,10 +337,8 @@ func (a *Agent) ensureNetwork(ctx context.Context, j job) (string, error) {
 	n, err := a.dk.NetworkInspect(ctx, name)
 	switch {
 	case docker.IsNotFound(err):
-		if err := a.dk.NetworkCreate(ctx, name, map[string]string{
-			"platform.managed": "true", "platform.org": j.OrgID, "platform.project": j.ProjectID,
-		}); err != nil {
-			return "", fmt.Errorf("create network: %w", err)
+		if err := a.createProjectNetwork(ctx, name, j); err != nil {
+			return "", err
 		}
 	case err != nil:
 		return "", fmt.Errorf("inspect network: %w", err)
@@ -552,6 +552,9 @@ func (a *Agent) reconcile(ctx context.Context) {
 	}
 	byDep := map[string]docker.ContainerSummary{}
 	for _, c := range containers {
+		if c.Labels["platform.database"] != "" {
+			continue
+		}
 		dep := c.Labels["platform.deployment"]
 		if !keep[dep] {
 			a.log.Info("removing orphan container", "container", strings.Join(c.Names, ","))
@@ -623,7 +626,11 @@ func (a *Agent) reconcile(ctx context.Context) {
 	a.mu.Unlock()
 
 	a.logs.ensure(ctx, running)
+	a.reconcileDatabases(ctx)
 	a.syncCaddy(ctx, force)
+	if force {
+		a.collectNetworks(ctx)
+	}
 }
 
 func (a *Agent) currentTargets() []target {
@@ -648,4 +655,74 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// ---------- project networks ----------
+
+// Each project network gets a /24 from 10.208.0.0/12 (4096 networks, 254 addresses each)
+// instead of Docker's default /16, which would exhaust the default pools after ~30
+// projects. The starting /24 is derived from the project ID; on overlap the next is tried.
+func subnetCandidate(projectID string, attempt int) string {
+	h := fnv.New32a()
+	h.Write([]byte(projectID))
+	idx := (int(h.Sum32()) + attempt) % 4096
+	if idx < 0 {
+		idx += 4096
+	}
+	return fmt.Sprintf("10.%d.%d.0/24", 208+idx/256, idx%256)
+}
+
+func (a *Agent) createProjectNetwork(ctx context.Context, name string, j job) error {
+	labels := map[string]string{"platform.managed": "true", "platform.org": j.OrgID, "platform.project": j.ProjectID}
+	var err error
+	for attempt := 0; attempt < 64; attempt++ {
+		err = a.dk.NetworkCreate(ctx, name, subnetCandidate(j.ProjectID, attempt), labels)
+		if err == nil {
+			return nil
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "overlap") {
+			break
+		}
+	}
+	return fmt.Errorf("create network: %w", err)
+}
+
+// collectNetworks removes project networks that no deployment needs any more (deleted
+// projects, services or organizations), so addresses are returned to the pool.
+func (a *Agent) collectNetworks(ctx context.Context) {
+	rows, err := a.pool.Query(ctx, `
+		SELECT DISTINCT s.project_id::text FROM deployments d JOIN services s ON s.id = d.service_id
+		WHERE d.status IN ('live', 'deploying', 'pending')
+		UNION SELECT project_id::text FROM databases`)
+	if err != nil {
+		return
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return
+	}
+	needed := map[string]bool{}
+	for _, id := range ids {
+		needed[id] = true
+	}
+	nets, err := a.dk.NetworkList(ctx, "platform.managed=true")
+	if err != nil {
+		return
+	}
+	for _, n := range nets {
+		if needed[n.Labels["platform.project"]] {
+			continue
+		}
+		_ = a.dk.NetworkDisconnect(ctx, n.Name, a.cfg.CaddyContainer)
+		if a.cfg.AgentContainer != "" {
+			_ = a.dk.NetworkDisconnect(ctx, n.Name, a.cfg.AgentContainer)
+		}
+		if err := a.dk.NetworkRemove(ctx, n.Name); err != nil {
+			continue // tenant containers still attached; retried on a later pass
+		}
+		a.mu.Lock()
+		delete(a.attached, n.Name)
+		a.mu.Unlock()
+		a.log.Info("removed unused project network", "network", n.Name)
+	}
 }

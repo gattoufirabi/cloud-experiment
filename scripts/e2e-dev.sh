@@ -207,6 +207,71 @@ check "[A] data is back to the snapshot" "$(dx exec "$CID_F" cat /data/state.txt
 check "[A] application running again after restore" "$(docker inspect -f '{{.State.Running}}' "$CID_F")" true
 check "[A] safety snapshot kept before the restore" "$(owner_sql "SELECT count(*) > 0 FROM backup_snapshots b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.tags = 'pre-restore'")" t
 
+echo "== Managed PostgreSQL"
+db_sql() { dx exec -e PGPASSWORD=x "$DB_CID" psql -U app -d app -h 127.0.0.1 -tA -c "$1" 2>&1 | tr -d '\r'; }
+wait_dbjob() {
+  local s
+  for _ in $(seq 1 90); do
+    s=$(owner_sql "SELECT j.status FROM backup_jobs j JOIN databases d ON d.id = j.database_id JOIN orgs o ON o.id = j.org_id
+                   WHERE o.slug = '$A' AND d.slug = 'main' ORDER BY j.created_at DESC LIMIT 1")
+    if [ "$s" = done ] || [ "$s" = error ]; then echo "$s"; return; fi
+    sleep 2
+  done
+  echo timeout
+}
+check "[A] database created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=main -d version=17)" 303
+DB_ST=""; for _ in $(seq 1 60); do
+  DB_ST=$(owner_sql "SELECT d.status FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'main'")
+  [ "$DB_ST" = running ] || [ "$DB_ST" = failed ] && break; sleep 2; done
+check "[A] database running" "$DB_ST" running
+DB_CID=$(owner_sql "SELECT d.container_id FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'main'")
+DB_HOST=$(owner_sql "SELECT 'pd-' || left(replace(d.id::text, '-', ''), 12) FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'main'")
+check "[A] database runs with its memory limit" "$(docker inspect -f '{{.HostConfig.Memory}}' "$DB_CID")" 268435456
+if dx exec "$CID_F" sh -c "echo | nc -w 3 $DB_HOST 5432" >/dev/null 2>&1; then ok "[A] service in the same project reaches the database"; else bad "[A] service cannot reach its database"; fi
+if dx exec "$CID_B" sh -c "echo | nc -w 3 $DB_HOST 5432" >/dev/null 2>&1; then bad "[B->A] B's service reached A's database"; else ok "[B->A] B's service cannot reach A's database"; fi
+check "[A] connection URL added to a service as a secret" "$(code_of ja -X POST "$BASE/o/$A/p/shop/d/main/attach" -d csrf=$CSRF_A -d service=files -d name=DATABASE_URL)" 303
+check "[A] DATABASE_URL secret stored" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name = 'DATABASE_URL'")" 1
+check "[B->A] B cannot open A's database page (404)" "$(code_of jb "$BASE/o/$A/p/shop/d/main")" 404
+LOC=$(c ja -o /dev/null -D - -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=second | tr -d '\r' | grep -i '^location')
+if echo "$LOC" | grep -q "allows+1+managed"; then ok "[A] plan limit on databases enforced"; else bad "[A] second database not refused ($LOC)"; fi
+
+db_sql "CREATE TABLE notes (t text); INSERT INTO notes VALUES ('$MARK-db1')" >/dev/null
+check "[A] database backup requested" "$(code_of ja -X POST "$BASE/o/$A/p/shop/d/main/backups" -d csrf=$CSRF_A)" 303
+check "[A] database backup completes" "$(wait_dbjob)" done
+DB_SNAP=$(owner_sql "SELECT b.snapshot_id FROM backup_snapshots b JOIN databases d ON d.id = b.database_id JOIN orgs o ON o.id = b.org_id
+                     WHERE o.slug = '$A' AND d.slug = 'main' ORDER BY b.taken_at DESC LIMIT 1")
+db_sql "DELETE FROM notes; INSERT INTO notes VALUES ('$MARK-db2')" >/dev/null
+check "[B->A] B cannot restore A's database (404)" "$(code_of jb -X POST "$BASE/o/$A/p/shop/d/main/backups/restore/$DB_SNAP" -d csrf=$CSRF_B -d confirm=main)" 404
+check "[A] database restore requested" "$(code_of ja -X POST "$BASE/o/$A/p/shop/d/main/backups/restore/$DB_SNAP" -d csrf=$CSRF_A -d confirm=main)" 303
+check "[A] database restore completes" "$(wait_dbjob)" done
+check "[A] database rows are back to the snapshot" "$(db_sql "SELECT t FROM notes")" "$MARK-db1"
+check "[A] database deleted" "$(code_of ja -X POST "$BASE/o/$A/p/shop/d/main/delete" -d csrf=$CSRF_A -d confirm=main)" 303
+GONE=no; for _ in $(seq 1 30); do docker inspect "$DB_CID" >/dev/null 2>&1 || { GONE=yes; break; }; sleep 2; done
+check "[A] database container removed" "$GONE" yes
+
+echo "== API tokens and platformctl"
+api_code() { local t=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" "$@"; }
+api_get() { local t=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" "$@"; }
+new_api_token() { c "$1" -X POST "$BASE/o/$2/api-tokens" -d "csrf=$3" -d "name=$4" -d "role=$5" | grep -o 'pla_[A-Za-z0-9_-]*' | head -1; }
+TOK_DEV=$(new_api_token ja "$A" "$CSRF_A" ci developer)
+TOK_VIEW=$(new_api_token ja "$A" "$CSRF_A" dashboard viewer)
+TOK_B=$(new_api_token jb "$B" "$CSRF_B" ci developer)
+if [ -n "$TOK_DEV" ] && [ -n "$TOK_VIEW" ] && [ -n "$TOK_B" ]; then ok "API tokens created in the console"; else bad "API token not shown"; fi
+check "[API] request without a token refused (401)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' "$BASE/api/v1/projects")" 401
+check "[API] whoami names the organization" "$(api_get "$TOK_DEV" "$BASE/api/v1/me" | grep -o "\"organization\":\"$A\"")" "\"organization\":\"$A\""
+check "[B->A API] B's token cannot see A's service (404)" "$(api_code "$TOK_B" "$BASE/api/v1/projects/shop/services/files")" 404
+check "[API] viewer token cannot deploy (403)" "$(api_code "$TOK_VIEW" -X POST "$BASE/api/v1/projects/shop/services/web/deploy")" 403
+check "[API] viewer token can read" "$(api_code "$TOK_VIEW" "$BASE/api/v1/projects/shop/services/web")" 200
+(cd .. && go build -o "$TMP/platformctl.exe" ./cmd/platformctl) || bad "platformctl did not build"
+pctl() { PLATFORM_URL="$BASE" PLATFORM_TOKEN="$TOK_DEV" "$TMP/platformctl.exe" "$@" 2>&1; }
+if pctl deploy shop/web --image nginx:1.27-alpine --wait | grep -q "is live"; then ok "[CLI] platformctl deploy --wait reaches live"; else bad "[CLI] platformctl deploy failed"; fi
+if pctl status shop/web | grep -q "live"; then ok "[CLI] platformctl status shows the live revision"; else bad "[CLI] status missing"; fi
+if echo "cli-secret-$RUN" | pctl secret set shop/web CLI_TEST | grep -q "saved"; then ok "[CLI] platformctl secret set"; else bad "[CLI] secret set failed"; fi
+if c ja "$BASE/o/$A/audit" | grep -q "via_api_token"; then ok "[API] audit log names the token"; else bad "[API] token missing from the audit log"; fi
+TOK_ID=$(owner_sql "SELECT t.id FROM api_tokens t JOIN orgs o ON o.id = t.org_id WHERE o.slug = '$A' AND t.name = 'ci'")
+code_of ja -X POST "$BASE/o/$A/api-tokens/$TOK_ID/delete" -d csrf=$CSRF_A >/dev/null
+check "[API] revoked token refused (401)" "$(api_code "$TOK_DEV" "$BASE/api/v1/me")" 401
+
 echo "== Alerts"
 ntfy_has() { # ntfy_has <topic> <text> [tries]: wait until a message on topic contains text
   for _ in $(seq 1 "${3:-30}"); do

@@ -5,10 +5,13 @@
 
 <nav class="tabs" role="tablist" aria-label="Project sections">
   <a role="tab" href="#services">Services <span class="count">{{len .Services}}</span></a>
+  <a role="tab" href="#databases">Databases <span class="count">{{len .Databases}}</span></a>
   {{if roleAtLeast .Org.Role "admin"}}<a role="tab" href="#project-settings">Settings</a>{{end}}
 </nav>
 
 <section class="pane" id="services" role="tabpanel" aria-label="Services">
+  <p class="help"><a href="/docs/user#deploy-your-first-application" target="_blank" rel="noopener">Guide: deploy your first application ↗</a></p>
+
   <div class="section">
     {{if .Services}}
     <table>
@@ -17,11 +20,11 @@
       {{range .Services}}
         <tr><td><a href="{{$.Org.Path}}/p/{{$.Project.Slug}}/s/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
             <td><code>{{if .Image}}{{.Image}}{{else}}not set{{end}}</code></td>
-            <td>{{if eq .Status "not deployed"}}<span class="st st-none">[not deployed]</span>{{else}}{{template "status" .Status}}{{end}}</td></tr>
+            <td>{{if eq .Status "not deployed"}}<span class="st st-none">not deployed</span>{{else}}{{template "status" .Status}}{{end}}</td></tr>
       {{end}}
       </tbody>
     </table>
-    {{else}}<p class="small muted">[*] no services yet. A service is one container: a website, an API or a worker.</p>{{end}}
+    {{else}}<p class="small muted">No services yet. A service is one container: a website, an API or a worker.</p>{{end}}
   </div>
   {{if roleAtLeast .Org.Role "developer"}}
   <div class="section">
@@ -32,6 +35,36 @@
       <input name="image" placeholder="image, e.g. nginx:1.27-alpine" aria-label="Image">
       <button type="submit" class="arrow">Add service</button>
     </form>
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="databases" role="tabpanel" aria-label="Databases">
+  <p class="help"><a href="/docs/user#managed-databases" target="_blank" rel="noopener">Guide: managed databases ↗</a></p>
+  <div class="section">
+    {{if .Databases}}
+    <table>
+      <thead><tr><th>Database</th><th>Engine</th><th>Resources</th><th>Status</th></tr></thead>
+      <tbody>
+      {{range .Databases}}
+        <tr><td><a href="{{$.Org.Path}}/p/{{$.Project.Slug}}/d/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
+          <td>PostgreSQL {{.Version}}</td><td>{{.CPUMillis}} millicores · {{.MemoryMB}} MB</td>
+          <td>{{template "status" (dbStatus .Status)}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="small muted">No databases yet. A managed PostgreSQL database runs on this project's private network, with nightly backups.</p>{{end}}
+  </div>
+  {{if roleAtLeast .Org.Role "developer"}}
+  <div class="section">
+    <h2>Create a database</h2>
+    <form method="post" action="{{.Org.Path}}/p/{{.Project.Slug}}/databases" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="slug" placeholder="database-id, e.g. main" pattern="[a-z0-9][a-z0-9-]{1,19}" required aria-label="Database ID">
+      <select name="version" aria-label="PostgreSQL version"><option value="17" selected>PostgreSQL 17</option><option value="16">PostgreSQL 16</option></select>
+      <button type="submit" class="arrow">Create database</button>
+    </form>
+    <p class="small muted">Starts with 250 millicores and 256 MB, counted against your plan; change it later in its settings.</p>
   </div>
   {{end}}
 </section>

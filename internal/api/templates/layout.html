@@ -1,6 +1,6 @@
-{{define "sevcounts"}}<span class="sev" title="critical">C {{.Critical}}</span><span class="sev" title="high">H {{.High}}</span><span class="sev" title="medium">M {{.Medium}}</span><span class="sev" title="low">L {{.Low}}</span>{{end}}
+{{define "sevcounts"}}<span class="sev"><b>{{.Critical}}</b>critical</span><span class="sev"><b>{{.High}}</b>high</span><span class="sev"><b>{{.Medium}}</b>medium</span><span class="sev"><b>{{.Low}}</b>low</span>{{end}}
 
-{{define "status"}}<span class="st st-{{.}}">[{{.}}]</span>{{end}}
+{{define "status"}}<span class="st st-{{.}}">{{.}}</span>{{end}}
 
 {{define "flash"}}{{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}{{with .Err}}<p class="flash err" role="alert">{{.}}</p>{{end}}{{end}}
 
@@ -12,13 +12,14 @@
 <div class="side-h">Projects</div>
 {{range $p := .Nav}}
 <div class="side-proj">
-  <a href="{{$.Org.Path}}/p/{{$p.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (not $.CurService)}}cur{{end}}">{{$p.Name}}</a>
-  {{if $p.Services}}<ul>
+  <a href="{{$.Org.Path}}/p/{{$p.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (not $.CurService) (not $.CurDB)}}cur{{end}}">{{$p.Name}}</a>
+  {{if or $p.Services $p.Databases}}<ul>
     {{range $p.Services}}<li><a href="{{$.Org.Path}}/p/{{$p.Slug}}/s/{{.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (eq .Slug $.CurService)}}cur{{end}}" title="{{.Slug}}: {{.Status}}"><span class="glyph g-{{.Status}}" aria-hidden="true"></span>{{.Slug}}</a></li>{{end}}
+    {{range $p.Databases}}<li><a href="{{$.Org.Path}}/p/{{$p.Slug}}/d/{{.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (eq .Slug $.CurDB)}}cur{{end}}" title="database {{.Slug}}: {{.Status}}"><span class="glyph g-{{.Status}}" aria-hidden="true"></span>{{.Slug}} <span class="db-tag">db</span></a></li>{{end}}
   </ul>{{end}}
 </div>
 {{else}}
-<p class="empty">[*] no projects yet</p>
+<p class="empty">No projects yet</p>
 {{end}}
 <div class="side-links">
   <a href="{{.Org.Path}}#members">Members</a>
@@ -42,12 +43,14 @@
   <header class="top">
     <a class="brand" href="/" aria-label="platform home"><span class="brand-mark">plat</span>form</a>
     {{with .Org}}<nav class="crumbs" aria-label="Breadcrumb"><a href="{{.Path}}">{{.Name}}</a>{{if $.Project}}<span class="sep">/</span><a href="{{.Path}}/p/{{$.Project.Slug}}">{{$.Project.Name}}</a>{{end}}{{if $.Service}}<span class="sep">/</span><span>{{$.Service.Slug}}</span>{{end}}</nav>{{end}}
+    <a class="navlink" href="/docs/user">Docs</a>
     {{with .User}}
     <form method="post" action="/logout" class="logout">
       <input type="hidden" name="csrf" value="{{$.CSRF}}">
       <span class="muted">{{.Email}}</span>
       <button class="secondary small" type="submit">Log out</button>
     </form>
+    {{else}}<a class="pill-link" href="/login">Log in</a>
     {{end}}
   </header>
   {{if .HasNav}}
@@ -58,7 +61,7 @@
   {{else}}
   <main class="main single">{{template "flash" .}}{{template "content" .}}</main>
   {{end}}
-  <footer class="legal">platform · self-hosted, open source</footer>
+  <footer class="legal">platform &nbsp;•&nbsp; self-hosted &nbsp;•&nbsp; open source</footer>
 </div>
 </body>
 </html>{{end}}

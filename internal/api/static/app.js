@@ -151,3 +151,25 @@ if (deps) {
     setTimeout(poll, 2500);
   }
 }
+
+// ---------- docs: highlight the current section in the left pane ----------
+const toc = document.querySelector(".docs-toc");
+if (toc) {
+  const links = [...toc.querySelectorAll('a[href^="#"]')];
+  const heads = links.map((a) => document.getElementById(a.hash.slice(1))).filter(Boolean);
+  let ticking = false;
+  const mark = () => {
+    ticking = false;
+    let current = heads[0];
+    for (const h of heads) if (h.getBoundingClientRect().top <= 140) current = h; // last heading above the reading line
+    links.forEach((a) => a.classList.toggle("cur", current && a.hash === "#" + current.id));
+  };
+  window.addEventListener("scroll", () => { if (!ticking) { ticking = true; requestAnimationFrame(mark); } }, { passive: true });
+  // The browser may jump to #section before the page is laid out; jump again once loaded.
+  window.addEventListener("load", () => {
+    const target = location.hash && document.getElementById(location.hash.slice(1));
+    if (target) target.scrollIntoView();
+    mark();
+  });
+  mark();
+}
