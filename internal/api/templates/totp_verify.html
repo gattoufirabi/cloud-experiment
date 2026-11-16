@@ -5,9 +5,9 @@
   <p class="lede">Open your authenticator app and type the current 6-digit code.</p>
   <form method="post" action="/totp/verify" class="stack">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <label>6-digit code <input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required autofocus></label>
+    <label>6-digit code <span class="hint">or a recovery code</span><input name="code" maxlength="12" autocomplete="one-time-code" required autofocus></label>
     <div><button type="submit" class="arrow">Log in</button></div>
   </form>
-  <p class="small muted">Lost your device? Ask the platform operator to reset two-step login for your account.</p>
+  <p class="small muted">Lost your device? Enter one of your recovery codes instead (format <code>abcde-fghij</code>). No codes left? Ask the platform operator.</p>
 </section>
 {{end}}

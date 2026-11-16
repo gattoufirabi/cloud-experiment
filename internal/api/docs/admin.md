@@ -90,12 +90,8 @@ The platform enforces isolation by itself; the operator reacts to abuse, helps l
 
 - **Suspend an abusive or unpaid client:** `suspend-org --slug acme` stops its containers within seconds, removes its routes and blocks changes; `--undo` restores everything.
 - **Unlock an account:** it unlocks by itself after 15 minutes, or immediately with `UPDATE users SET failed_logins = 0, locked_until = NULL WHERE email = '…';`.
-- **Reset two-step login** (lost phone), after verifying the person's identity out of band:
-
-```
-UPDATE users SET totp_enabled = false, totp_secret_enc = NULL, totp_last_step = 0 WHERE email = 'person@example.com';
-DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE email = 'person@example.com');
-```
+- **Lost phone:** users log in with one of their recovery codes. If they have none left, verify their identity out of band, then `reset-totp --email person@example.com`: they set up two-step login again at their next login.
+- **Forgotten password:** users get a reset link by email from the login page (needs `SMTP_*`). Otherwise `reset-password --email person@example.com` prints a one-hour link to send privately. A reset ends all their sessions; two-step login is still required.
 
 | Secret | If lost | If leaked |
 | --- | --- | --- |
@@ -107,6 +103,8 @@ DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE email = 'person
 - **Self-signup** (`SIGNUP_ENABLED=true`, needs `SMTP_*`): new organizations start on the `trial` plan (`SIGNUP_TRIAL_DAYS`, default 14). Abuse controls: honeypot, 5 signups per IP per hour, `SIGNUP_DAILY_LIMIT` per day, a browser proof-of-work (`SIGNUP_POW_BITS`, default 16, no third-party CAPTCHA), disposable domains refused (built-in list plus `SIGNUP_BLOCKED_DOMAINS`; or only `SIGNUP_ALLOWED_DOMAINS`), and a confirmation link that needs a click. The agent suspends expired trials (owners are emailed) and trial organizations whose containers stay above `ANOMALY_CPU_PERCENT` (90) of their CPU limit for `ANOMALY_MINUTES` (30); paid organizations only get an operator notice. Notices go to `OPERATOR_NTFY_URL`. Review with `platform admin trials`; upgrade with `set-plan --plan starter` (lifts a trial-ended suspension), restore an anomaly suspension with `suspend-org --undo`. For email, use your own SMTP server (Postfix, Stalwart, Mailcow…) with SPF, DKIM and DMARC set up, or a relay.
 - **Builds from git** (`BUILDS_ENABLED=true`, needs the registry): the agent runs a git container (no capabilities except CHOWN) and a rootless BuildKit container (non-root; only SETUID/SETGID for its user namespace, so `no-new-privileges` cannot be set) on the network `pt-build`, which the tenant firewall's `pt-*` rules cover, with inter-container traffic off. Images are pushed as `builder/<org>`, which can push only to that organization's namespace. Limits: `BUILD_CPU_MILLIS`, `BUILD_MEMORY_MB`, `BUILD_TIMEOUT_MINUTES`, `BUILD_MAX_IMAGE_MB`. Per-service caches live in volumes `pbcache-*` (safe to delete). **Before enabling in production**, run a build with `BUILD_RUNTIME=runsc` and confirm rootless BuildKit works under gVisor on your kernel (verified on Debian 12; there plain runc refuses rootless BuildKit, so `runsc` is required anyway). Build minutes are not billed.
 - **Preview environments** are hidden service rows (`services.preview_of`). The agent deletes expired ones every minute (audited as `preview.expired`); their containers and routes go away at the next reconcile. With ACME, each preview address gets its own certificate on demand, so wildcard DNS for the apps domain must cover two levels (`*.apps.example.com` does).
+- **Registry clean-up:** every day the agent deletes tags no recent deployment uses (last 20 revisions per service) and that were not pushed or built in the last `REGISTRY_KEEP_DAYS` (30) days. Every Sunday at 04:30, `platform-registry-gc.timer` stops the registry for about a minute and reclaims the freed layers (`host/registry-gc.sh`).
+- **Platform database:** `platform-db-backup.timer` dumps it nightly to `/var/backups/platform` (14 days kept). Copy that folder off the server.
 - **Traffic protection** runs in Caddy, built with two open-source modules (`deploy/caddy/Dockerfile`: Coraza WAF with the OWASP Core Rule Set, and caddy-ratelimit). All services with the WAF on share one rule-set instance, so Caddy needs about 100 MB more once any client turns it on. Rate limits are kept in memory and reset when Caddy restarts.
 - **Status pages** are opt-in per project and read only through restricted database functions; a suspended client's pages return "not found". Uptime history older than 90 days is pruned by the agent.
 

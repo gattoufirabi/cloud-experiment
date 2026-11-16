@@ -308,6 +308,14 @@ else
   warn "console not reachable over HTTPS yet. Check DNS and: docker compose -f compose.prod.yml logs caddy api"
 fi
 
+info "enabling the nightly database backup (/var/backups/platform, 14 days) and weekly registry clean-up"
+for u in platform-db-backup.service platform-db-backup.timer platform-registry-gc.service platform-registry-gc.timer; do
+  install -m 0644 "$DIR/host/$u" "/etc/systemd/system/$u"
+  sed -i "s#/opt/platform/host/#$DIR/host/#" "/etc/systemd/system/$u"
+done
+systemctl daemon-reload
+systemctl enable --now platform-db-backup.timer platform-registry-gc.timer >/dev/null 2>&1
+
 # ---------- 11. first organization ----------
 step "11/11 First organization"
 if [[ -n $ORG ]]; then
@@ -328,7 +336,7 @@ Now, before onboarding clients:
   1. Copy $DIR/deploy/.env and $DIR/deploy/secrets/ to an offline place.
      Without secrets/master.key, client secrets, two-step keys and backups cannot be decrypted.
   2. Do the checks in "Step 4: Verify before onboarding clients" of the deployment guide.
-  3. Schedule a nightly database dump (see "Operations" in the guide).
+  3. Copy /var/backups/platform (nightly database dumps) off the server regularly.
   4. Optional features (off-site backups, invoices, builds, self-signup): edit deploy/.env,
      then: cd $DIR/deploy && docker compose -f compose.prod.yml up -d
 EOF

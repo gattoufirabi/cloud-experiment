@@ -159,7 +159,9 @@ func (s *Server) accountPage(w http.ResponseWriter, r *http.Request) {
 		keys = append(keys, k)
 	}
 	rows.Close()
-	s.render(w, r, "account", http.StatusOK, data{"Passkeys": keys})
+	var codesLeft int
+	_ = s.pool.QueryRow(r.Context(), `SELECT count(*) FROM recovery_codes WHERE user_id = $1 AND used_at IS NULL`, sess.UserID).Scan(&codesLeft)
+	s.render(w, r, "account", http.StatusOK, data{"Passkeys": keys, "CodesLeft": codesLeft})
 }
 
 func (s *Server) passkeyRegisterBegin(w http.ResponseWriter, r *http.Request) {
@@ -350,6 +352,7 @@ func (s *Server) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) passkeyRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /account", s.auth(authFull, s.accountPage))
+	m.HandleFunc("POST /account/recovery-codes", s.auth(authFull, s.regenerateRecoveryCodes))
 	m.HandleFunc("POST /account/passkeys/begin", s.auth(authFull, s.passkeyRegisterBegin))
 	m.HandleFunc("POST /account/passkeys/finish", s.auth(authFull, s.passkeyRegisterFinish))
 	m.HandleFunc("POST /account/passkeys/{id}/delete", s.auth(authFull, s.passkeyDelete))

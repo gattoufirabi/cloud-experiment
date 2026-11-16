@@ -119,12 +119,16 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 type plan struct {
 	Name                                                     string
 	MaxServices, MaxCPU, MaxMemory, MaxDomains, MaxDatabases int
+	MaxDiskMB, DiskUsedMB                                    int
 }
 
 func (s *Server) loadPlan(r *http.Request, q pgx.Tx, id string) (plan, error) {
 	var p plan
-	err := q.QueryRow(r.Context(), `SELECT name, max_services, max_cpu_millis, max_memory_mb, max_domains, max_databases FROM plans WHERE id = $1`, id).
-		Scan(&p.Name, &p.MaxServices, &p.MaxCPU, &p.MaxMemory, &p.MaxDomains, &p.MaxDatabases)
+	err := q.QueryRow(r.Context(), `
+		SELECT p.name, p.max_services, p.max_cpu_millis, p.max_memory_mb, p.max_domains, p.max_databases, p.max_disk_mb,
+		       coalesce((SELECT disk_used_mb FROM orgs WHERE id = nullif(current_setting('app.org_id', true), '')::uuid), 0)
+		FROM plans p WHERE p.id = $1`, id).
+		Scan(&p.Name, &p.MaxServices, &p.MaxCPU, &p.MaxMemory, &p.MaxDomains, &p.MaxDatabases, &p.MaxDiskMB, &p.DiskUsedMB)
 	return p, err
 }
 
@@ -462,6 +466,9 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 
 // checkQuota verifies the plan allows the change. excludeID skips the service being edited.
 func (s *Server) checkQuota(r *http.Request, tx pgx.Tx, o *orgInfo, excludeID string, cpu, mem int, newService bool) error {
+	if err := s.checkDisk(r, tx, o); err != nil {
+		return err
+	}
 	p, err := s.loadPlan(r, tx, o.PlanID)
 	if err != nil {
 		return err
@@ -484,6 +491,20 @@ func (s *Server) checkQuota(r *http.Request, tx pgx.Tx, o *orgInfo, excludeID st
 		return quotaError(fmt.Sprintf("CPU limit reached: your plan allows %d millicores in total and %d are already allocated to other services.", p.MaxCPU, usedCPU))
 	case usedMem+mem > p.MaxMemory:
 		return quotaError(fmt.Sprintf("Memory limit reached: your plan allows %d MB in total and %d MB are already allocated to other services.", p.MaxMemory, usedMem))
+	}
+	return nil
+}
+
+// checkDisk refuses growth once persistent storage is above 110% of the plan's limit
+// (measured by the agent every 15 minutes). Running apps are not affected.
+func (s *Server) checkDisk(r *http.Request, tx pgx.Tx, o *orgInfo) error {
+	var used, limit int
+	if err := tx.QueryRow(r.Context(), `SELECT o.disk_used_mb, p.max_disk_mb FROM orgs o JOIN plans p ON p.id = o.plan_id WHERE o.id = $1`, o.ID).
+		Scan(&used, &limit); err != nil {
+		return err
+	}
+	if used*100 > limit*110 {
+		return quotaError(fmt.Sprintf("Disk limit exceeded: your applications and databases store %d MB and your plan allows %d MB. Delete data, or ask for a larger plan, before deploying again.", used, limit))
 	}
 	return nil
 }

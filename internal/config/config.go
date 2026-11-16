@@ -77,6 +77,8 @@ type Config struct {
 	BuildMaxImageMB int
 	// BuildAllowInsecure (development only): allow http:// and private-address repositories.
 	BuildAllowInsecure bool
+	// RegistryKeepDays: unused tags younger than this are kept by the daily cleanup.
+	RegistryKeepDays int
 
 	// Outgoing email (any SMTP server). Used for signup verification and trial notices.
 	SMTPHost, SMTPUser, SMTPPassword, SMTPFrom, SMTPTLS string
@@ -162,6 +164,7 @@ func Load() Config {
 		BuildSubnet:        env("BUILD_SUBNET", "10.207.0.0/24"),
 		BuildMaxImageMB:    envInt("BUILD_MAX_IMAGE_MB", 8192),
 		BuildAllowInsecure: envBool("BUILD_ALLOW_INSECURE_REPOS", false),
+		RegistryKeepDays:   envInt("REGISTRY_KEEP_DAYS", 30),
 
 		SMTPHost:     env("SMTP_HOST", ""),
 		SMTPPort:     envInt("SMTP_PORT", 587),

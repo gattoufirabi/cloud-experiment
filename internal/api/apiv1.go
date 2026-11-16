@@ -258,6 +258,13 @@ func (s *Server) apiDeploy(w http.ResponseWriter, r *http.Request, o *orgInfo) {
 		if err := registry.CheckNamespace(spec.Image, s.cfg.RegistryHost, o.Slug); err != nil {
 			return apiErr{http.StatusUnprocessableEntity, err.Error()}
 		}
+		if err := s.checkDisk(r, tx, o); err != nil {
+			var qe quotaError
+			if errors.As(err, &qe) {
+				return apiErr{http.StatusInsufficientStorage, qe.Error()}
+			}
+			return err
+		}
 		if spec.Image != sv.Image {
 			if _, err := tx.Exec(r.Context(), `UPDATE services SET image = $2 WHERE id = $1`, sv.ID, spec.Image); err != nil {
 				return err

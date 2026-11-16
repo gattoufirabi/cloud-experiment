@@ -1,0 +1,12 @@
+{{define "title"}}Recovery codes{{end}}
+{{define "content"}}
+<section class="narrow">
+  <h1>Save your recovery codes</h1>
+  <p class="lede">{{if .First}}Two-step login is on. {{end}}If you lose your phone, each code below logs you in once instead of the 6-digit code. They are shown only now: store them in a password manager or print them.</p>
+  <div class="panel">
+    <ul class="codes">{{range .Codes}}<li><code class="select">{{.}}</code></li>{{end}}</ul>
+  </div>
+  <p><button type="button" class="secondary small" data-print>Print</button></p>
+  <p><a class="pill-link" href="{{if .First}}/{{else}}/account{{end}}">I saved them, continue</a></p>
+</section>
+{{end}}

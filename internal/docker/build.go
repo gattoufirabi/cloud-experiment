@@ -62,6 +62,27 @@ func (c *Client) CopyFileOut(ctx context.Context, id, path string) (io.ReadClose
 	}{tr, resp.Body}, hdr.Size, nil
 }
 
+// VolumeSizes returns every volume's size in bytes (Docker's disk usage report;
+// -1 when Docker has not computed it).
+func (c *Client) VolumeSizes(ctx context.Context) (map[string]int64, error) {
+	var out struct {
+		Volumes []struct {
+			Name      string `json:"Name"`
+			UsageData struct {
+				Size int64 `json:"Size"`
+			} `json:"UsageData"`
+		} `json:"Volumes"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/system/df", url.Values{"type": {"volume"}}, nil, &out); err != nil {
+		return nil, err
+	}
+	sizes := make(map[string]int64, len(out.Volumes))
+	for _, v := range out.Volumes {
+		sizes[v.Name] = v.UsageData.Size
+	}
+	return sizes, nil
+}
+
 // ImageLoad loads an image tarball (docker save / BuildKit "docker" exporter format).
 func (c *Client) ImageLoad(ctx context.Context, tarball io.Reader) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/images/load?quiet=1", tarball)

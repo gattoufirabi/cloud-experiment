@@ -1,0 +1,8 @@
+[Unit]
+Description=Platform database backup (pg_dump)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/platform/host/db-backup.sh

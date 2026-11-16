@@ -294,3 +294,7 @@ pre.log { background: var(--black); color: var(--paper); border-radius: 16px; pa
 /* ---------- two-step login QR code ---------- */
 .qr-panel { text-align: left; }
 svg.qr { display: block; width: 220px; height: 220px; margin: 0 0 16px; border-radius: 12px; }
+
+/* ---------- recovery codes ---------- */
+ul.codes { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 24px; font-size: 16px; }
+@media (max-width: 480px) { ul.codes { grid-template-columns: 1fr; } }

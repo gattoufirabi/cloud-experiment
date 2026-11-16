@@ -14,7 +14,9 @@ Accounts are created by invitation only, and every account must use two-step log
 - **No invitation?** If the platform allows it, choose **Create an account** on the login page: confirm your email address, then set up two-step login. You get your own organization on a free trial (see below).
 - **Sessions** last up to 12 hours and end after 2 hours without activity.
 - **Lockout:** after 5 wrong passwords, the account is locked for 15 minutes.
-- **Lost phone:** ask the platform operator to reset your two-step login, then log in and set it up again.
+- **Recovery codes:** right after two-step setup you get 10 one-time codes. Keep them in a password manager or on paper. Each one replaces the 6-digit code once; create new ones under **Account**.
+- **Lost phone:** log in with your password and a recovery code, then set up two-step login again. No codes left? Ask the platform operator.
+- **Forgot your password:** choose **Forgot your password?** on the login page to get a one-hour link by email (or ask the operator for one). All your sessions end when you set the new password, and two-step login is still required.
 - **Several organizations:** after logging in you see the list of organizations you belong to.
 
 ### Passkeys
@@ -170,6 +172,8 @@ docker push {{registry}}/<organization>/myapp:1.4.2
 - An image from another organization's space is always refused.
 - The **Last used** column shows whether a token is still in use.
 
+- **Clean-up:** tags that no recent deployment uses and that nobody pushed in the last 30 days are deleted automatically. Tags your services run, or ran in their last 20 deployments, are always kept.
+
 ## Traffic protection
 
 Each service's **Security** tab has three protections, applied by the platform's proxy before requests reach your app, on every address of the service. Changes apply within a few seconds, without a redeploy. Developers and above can change them.
@@ -289,6 +293,13 @@ The same operations are available over HTTP with `Authorization: Bearer <token>`
 | `PUT /api/v1/projects/{project}/services/{service}/secrets/{NAME}` with `{"value": "…"}` | developer |
 
 A token works only inside its organization and only with its role. Every change made with a token appears in the audit log, named after the token.
+
+## Disk limits
+
+Each plan includes an amount of persistent storage: service folders and managed databases (with their backup dumps). The organization page shows **disk used / allowed**; it is measured every 15 minutes.
+
+- At 90% and 100% of the limit, your alert channels get a "Disk limit" notification.
+- Above 110%, new deployments and new databases are refused until you delete data or move to a larger plan. Running applications keep running, and rolling back is always allowed.
 
 ## Billing and usage
 

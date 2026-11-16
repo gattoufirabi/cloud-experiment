@@ -48,6 +48,8 @@ func (i incidentView) Title() string {
 		return "Backup failed"
 	case "critical_vulns":
 		return "Critical vulnerabilities"
+	case "disk_quota":
+		return "Disk limit"
 	}
 	return "Test notification"
 }

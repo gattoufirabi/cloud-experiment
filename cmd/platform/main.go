@@ -113,6 +113,9 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
   generate-invoices [--month YYYY-MM]        issue invoices for a finished month (default: last month; safe to rerun)
   invoice-paid --number N | invoice-void --number N
                                              record a payment, or cancel an invoice
+  reset-password --email E                   print a one-time password reset link (valid 1 hour)
+  reset-totp --email E                       turn off a user's two-step login (lost phone, no recovery codes);
+                                             they set it up again at their next login
   totp-code --secret BASE32                  print the current two-step code (testing only)`)
 		return nil
 	}
@@ -277,6 +280,46 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
 		_, _ = pool.Exec(ctx, `SELECT pg_notify('deployments', '')`)
 		_ = db.Audit(ctx, pool, "", "", "org.plan_changed", "org:"+*slug, map[string]string{"plan": *plan}, "")
 		fmt.Println("plan of", *slug, "set to", *plan)
+	case "reset-password", "reset-totp":
+		addr := strings.ToLower(strings.TrimSpace(*inviteEmail))
+		var userID string
+		if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email = $1`, addr).Scan(&userID); err != nil {
+			return fmt.Errorf("no user with email %q", addr)
+		}
+		if args[0] == "reset-totp" {
+			err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(ctx, `UPDATE users SET totp_enabled = false, totp_secret_enc = NULL, totp_last_step = 0 WHERE id = $1`, userID); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(ctx, `DELETE FROM recovery_codes WHERE user_id = $1`, userID); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1`, userID); err != nil {
+					return err
+				}
+				return db.Audit(ctx, tx, "", userID, "totp.reset_by_operator", "user:"+userID, nil, "")
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Println("two-step login turned off for", addr, "- verify their identity out of band; they set it up again at next login")
+			return nil
+		}
+		token := secure.NewToken()
+		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `DELETE FROM password_resets WHERE user_id = $1`, userID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO password_resets (token_hash, user_id, expires_at) VALUES ($1, $2, now() + interval '1 hour')`,
+				secure.HashToken(token), userID); err != nil {
+				return err
+			}
+			return db.Audit(ctx, tx, "", userID, "password.reset_requested", "user:"+userID, map[string]string{"via": "operator"}, "")
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("password reset link for %s (valid 1 hour, works once; send it privately):\n%s/password/reset/%s\n", addr, cfg.BaseURL, token)
 	case "trials":
 		rows, err := pool.Query(ctx, `
 			SELECT o.slug, coalesce((SELECT u.email FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.org_id = o.id AND m.role = 'owner' LIMIT 1), ''),

@@ -37,8 +37,10 @@ onboard() {
   if echo "$page" | grep -q '<svg class="qr"'; then ok "[$org] two-step setup shows a QR code"; else bad "[$org] no QR code on the setup page"; fi
   secret=$(echo "$page" | grep -o 'class="select">[A-Z2-7]\{20,\}<' | head -1 | sed 's/.*">//;s/<$//')
   csrf=$(echo "$page" | csrf_of)
-  code=$(code_of "$jar" -X POST "$BASE/totp/setup" -d "csrf=$csrf" -d "code=$(admin totp-code --secret "$secret" | tr -d '\r')")
-  check "[$org] two-step login enrolled" "$code" 303
+  page=$(c "$jar" -X POST "$BASE/totp/setup" -d "csrf=$csrf" -d "code=$(admin totp-code --secret "$secret" | tr -d '\r')")
+  if echo "$page" | grep -q "Save your recovery codes"; then ok "[$org] two-step login enrolled, recovery codes shown"; else bad "[$org] two-step enrolment failed"; fi
+  echo "$page" | grep -o 'class="select">[a-z2-7]\{5\}-[a-z2-7]\{5\}<' | sed 's/.*">//;s/<$//' > "$TMP/rc-$org"
+  echo "$secret" > "$TMP/totp-$org"
 }
 
 wait_status() { # wait_status <jar> <service path> -> prints final status
@@ -475,7 +477,7 @@ check "opening the link alone creates nothing" "$(owner_sql "SELECT count(*) FRO
 check "replayed proof of work refused" "$(signup jt "x1@$T.test" "${T}x" "$CH" "$N" | grep -c 'browser check')" 1
 check "[signup] confirmed: on to two-step login setup" "$(c jt -o /dev/null -w '%{redirect_url}' -X POST "$LINK")" "$BASE/totp/setup"
 PAGE=$(c jt "$BASE/totp/setup"); SEC=$(echo "$PAGE" | grep -o 'class="select">[A-Z2-7]\{20,\}<' | head -1 | sed 's/.*">//;s/<$//')
-check "[signup] two-step login enrolled" "$(code_of jt -X POST "$BASE/totp/setup" -d "csrf=$(echo "$PAGE" | csrf_of)" -d "code=$(admin totp-code --secret "$SEC" | tr -d '\r')")" 303
+check "[signup] two-step login enrolled" "$(code_of jt -X POST "$BASE/totp/setup" -d "csrf=$(echo "$PAGE" | csrf_of)" -d "code=$(admin totp-code --secret "$SEC" | tr -d '\r')")" 200
 check "confirmation link works only once" "$(code_of jx "$LINK")" 404
 check "new organization is on the Trial plan" "$(owner_sql "SELECT plan_id || ':' || (trial_ends_at > now() + interval '13 days') FROM orgs WHERE slug = '$T'")" "trial:true"
 if c jt "$BASE/o/$T" | grep -q "Trial: 14 days left"; then ok "trial banner shows the days left"; else bad "trial banner missing"; fi
@@ -568,6 +570,70 @@ sleep 35
 check "[agent recreated] healthy apps not reported down" "$(incident_status files service_down)" resolved
 check "[agent recreated] app still reachable through the proxy" \
   "$(curl -s -o /dev/null -w '%{http_code}' --resolve "web-shop-$B.apps.localhost:$PORT:127.0.0.1" "http://web-shop-$B.apps.localhost:$PORT/")" 200
+
+echo "== Registry cleanup"
+echo "$TOK_A" | dk login $REG -u "$A" --password-stdin >/dev/null
+docker tag nginx:1.27-alpine "$REG/$A/old:1"; docker tag alpine:3.20 "$REG/$A/fresh:1" 2>/dev/null || docker tag nginx:1.27-alpine "$REG/$A/fresh:1"
+check "[A] pushed an old and a fresh tag" "$(dk push "$REG/$A/old:1")$(dk push "$REG/$A/fresh:1")" yesyes
+for _ in $(seq 1 20); do [ "$(owner_sql "SELECT count(*) FROM image_scans WHERE image = '$REG/$A/old:1'")" -ge 1 ] && break; sleep 1; done
+owner_sql "UPDATE image_scans SET created_at = now() - interval '60 days' WHERE image = '$REG/$A/old:1'" >/dev/null
+owner_sql "SELECT pg_notify('deployments', 'registry-clean')" >/dev/null
+for _ in $(seq 1 30); do [ "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'registry.cleaned' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" -ge 1 ] && break; sleep 2; done
+check "old unused tag deleted by the daily cleanup" "$(dk pull "$REG/$A/old:1")" no
+check "recently pushed tag kept" "$(dk pull "$REG/$A/fresh:1")" yes
+check "tag used by a deployment kept" "$(dk pull "$REG/$A/web:v1")" yes
+check "cleanup audited" "$(owner_sql "SELECT detail->>'tags_deleted' FROM audit_events WHERE action = 'registry.cleaned' AND org_id = (SELECT id FROM orgs WHERE slug = '$A') ORDER BY id DESC LIMIT 1")" 1
+
+echo "== Disk limits"
+owner_sql "INSERT INTO plans (id, name, max_services, max_cpu_millis, max_memory_mb, max_domains, max_databases, max_disk_mb)
+           VALUES ('tiny', 'Tiny (test)', 20, 8000, 8192, 5, 5, 1) ON CONFLICT (id) DO NOTHING" >/dev/null
+admin set-plan --slug "$A" --plan tiny >/dev/null
+owner_sql "UPDATE orgs SET disk_alert_level = 0, disk_measured_at = NULL WHERE slug = '$A'" >/dev/null
+owner_sql "SELECT pg_notify('deployments', 'disk')" >/dev/null
+for _ in $(seq 1 30); do [ -n "$(owner_sql "SELECT disk_measured_at FROM orgs WHERE slug = '$A'")" ] && break; sleep 2; done
+check "disk use measured by the agent" "$(owner_sql "SELECT disk_measured_at IS NOT NULL AND disk_used_mb > 0 FROM orgs WHERE slug = '$A'")" t
+if c ja "$BASE/o/$A" | grep -q "disk [0-9]*/1 MB"; then ok "[A] organization page shows disk used / allowed"; else bad "disk usage not shown"; fi
+owner_sql "UPDATE orgs SET disk_used_mb = 5 WHERE slug = '$A'" >/dev/null   # 500% of the 1 MB test plan
+check "owner alerted when over the disk limit" "$(owner_sql "SELECT count(*) FROM alert_incidents i JOIN orgs o ON o.id = i.org_id WHERE o.slug = '$A' AND i.kind = 'disk_quota'")" 1
+check "[API] deploy refused above 110% of the disk limit (507)" "$(api_code "$TOK_DEV" -X POST "$BASE/api/v1/projects/shop/services/web/deploy")" 507
+if c ja -L "$BASE$SVC_A/deploy" -d csrf=$CSRF_A | grep -q "Disk limit exceeded"; then ok "[A] console explains why the deploy is refused"; else bad "console disk message missing"; fi
+admin set-plan --slug "$A" --plan pro >/dev/null
+check "[API] deploys work again within the limit" "$(api_code "$TOK_DEV" -X POST "$BASE/api/v1/projects/shop/services/web/deploy")" 202
+
+echo "== Account recovery"
+check "[A] 10 recovery codes issued at setup" "$(wc -l < "$TMP/rc-$A" | tr -d ' ')" 10
+RC=$(head -1 "$TMP/rc-$A")
+login() { # login <jar> <email> <password>: prints the redirect target
+  c "$1" -o /dev/null -w '%{redirect_url}' -X POST "$BASE/login" --data-urlencode "email=$2" --data-urlencode "password=$3"; }
+verify() { # verify <jar> <code>: prints the HTTP status of the two-step step
+  local cs; cs=$(c "$1" "$BASE/totp/verify" | csrf_of); code_of "$1" -X POST "$BASE/totp/verify" -d "csrf=$cs" --data-urlencode "code=$2"; }
+check "[A] password login asks for the second step" "$(login jr1 "owner@$A.test" "correct-horse-battery-$A")" "$BASE/totp/verify"
+check "[A] a recovery code replaces the 6-digit code" "$(verify jr1 "$RC")" 303
+check "[A] recovery-code login is a full session" "$(code_of jr1 "$BASE/o/$A")" 200
+login jr2 "owner@$A.test" "correct-horse-battery-$A" >/dev/null
+check "the same recovery code works only once" "$(verify jr2 "$RC")" 401
+check "recovery-code login audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'login.recovery_code' AND user_id = (SELECT id FROM users WHERE email = 'owner@$A.test')")" 1
+if c jr1 -L "$BASE/account/recovery-codes" -d "csrf=$(c jr1 "$BASE/account" | csrf_of)" | grep -q "Save your recovery codes"; then ok "[A] new recovery codes from the Account page"; else bad "recovery codes not regenerated"; fi
+check "old recovery codes stop working after regeneration" "$(login jr3 "owner@$A.test" "correct-horse-battery-$A" >/dev/null; verify jr3 "$(sed -n 2p "$TMP/rc-$A")")" 401
+# Operator reset link (no email needed)
+RLINK=$(admin reset-password --email "owner@$A.test" | grep -o "$BASE/password/reset/[A-Za-z0-9_-]*" | tr -d '\r')
+check "operator reset link opens" "$(code_of jx "$RLINK")" 200
+check "[A] new password saved through the link" "$(code_of jx -X POST "$RLINK" -d password=new-correct-horse-battery -d password2=new-correct-horse-battery)" 303
+check "reset ends every session of the user" "$(code_of jr1 "$BASE/o/$A")" 303
+check "reset link works only once" "$(code_of jx "$RLINK")" 404
+check "old password refused" "$(login jr4 "owner@$A.test" "correct-horse-battery-$A")" ""
+check "new password still needs the second step" "$(login jr4 "owner@$A.test" new-correct-horse-battery)" "$BASE/totp/verify"
+# Self-service by email (Mailpit in dev)
+code_of jx -X POST "$BASE/password/forgot" --data-urlencode "email=owner@$B.test" >/dev/null
+code_of jx -X POST "$BASE/password/forgot" --data-urlencode "email=nobody-$RUN@example.test" >/dev/null
+ELINK=$(mail_body "owner@$B.test" "Reset your password" | grep -o "$BASE/password/reset/[A-Za-z0-9_-]*" | head -1)
+if [ -n "$ELINK" ]; then ok "forgot password: reset link emailed"; else bad "no reset email"; fi
+check "unknown address: no email, same answer" "$(curl -s -G "http://localhost:8025/api/v1/search" --data-urlencode "query=to:nobody-$RUN@example.test" | grep -o '"messages_count":[0-9]*' | cut -d: -f2)" 0
+check "[B] password reset by email" "$(code_of jx -X POST "$ELINK" -d password=b-new-correct-horse-battery -d password2=b-new-correct-horse-battery)" 303
+if mail_body "owner@$B.test" "Your password was changed" | grep -q "was just changed"; then ok "owner told the password changed"; else bad "no password-changed email"; fi
+admin reset-totp --email "owner@$B.test" >/dev/null
+login jr5 "owner@$B.test" b-new-correct-horse-battery >/dev/null
+check "after operator two-step reset, the user sets it up again" "$(c jr5 -o /dev/null -w '%{redirect_url}' "$BASE/totp/verify")" "$BASE/totp/setup"
 
 echo
 echo "Result: $PASS passed, $FAIL failed"

@@ -364,6 +364,14 @@ func (s *Server) deployService(w http.ResponseWriter, r *http.Request) {
 			formErr = err.Error()
 			return nil
 		}
+		if err := s.checkDisk(r, tx, o); err != nil {
+			var qe quotaError
+			if errors.As(err, &qe) {
+				formErr = qe.Error()
+				return nil
+			}
+			return err
+		}
 		_, err := s.createDeployment(r, tx, o, sv.ID, sv.spec())
 		return err
 	})

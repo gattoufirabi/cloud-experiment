@@ -1,0 +1,8 @@
+[Unit]
+Description=Platform registry garbage collection
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/platform/host/registry-gc.sh

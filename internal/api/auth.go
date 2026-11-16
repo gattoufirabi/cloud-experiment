@@ -170,16 +170,31 @@ func (s *Server) checkTOTP(w http.ResponseWriter, r *http.Request, enrolling boo
 		s.serverError(w, r, err)
 		return
 	}
-	step, ok := secure.VerifyTOTP(string(secret), r.PostFormValue("code"), lastStep, time.Now())
+	code := r.PostFormValue("code")
+	usedRecovery := false
+	step, ok := lastStep, false
+	if !enrolling && looksLikeRecoveryCode(code) {
+		ok = s.useRecoveryCode(r.Context(), sess.UserID, code)
+		usedRecovery = ok
+	} else {
+		step, ok = secure.VerifyTOTP(string(secret), code, lastStep, time.Now())
+	}
 	if !ok {
 		_ = db.Audit(r.Context(), s.pool, "", sess.UserID, "totp.failed", "user:"+sess.UserID, nil, clientIP(r))
 		again(http.StatusUnauthorized, "That code is not valid. Check the time on your phone and try the newest code.")
 		return
 	}
 	// Rotate the session on privilege change: the old token dies, a new fully authenticated one is issued.
+	var codes []string
 	err = pgx.BeginFunc(r.Context(), s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(r.Context(), `UPDATE users SET totp_enabled = true, totp_last_step = $2 WHERE id = $1`, sess.UserID, step); err != nil {
 			return err
+		}
+		if enrolling { // recovery codes are created with two-step login and shown once
+			var err error
+			if codes, err = newRecoveryCodes(r.Context(), tx, sess.UserID); err != nil {
+				return err
+			}
 		}
 		_, err := tx.Exec(r.Context(), `DELETE FROM sessions WHERE token_hash = $1`, sess.TokenHash)
 		return err
@@ -193,10 +208,23 @@ func (s *Server) checkTOTP(w http.ResponseWriter, r *http.Request, enrolling boo
 		return
 	}
 	action := "login.success"
-	if enrolling {
+	switch {
+	case enrolling:
 		action = "totp.enabled"
+	case usedRecovery:
+		action = "login.recovery_code"
 	}
 	_ = db.Audit(r.Context(), s.pool, "", sess.UserID, action, "user:"+sess.UserID, nil, clientIP(r))
+	if enrolling {
+		s.renderRecoveryCodes(w, r, codes, true)
+		return
+	}
+	if usedRecovery {
+		var left int
+		_ = s.pool.QueryRow(r.Context(), `SELECT count(*) FROM recovery_codes WHERE user_id = $1 AND used_at IS NULL`, sess.UserID).Scan(&left)
+		back(w, r, "/account", "Logged in with a recovery code ("+itoa(left)+" left). If you lost your phone, set up two-step login again from a new device soon.", "")
+		return
+	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 

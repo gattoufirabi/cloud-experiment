@@ -76,7 +76,7 @@ func (a *Agent) queueNotifications(ctx context.Context, orgID, incidentID, kind,
 	_, err := a.pool.Exec(ctx, `
 		INSERT INTO alert_notifications (org_id, incident_id, channel_id, transition)
 		SELECT $1, $2, c.id, $3 FROM alert_channels c
-		WHERE c.org_id = $1 AND c.enabled AND $4 = ANY (c.events)`, orgID, incidentID, transition, kind)
+		WHERE c.org_id = $1 AND c.enabled AND ($4 = ANY (c.events) OR $4 = 'disk_quota')`, orgID, incidentID, transition, kind)
 	if err != nil {
 		a.log.Error("queue notifications", "err", err)
 		return
@@ -350,7 +350,7 @@ type delivery struct {
 var kindTitles = map[string]string{
 	"service_down": "Service down", "cpu_high": "High CPU", "memory_high": "High memory",
 	"deploy_failed": "Deployment failed", "backup_failed": "Backup failed",
-	"critical_vulns": "Critical vulnerabilities", "test": "Test notification",
+	"critical_vulns": "Critical vulnerabilities", "test": "Test notification", "disk_quota": "Disk limit",
 }
 
 func (a *Agent) deliverAlerts(ctx context.Context) {

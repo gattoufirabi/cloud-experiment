@@ -45,7 +45,7 @@ func (s *Server) registryToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var slug, subject string
-	canPush := false
+	canPush, canDelete := false, false
 	if strings.HasPrefix(user, registry.AgentUserPrefix) {
 		// Platform-side pull (agent, scanner): org-scoped, pull only.
 		slug = strings.TrimPrefix(user, registry.AgentUserPrefix)
@@ -63,7 +63,7 @@ func (s *Server) registryToken(w http.ResponseWriter, r *http.Request) {
 			deny()
 			return
 		}
-		subject, canPush = user, true
+		subject, canPush, canDelete = user, true, true // the agent's daily cleanup deletes old tags
 	} else {
 		var orgID string
 		err := s.pool.QueryRow(r.Context(), `SELECT org_id, org_slug, can_push FROM registry_token_check($1)`,
@@ -88,7 +88,7 @@ func (s *Server) registryToken(w http.ResponseWriter, r *http.Request) {
 			}
 			var granted []string
 			for _, a := range actions {
-				if a == "pull" || (a == "push" && canPush) {
+				if a == "pull" || (a == "push" && canPush) || (a == "delete" && canDelete) {
 					granted = append(granted, a)
 				}
 			}

@@ -50,6 +50,8 @@ type Agent struct {
 
 	alertWake   chan struct{}
 	buildWake   chan struct{}
+	cleanWake   chan struct{}
+	diskWake    chan struct{}
 	alertHTTP   *http.Client
 	probeFails  map[string]int
 	attached    map[string]bool // project networks the proxy and agent are known to be on
@@ -102,6 +104,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 		backupWake:  make(chan struct{}, 1),
 		alertWake:   make(chan struct{}, 1),
 		buildWake:   make(chan struct{}, 1),
+		cleanWake:   make(chan struct{}, 1),
+		diskWake:    make(chan struct{}, 1),
 		alertHTTP:   newAlertHTTP(cfg.AlertAllowPrivate),
 		probeFails:  map[string]int{},
 		attached:    map[string]bool{},
@@ -121,6 +125,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.alertLoop(ctx)
 	go a.meterLoop(ctx)
 	go a.buildLoop(ctx)
+	go a.registryCleanLoop(ctx)
+	go a.diskLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)
@@ -158,6 +164,10 @@ func (a *Agent) listen(ctx context.Context) {
 							a.pokeAlerts()
 						case "build":
 							a.pokeBuilds()
+						case "registry-clean":
+							a.pokeRegistryClean()
+						case "disk":
+							a.pokeDisk()
 						default:
 							a.poke()
 						}
