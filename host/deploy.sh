@@ -261,6 +261,18 @@ for k in OWNER_DB_PASSWORD API_DB_PASSWORD AGENT_DB_PASSWORD REGISTRY_INTERNAL_S
   [[ -n $(getenv "$ENVF" "$k") ]] || setenv "$ENVF" "$k" "$(secret)"
 done
 [[ -z $BACKUP_URL ]] || setenv "$ENVF" BACKUP_REST_URL "$BACKUP_URL"
+# Sandboxed (gVisor) containers cannot use Docker's embedded DNS on project networks:
+# give them the host's upstream resolvers, public ones only (the tenant firewall blocks
+# private ranges), falling back to Quad9.
+mkdir -p /etc/platform
+RESOLVERS=$(awk '/^nameserver/ {print $2}' /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null |
+  awk '!seen[$0]++' | awk '!/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|::1|fe80:|fc|fd)/')
+[[ -n $RESOLVERS ]] || RESOLVERS="9.9.9.9 149.112.112.112"
+# shellcheck disable=SC2086 # one resolver per word
+{ echo "# Resolvers for sandboxed tenant containers (written by host/deploy.sh)"; printf 'nameserver %s\n' $RESOLVERS; echo "options timeout:2 attempts:2"; } > /etc/platform/resolv.conf
+chmod 644 /etc/platform/resolv.conf
+setenv "$ENVF" TENANT_RESOLV_CONF /etc/platform/resolv.conf
+info "tenant DNS: $(echo $RESOLVERS)"
 [[ -n $(getenv "$ENVF" BACKUP_REST_URL) ]] || warn "BACKUP_REST_URL is empty: client backups stay on this server (not off-site)"
 info "written with generated passwords (mode 600)"
 

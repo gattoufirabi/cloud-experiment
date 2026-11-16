@@ -156,6 +156,28 @@ func (a *Agent) startDatabase(ctx context.Context, d managedDB) error {
 	}
 	name := dbContainerName(d.ID)
 	_ = a.dk.ContainerRemove(ctx, name)
+	ip, err := a.databaseAddress(ctx, netName, d.ID)
+	if err != nil {
+		return err
+	}
+	hc := docker.HostConfig{
+		Runtime:       a.cfg.Runtime,
+		Memory:        int64(d.MemoryMB) << 20,
+		MemorySwap:    int64(d.MemoryMB) << 20,
+		NanoCPUs:      int64(d.CPUMillis) * 1_000_000,
+		PidsLimit:     256,
+		CapDrop:       []string{"ALL"},
+		CapAdd:        []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"},
+		SecurityOpt:   []string{"no-new-privileges:true"},
+		NetworkMode:   netName,
+		RestartPolicy: docker.RestartPolicy{Name: "unless-stopped"},
+		LogConfig:     docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "10m", "max-file": "3"}},
+		Mounts: []docker.Mount{
+			{Type: "volume", Source: dbDataVolume(d.ID), Target: dataPath},
+			{Type: "volume", Source: dbDumpVolume(d.ID), Target: "/backup"},
+		},
+	}
+	a.tenantDNS(&hc)
 	id, err := a.dk.ContainerCreate(ctx, name, docker.ContainerConfig{
 		Image: image,
 		Cmd:   cmd,
@@ -164,23 +186,8 @@ func (a *Agent) startDatabase(ctx context.Context, d managedDB) error {
 			"platform.database": d.ID, "platform.engine": d.Engine, "platform.org": d.OrgID,
 			"platform.project": d.ProjectID, "platform.spec": d.specHash(),
 		},
-		HostConfig: docker.HostConfig{
-			Runtime:       a.cfg.Runtime,
-			Memory:        int64(d.MemoryMB) << 20,
-			MemorySwap:    int64(d.MemoryMB) << 20,
-			NanoCPUs:      int64(d.CPUMillis) * 1_000_000,
-			PidsLimit:     256,
-			CapDrop:       []string{"ALL"},
-			CapAdd:        []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"},
-			SecurityOpt:   []string{"no-new-privileges:true"},
-			NetworkMode:   netName,
-			RestartPolicy: docker.RestartPolicy{Name: "unless-stopped"},
-			LogConfig:     docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "10m", "max-file": "3"}},
-			Mounts: []docker.Mount{
-				{Type: "volume", Source: dbDataVolume(d.ID), Target: dataPath},
-				{Type: "volume", Source: dbDumpVolume(d.ID), Target: "/backup"},
-			},
-		},
+		HostConfig:       hc,
+		NetworkingConfig: docker.FixedAddress(netName, ip),
 	})
 	if err != nil {
 		return fmt.Errorf("create container: %w", err)

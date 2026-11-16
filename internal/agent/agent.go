@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -288,7 +289,7 @@ func (a *Agent) deploy(ctx context.Context, j job) error {
 	_ = a.dk.ContainerRemove(ctx, name) // leftover from an interrupted attempt
 
 	a.setMessage(ctx, j.ID, "starting container")
-	id, err := a.dk.ContainerCreate(ctx, name, a.containerConfig(j, netName, env))
+	id, err := a.dk.ContainerCreate(ctx, name, a.containerConfig(j, netName, env, a.projectHosts(ctx, j.ProjectID, netName)))
 	if err != nil {
 		return fmt.Errorf("create container: %w", err)
 	}
@@ -398,7 +399,7 @@ func (a *Agent) buildEnv(ctx context.Context, j job) ([]string, error) {
 	return append(env, "PORT="+strconv.Itoa(j.Spec.Port)), nil
 }
 
-func (a *Agent) containerConfig(j job, netName string, env []string) docker.ContainerConfig {
+func (a *Agent) containerConfig(j job, netName string, env, hosts []string) docker.ContainerConfig {
 	hc := docker.HostConfig{
 		Runtime:    a.cfg.Runtime,
 		Memory:     int64(j.Spec.MemoryMB) << 20,
@@ -414,10 +415,12 @@ func (a *Agent) containerConfig(j job, netName string, env []string) docker.Cont
 		NetworkMode:   netName,
 		RestartPolicy: docker.RestartPolicy{Name: "unless-stopped"},
 		LogConfig:     docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "10m", "max-file": "3"}},
+		ExtraHosts:    hosts,
 	}
 	if j.Spec.VolumePath != "" {
 		hc.Mounts = []docker.Mount{{Type: "volume", Source: "pv-" + model.Compact(j.ServiceID), Target: j.Spec.VolumePath}}
 	}
+	a.tenantDNS(&hc)
 	return docker.ContainerConfig{
 		Image: j.Spec.Image,
 		Env:   env,
@@ -733,4 +736,82 @@ func (a *Agent) collectNetworks(ctx context.Context) {
 		a.mu.Unlock()
 		a.log.Info("removed unused project network", "network", n.Name)
 	}
+}
+
+// ---------- name resolution for sandboxed containers ----------
+
+// tenantDNS mounts TENANT_RESOLV_CONF (read-only) as the container's resolv.conf.
+// gVisor's network stack cannot reach Docker's embedded DNS (127.0.0.11) on
+// user-defined networks, so without this, sandboxed containers resolve nothing.
+func (a *Agent) tenantDNS(hc *docker.HostConfig) {
+	if a.cfg.TenantResolvConf == "" {
+		return
+	}
+	hc.Mounts = append(hc.Mounts, docker.Mount{Type: "bind", Source: a.cfg.TenantResolvConf, Target: "/etc/resolv.conf", ReadOnly: true})
+}
+
+func (a *Agent) withDNS(hc docker.HostConfig) docker.HostConfig {
+	a.tenantDNS(&hc)
+	return hc
+}
+
+// databaseAddress picks a fixed address for a managed database on its project network,
+// in .200-.249 of the /24 (Docker hands out addresses from the bottom), derived from the
+// database ID so a recreated container usually gets the same one.
+func (a *Agent) databaseAddress(ctx context.Context, netName, dbID string) (string, error) {
+	n, err := a.dk.NetworkInspect(ctx, netName)
+	if err != nil {
+		return "", err
+	}
+	if len(n.IPAM.Config) == 0 {
+		return "", errors.New("network " + netName + " has no subnet")
+	}
+	prefix, err := netip.ParsePrefix(n.IPAM.Config[0].Subnet)
+	if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 24 {
+		return "", fmt.Errorf("unexpected subnet %q on %s", n.IPAM.Config[0].Subnet, netName)
+	}
+	used := map[string]bool{}
+	for _, c := range n.Containers {
+		used[strings.Split(c.IPv4Address, "/")[0]] = true
+	}
+	h := fnv.New32a()
+	h.Write([]byte(dbID))
+	base := prefix.Masked().Addr().As4()
+	for i := 0; i < 50; i++ {
+		base[3] = byte(200 + (int(h.Sum32()%50)+i)%50)
+		ip := netip.AddrFrom4(base).String()
+		if !used[ip] {
+			return ip, nil
+		}
+	}
+	return "", errors.New("no free database address on " + netName)
+}
+
+// projectHosts returns "pd-<id>:<ip>" lines for the project's running databases, so
+// apps reach them by the name in their DATABASE_URL / REDIS_URL without Docker DNS.
+func (a *Agent) projectHosts(ctx context.Context, projectID, netName string) []string {
+	rows, err := a.pool.Query(ctx, `SELECT id, container_id FROM databases WHERE project_id = $1 AND status = 'running' AND container_id <> ''`, projectID)
+	if err != nil {
+		return nil
+	}
+	type dbc struct{ id, cid string }
+	var list []dbc
+	for rows.Next() {
+		var d dbc
+		if rows.Scan(&d.id, &d.cid) == nil {
+			list = append(list, d)
+		}
+	}
+	rows.Close()
+	var hosts []string
+	for _, d := range list {
+		info, err := a.dk.ContainerInspect(ctx, d.cid)
+		if err != nil {
+			continue
+		}
+		if ep, ok := info.NetworkSettings.Networks[netName]; ok && ep.IPAddress != "" {
+			hosts = append(hosts, dbContainerName(d.id)+":"+ep.IPAddress)
+		}
+	}
+	return hosts
 }

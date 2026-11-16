@@ -107,6 +107,15 @@ type Network struct {
 	ID     string            `json:"Id"`
 	Name   string            `json:"Name"`
 	Labels map[string]string `json:"Labels"`
+	IPAM   struct {
+		Config []struct {
+			Subnet string `json:"Subnet"`
+		} `json:"Config"`
+	} `json:"IPAM"`
+	Containers map[string]struct {
+		Name        string `json:"Name"`
+		IPv4Address string `json:"IPv4Address"` // "10.208.3.7/24"
+	} `json:"Containers"`
 }
 
 func (c *Client) NetworkInspect(ctx context.Context, name string) (*Network, error) {
@@ -222,6 +231,7 @@ type HostConfig struct {
 	LogConfig      LogConfig         `json:"LogConfig"`
 	Mounts         []Mount           `json:"Mounts,omitempty"`
 	Tmpfs          map[string]string `json:"Tmpfs,omitempty"`
+	ExtraHosts     []string          `json:"ExtraHosts,omitempty"` // "name:ip" lines added to /etc/hosts
 }
 
 type ContainerConfig struct {
@@ -232,6 +242,25 @@ type ContainerConfig struct {
 	Env        []string          `json:"Env"`
 	Labels     map[string]string `json:"Labels"`
 	HostConfig HostConfig        `json:"HostConfig"`
+	// NetworkingConfig pins an address on HostConfig.NetworkMode (optional).
+	NetworkingConfig *NetworkingConfig `json:"NetworkingConfig,omitempty"`
+}
+
+type NetworkingConfig struct {
+	EndpointsConfig map[string]EndpointConfig `json:"EndpointsConfig"`
+}
+
+type EndpointConfig struct {
+	IPAMConfig *EndpointIPAM `json:"IPAMConfig,omitempty"`
+}
+
+type EndpointIPAM struct {
+	IPv4Address string `json:"IPv4Address,omitempty"`
+}
+
+// FixedAddress pins a container to ip on network at creation.
+func FixedAddress(network, ip string) *NetworkingConfig {
+	return &NetworkingConfig{EndpointsConfig: map[string]EndpointConfig{network: {IPAMConfig: &EndpointIPAM{IPv4Address: ip}}}}
 }
 
 func (c *Client) ContainerCreate(ctx context.Context, name string, cfg ContainerConfig) (string, error) {

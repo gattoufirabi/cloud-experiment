@@ -31,6 +31,8 @@ x-app: &app
     SMTP_FROM: ${SMTP_FROM:-}
     SMTP_TLS: ${SMTP_TLS:-starttls}
     OPERATOR_NTFY_URL: ${OPERATOR_NTFY_URL:-}
+    # resolv.conf for gVisor containers (they cannot use Docker's embedded DNS); set by host/deploy.sh
+    TENANT_RESOLV_CONF: ${TENANT_RESOLV_CONF:-}
     # Builds from git (rootless BuildKit sandbox, network pt-build). Verify on the server
     # before enabling; BUILD_RUNTIME=runsc runs the build containers under gVisor.
     BUILDS_ENABLED: ${BUILDS_ENABLED:-false}

@@ -101,7 +101,7 @@ Instead of pushing images yourself, the platform can build your repository's **D
 3. To build on every push, create a **webhook address** and add it to your repository's webhooks (push events, JSON). Pushes to other branches are ignored.
 
 - Each build gets a page with its full log; images are stored in your registry space as `…/<organization>/<service>:git-<commit>` and scanned like any pushed image.
-- Builds run in an isolated sandbox: no access to the platform's internal network, other customers or the server; the internet is reachable for base images and packages. Limits per build: 2 CPU, 2 GB memory, 15 minutes, 4 GB image.
+- Builds run in an isolated sandbox: no access to the platform's internal network, other customers or the server; the internet is reachable for base images and packages. Limits per build: 2 CPU, 2 GB memory, 15 minutes, 8 GB image (uncompressed).
 - One build at a time per service: starting a build while one is waiting reuses the waiting one. At most 5 builds waiting or running per organization.
 - Only Dockerfile builds are supported for now; the build fails clearly if there is no Dockerfile.
 

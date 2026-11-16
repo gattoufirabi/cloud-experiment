@@ -98,25 +98,38 @@ func (a *Agent) claimBuild(ctx context.Context) (buildJob, bool) {
 	return b, true
 }
 
-type buildLog struct{ strings.Builder }
+type buildLog struct {
+	strings.Builder
+	save func(string) // writes the log so far to the build row (live view)
+}
 
 func (l *buildLog) step(format string, args ...any) {
 	fmt.Fprintf(l, "==> "+format+"\n", args...)
+	if l.save != nil {
+		l.save(l.String())
+	}
 }
 
 // text keeps the last 200 KB, which is what the console shows.
-func (l *buildLog) text() string {
-	s := l.String()
+func (l *buildLog) text() string { return trimLog(l.String()) }
+
+func trimLog(s string) string {
 	if len(s) > 200_000 {
 		s = "… (earlier output trimmed)\n" + s[len(s)-200_000:]
 	}
 	return s
 }
 
+// saveBuildLog stores the log so far while the build runs (the console polls it).
+func (a *Agent) saveBuildLog(buildID, s string) {
+	_, _ = a.pool.Exec(context.Background(), `UPDATE builds SET log = $2 WHERE id = $1 AND status = 'running'`, buildID, trimLog(s))
+}
+
 func (a *Agent) runBuild(parent context.Context, b buildJob) {
 	ctx, cancel := context.WithTimeout(parent, a.cfg.BuildTimeout+10*time.Minute)
 	defer cancel()
 	var log buildLog
+	log.save = func(s string) { a.saveBuildLog(b.ID, s) }
 	fail := func(msg string) {
 		log.step("failed: %s", msg)
 		_, _ = a.pool.Exec(context.Background(), `
@@ -192,15 +205,15 @@ chown 1000:1000 /cache`
 		Env: []string{"REPO=" + b.Repo, "BRANCH=" + b.Branch, "DIR=" + b.Dir, "TOKEN=" + token,
 			"HOME=/tmp", "GIT_TERMINAL_PROMPT=0"},
 		Labels: labels,
-		HostConfig: docker.HostConfig{
+		HostConfig: a.withDNS(docker.HostConfig{
 			Runtime: a.cfg.BuildRuntime, NetworkMode: buildNetwork,
 			Memory: 512 << 20, MemorySwap: 512 << 20, NanoCPUs: 1_000_000_000, PidsLimit: 256,
 			CapDrop: []string{"ALL"}, CapAdd: []string{"CHOWN"}, SecurityOpt: []string{"no-new-privileges:true"},
 			ReadonlyRootfs: true, Tmpfs: map[string]string{"/tmp": "rw,size=64m"},
 			Mounts:    []docker.Mount{{Type: "volume", Source: vol, Target: "/src"}, {Type: "volume", Source: cache, Target: "/cache"}},
 			LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "4m"}},
-		},
-	}, 5*time.Minute)
+		}),
+	}, 5*time.Minute, nil)
 	if cloneID != "" {
 		defer a.dk.ContainerRemove(context.Background(), cloneID)
 	}
@@ -237,10 +250,10 @@ chown 1000:1000 /cache`
 		Entrypoint: []string{"buildctl-daemonless.sh"},
 		Cmd: []string{"build", "--progress", "plain", "--frontend", "dockerfile.v0",
 			"--local", "context=" + ctxDir, "--local", "dockerfile=" + ctxDir,
-			"--output", "type=docker,name=" + image + ",dest=/src/out/image.tar"},
+			"--output", "type=docker,name=" + image + ",dest=/src/out/image.tar,compression=uncompressed"},
 		Env:    []string{"BUILDKITD_FLAGS=--oci-worker-no-process-sandbox"},
 		Labels: labels,
-		HostConfig: docker.HostConfig{
+		HostConfig: a.withDNS(docker.HostConfig{
 			Runtime: a.cfg.BuildRuntime, NetworkMode: buildNetwork,
 			Memory: int64(a.cfg.BuildMemoryMB) << 20, MemorySwap: int64(a.cfg.BuildMemoryMB) << 20,
 			NanoCPUs: int64(a.cfg.BuildCPUMillis) * 1_000_000, PidsLimit: 2048,
@@ -250,8 +263,10 @@ chown 1000:1000 /cache`
 			Mounts: []docker.Mount{{Type: "volume", Source: vol, Target: "/src"},
 				{Type: "volume", Source: cache, Target: "/home/user/.local/share/buildkit"}},
 			LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "16m"}},
-		},
-	}, a.cfg.BuildTimeout)
+		}),
+	}, a.cfg.BuildTimeout, func(out string) {
+		a.saveBuildLog(b.ID, log.String()+out)
+	})
 	if buildID != "" {
 		defer a.dk.ContainerRemove(context.Background(), buildID)
 	}
@@ -345,7 +360,7 @@ func (a *Agent) deployBuilt(ctx context.Context, b buildJob, image string) error
 
 // runOnce runs a container to completion and returns its combined output. The caller
 // removes the container (its files may still be needed).
-func (a *Agent) runOnce(ctx context.Context, name string, cfg docker.ContainerConfig, timeout time.Duration) (string, int, string, error) {
+func (a *Agent) runOnce(ctx context.Context, name string, cfg docker.ContainerConfig, timeout time.Duration, progress func(string)) (string, int, string, error) {
 	id, err := a.dk.ContainerCreate(ctx, name, cfg)
 	if err != nil {
 		return "", 0, "", fmt.Errorf("create %s: %w", name, err)
@@ -354,7 +369,25 @@ func (a *Agent) runOnce(ctx context.Context, name string, cfg docker.ContainerCo
 		return id, 0, "", fmt.Errorf("start %s: %w", name, err)
 	}
 	wctx, cancel := context.WithTimeout(ctx, timeout)
+	done := make(chan struct{})
+	if progress != nil { // the console shows the log while the step runs
+		go func() {
+			t := time.NewTicker(4 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-t.C:
+					if o, e, err := a.dk.ContainerOutput(context.Background(), id); err == nil {
+						progress(string(o) + string(e))
+					}
+				}
+			}
+		}()
+	}
 	code, werr := a.dk.ContainerWait(wctx, id)
+	close(done)
 	cancel()
 	if werr != nil {
 		_ = a.dk.ContainerStop(context.Background(), id, 1)

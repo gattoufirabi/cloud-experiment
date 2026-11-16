@@ -27,15 +27,19 @@ type Config struct {
 	DockerSocket         string
 	Runtime              string // runsc (gVisor) in production
 	AllowInsecureRuntime bool   // development only: allows runc
-	CaddyAdminSocket     string
-	CaddyContainer       string
-	AgentContainer       string // set when the agent itself runs in a container (dev)
-	TLSMode              string // off | acme
-	APIUpstream          string
-	APIInternalURL       string
-	ACMECA               string
-	MaxCPUMillis         int
-	MaxMemoryMB          int
+	// TenantResolvConf: host path of a resolv.conf bind-mounted (read-only) into
+	// sandboxed containers. gVisor cannot reach Docker's embedded DNS (127.0.0.11) on
+	// user-defined networks, so production points tenants at real resolvers instead.
+	TenantResolvConf string
+	CaddyAdminSocket string
+	CaddyContainer   string
+	AgentContainer   string // set when the agent itself runs in a container (dev)
+	TLSMode          string // off | acme
+	APIUpstream      string
+	APIInternalURL   string
+	ACMECA           string
+	MaxCPUMillis     int
+	MaxMemoryMB      int
 
 	// registry and scanning
 	RegistryHost           string // public host[:port] clients push to, e.g. registry.example.com
@@ -147,6 +151,7 @@ func Load() Config {
 		AlertInterval:     time.Duration(envInt("ALERT_INTERVAL_SECONDS", 30)) * time.Second,
 		AlertAllowPrivate: envBool("ALERT_ALLOW_PRIVATE_TARGETS", false),
 
+		TenantResolvConf:   env("TENANT_RESOLV_CONF", ""),
 		BuildsEnabled:      envBool("BUILDS_ENABLED", false),
 		BuildkitImage:      env("BUILDKIT_IMAGE", "moby/buildkit:v0.34.1-rootless"),
 		GitImage:           env("GIT_IMAGE", "alpine/git:v2.52.0"),
@@ -155,7 +160,7 @@ func Load() Config {
 		BuildMemoryMB:      envInt("BUILD_MEMORY_MB", 2048),
 		BuildCPUMillis:     envInt("BUILD_CPU_MILLIS", 2000),
 		BuildSubnet:        env("BUILD_SUBNET", "10.207.0.0/24"),
-		BuildMaxImageMB:    envInt("BUILD_MAX_IMAGE_MB", 4096),
+		BuildMaxImageMB:    envInt("BUILD_MAX_IMAGE_MB", 8192),
 		BuildAllowInsecure: envBool("BUILD_ALLOW_INSECURE_REPOS", false),
 
 		SMTPHost:     env("SMTP_HOST", ""),
