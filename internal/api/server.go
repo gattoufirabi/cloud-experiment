@@ -194,6 +194,9 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /o/{org}/p/{project}/services", s.auth(authFull, s.createService))
 	m.HandleFunc("POST /o/{org}/p/{project}/delete", s.auth(authFull, s.deleteProject))
 	m.HandleFunc("POST /o/{org}/p/{project}/status-page", s.auth(authFull, s.toggleStatusPage))
+	m.HandleFunc("POST /o/{org}/p/{project}/variables", s.auth(authFull, s.setProjectVar))
+	m.HandleFunc("POST /o/{org}/p/{project}/variables/{name}/delete", s.auth(authFull, s.deleteProjectVar))
+	m.HandleFunc("POST /o/{org}/p/{project}/redeploy", s.auth(authFull, s.redeployProject))
 
 	m.HandleFunc("POST /o/{org}/p/{project}/databases", s.auth(authFull, s.createDatabase))
 	const dbp = "/o/{org}/p/{project}/d/{db}"

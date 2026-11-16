@@ -400,3 +400,6 @@ progress.meter::-webkit-progress-bar { background: var(--idle-soft); border-radi
 progress.meter::-webkit-progress-value { background: var(--primary); border-radius: 999px; }
 progress.meter::-moz-progress-bar { background: var(--primary); border-radius: 999px; }
 .health { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Text for screen readers only */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

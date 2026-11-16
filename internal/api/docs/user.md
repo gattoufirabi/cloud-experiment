@@ -79,6 +79,23 @@ Settings take effect at the next deployment: use **Save and deploy**, or **Save 
 
 Every application runs in a sandbox with its own private network, a limit of 256 processes and no special system privileges.
 
+## Project variables
+
+Settings that every service of a project needs (an API key, a base address, a feature flag) can be set once on the project instead of on each service.
+
+1. Open the project and its **Variables** tab.
+2. Enter a name in capitals (`API_BASE_URL`) and a value. Keep **Secret** ticked to hide the value after saving; untick it for harmless values you want to read back later.
+3. Tick **Redeploy the running services now** to apply it at once, or click **Redeploy all services** later. Each service switches over with no downtime.
+
+How they combine:
+
+- Every service of the project, and its previews, receives the project variables as environment variables.
+- A service's own environment variable or secret with the same name wins over the project variable.
+- Values are encrypted at rest. Secret values are never shown again, not even to admins or the platform operator; plain values are visible to members of the organization.
+- A service's page lists the project variables it receives, under **From the project**.
+- Changes apply at the next deployment of each service. Rolling back to an earlier revision uses the current values.
+- `PORT` and names starting with `PLATFORM_` are reserved.
+
 ## Updates and rollbacks
 
 Every deployment is a numbered revision. The new version starts next to the old one, and traffic switches only after it passes its health check, so visitors see no downtime.
@@ -278,6 +295,10 @@ platformctl deploy shop/web --image {{registry}}/<organization>/web:1.4.2 --wait
 | `platformctl deploy <project>/<service> [--image IMAGE] [--wait]` | Deploys current settings, optionally with a new image; `--wait` follows it until live or failed and exits with an error on failure. |
 | `platformctl logs <project>/<service> [--filter TEXT]` | Prints recent log lines. |
 | `platformctl secret set <project>/<service> NAME` | Sets a secret; the value is read from standard input, never from the command line. |
+| `platformctl var list <project>` | Lists the project's shared variables (secret values hidden). |
+| `platformctl var set <project> NAME [--plain]` | Sets a shared project variable, secret unless `--plain`; the value is read from standard input. |
+| `platformctl var unset <project> NAME` | Deletes a shared project variable. |
+| `platformctl redeploy <project>` | Redeploys every running service of the project, for example after changing variables. |
 
 `platformctl` is a single program with no dependencies; build it with `go build ./cmd/platformctl` from the platform's source, or ask your operator for a copy.
 
@@ -293,6 +314,10 @@ The same operations are available over HTTP with `Authorization: Bearer <token>`
 | `GET /api/v1/projects/{project}/services/{service}/deployments/{revision}` | viewer |
 | `GET /api/v1/projects/{project}/services/{service}/logs?q=text` | viewer |
 | `PUT /api/v1/projects/{project}/services/{service}/secrets/{NAME}` with `{"value": "…"}` | developer |
+| `GET /api/v1/projects/{project}/variables` (secret values omitted) | viewer |
+| `PUT /api/v1/projects/{project}/variables/{NAME}` with `{"value": "…", "secret": true}` | developer |
+| `DELETE /api/v1/projects/{project}/variables/{NAME}` | developer |
+| `POST /api/v1/projects/{project}/redeploy` | developer |
 
 A token works only inside its organization and only with its role. Every change made with a token appears in the audit log, named after the token.
 

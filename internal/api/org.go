@@ -404,6 +404,7 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 	var p *projectInfo
 	var services []svc
 	var dbs []dbRow
+	var vars []projectVar
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		var err error
 		if p, err = s.loadProject(r, tx); err != nil {
@@ -423,7 +424,10 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		services, err = pgx.CollectRows(rows, pgx.RowToStructByPos[svc])
+		if services, err = pgx.CollectRows(rows, pgx.RowToStructByPos[svc]); err != nil {
+			return err
+		}
+		vars, err = s.loadProjectVars(r, tx, p.ID)
 		return err
 	})
 	if isNoRows(err) {
@@ -434,7 +438,7 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services, "Databases": dbs, "BaseURL": s.cfg.BaseURL})
+	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services, "Databases": dbs, "Variables": vars, "BaseURL": s.cfg.BaseURL})
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {

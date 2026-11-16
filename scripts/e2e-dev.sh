@@ -412,6 +412,40 @@ if pctl preview delete shop/web pr-1 | grep -q deleted; then ok "[CLI] platformc
 check "deleted preview no longer served" "$(wait_pv_code "$PV1" 404)" 404
 check "parent service unaffected" "$(app_code /)" 200
 
+echo "== Shared project variables"
+VARS=/api/v1/projects/shop/variables
+WEB_CID() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND p.slug = 'shop' AND s.slug = 'web' AND s.preview_name IS NULL AND d.status = 'live'"; }
+check "[API] secret project variable saved" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"value":"shared-secret-xyz"}' "$BASE$VARS/SHARED_TOKEN")" 200
+check "[API] project variable shadowed by the service's own" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"value":"from-project","secret":false}' "$BASE$VARS/GREETING")" 200
+check "[API] reserved name refused (422)" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"value":"1"}' "$BASE$VARS/PORT")" 422
+check "[API] viewer token cannot set variables (403)" "$(api_code "$TOK_VIEW" -X PUT -H 'Content-Type: application/json' -d '{"value":"x"}' "$BASE$VARS/X")" 403
+check "[B->A] B cannot read A's project variables (404)" "$(api_code "$TOK_B" "$BASE$VARS")" 404
+check "[B->A] B cannot set A's project variables (404)" "$(api_code "$TOK_B" -X PUT -H 'Content-Type: application/json' -d '{"value":"evil"}' "$BASE$VARS/SHARED_TOKEN")" 404
+OLD_WEB=$(WEB_CID)
+check "[A] plain variable saved in the console, services redeployed" "$(code_of ja -X POST "$BASE/o/$A/p/shop/variables" -d csrf=$CSRF_A -d name=SHARED_HOST -d value=shared.example.test -d redeploy=1)" 303
+for _ in $(seq 1 45); do NEW_WEB=$(WEB_CID); [ -n "$NEW_WEB" ] && [ "$NEW_WEB" != "$OLD_WEB" ] && break; sleep 2; done
+check "service redeployed with the project variables" "$([ -n "$NEW_WEB" ] && [ "$NEW_WEB" != "$OLD_WEB" ] && echo yes)" yes
+check "service receives the secret project variable" "$(docker exec "$NEW_WEB" printenv SHARED_TOKEN | tr -d '\r')" shared-secret-xyz
+check "service receives the plain project variable" "$(docker exec "$NEW_WEB" printenv SHARED_HOST | tr -d '\r')" shared.example.test
+check "the service's own variable wins over the project's" "$(docker exec "$NEW_WEB" printenv GREETING | tr -d '\r')" hello
+check "the service's own secret still applies" "$(docker exec "$NEW_WEB" printenv API_KEY | tr -d '\r')" tenant-a-secret
+check "each name appears once in the environment" "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$NEW_WEB" | grep -c '^GREETING=')" 1
+PPAGE=$(c ja "$BASE/o/$A/p/shop")
+if grep -q "shared.example.test" <<<"$PPAGE" && ! grep -q "shared-secret-xyz" <<<"$PPAGE"; then ok "project page shows plain values and hides secret ones"; else bad "project page shows the wrong values"; fi
+if c ja "$BASE$SVC_A" | grep -q "<code>SHARED_TOKEN</code>"; then ok "service page lists the variables it receives from the project"; else bad "inherited variables not listed"; fi
+VLIST=$(pctl var list shop)
+if grep -q "SHARED_HOST *shared.example.test" <<<"$VLIST" && grep -q "SHARED_TOKEN *(secret)" <<<"$VLIST" && ! grep -q "shared-secret-xyz" <<<"$VLIST"; then ok "[CLI] platformctl var list hides secret values"; else bad "[CLI] var list wrong: $VLIST"; fi
+check "secret values encrypted at rest" "$(owner_sql "SELECT count(*) FROM project_variables WHERE position(convert_to('shared-secret-xyz', 'UTF8') IN value_enc) > 0")" 0
+if printf 'cli-value\n' | pctl var set shop CLI_VAR | grep -q "saved"; then ok "[CLI] platformctl var set (value from standard input)"; else bad "[CLI] var set failed"; fi
+for _ in $(seq 1 30); do [ "$(owner_sql "SELECT count(*) FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND d.status IN ('pending', 'deploying')")" = 0 ] && break; sleep 2; done
+if pctl redeploy shop | grep -q "redeploying [1-9]"; then ok "[CLI] platformctl redeploy restarts the project's services"; else bad "[CLI] redeploy did nothing"; fi
+check "redeploy reaches live" "$(wait_status ja $SVC_A)" live
+check "new variable applied after the redeploy" "$(docker exec "$(WEB_CID)" printenv CLI_VAR | tr -d '\r')" cli-value
+if pctl var unset shop CLI_VAR | grep -q deleted; then ok "[CLI] platformctl var unset"; else bad "[CLI] var unset failed"; fi
+check "[API] deleted variable no longer listed" "$(api_get "$TOK_DEV" "$BASE$VARS" | grep -c CLI_VAR)" 0
+check "project variable changes audited" "$(owner_sql "SELECT count(*) >= 4 FROM audit_events WHERE action IN ('project_variable.set', 'project_variable.deleted') AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
+owner_sql "DELETE FROM project_variables WHERE name = 'GREETING' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')" >/dev/null
+
 echo "== Builds from git"
 # A local git server (static "dumb HTTP" repository) reached from the build sandbox
 # through host.docker.internal; BUILD_ALLOW_INSECURE_REPOS is on in the dev stack only.

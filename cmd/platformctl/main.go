@@ -10,6 +10,7 @@
 //	platformctl deploy <project>/<service> [--image IMAGE] [--wait]
 //	platformctl logs <project>/<service> [--filter TEXT]
 //	platformctl secret set <project>/<service> NAME     (value read from standard input)
+//	platformctl var set <project> NAME [--plain]         (shared by every service of the project)
 //	platformctl preview create|list|delete <project>/<service> [NAME] ...
 //
 // Standard library only: one static binary, easy to drop into any CI image.
@@ -83,6 +84,13 @@ func main() {
 			usage(2)
 		}
 		err = c.setSecret(args[1], args[2])
+	case "var":
+		err = c.vars(args)
+	case "redeploy":
+		if len(args) != 1 {
+			usage(2)
+		}
+		err = c.redeploy(args[0])
 	case "preview":
 		err = c.preview(args)
 	case "build":
@@ -106,6 +114,11 @@ func usage(code int) {
                                            deploy current settings, optionally with a new image
   logs <project>/<service> [--filter TEXT] last log lines (6 hours, up to 300)
   secret set <project>/<service> NAME      set a secret; the value is read from standard input
+  var list <project>                       shared project variables (secret values hidden)
+  var set <project> NAME [--plain]         set a shared variable for every service of the project;
+                                           value from standard input; secret unless --plain
+  var unset <project> NAME                 delete a shared variable
+  redeploy <project>                       redeploy every running service of the project
   preview create <project>/<service> NAME [--image IMAGE] [--ttl HOURS] [--wait]
                                            create or update a preview environment (e.g. pr-42)
   preview list <project>/<service>         list previews
@@ -314,6 +327,80 @@ func (c *client) logs(args []string) error {
 		}
 		fmt.Printf("%s  %s\n", ts, l.Msg)
 	}
+	return nil
+}
+
+func readValue() (string, error) {
+	if fi, _ := os.Stdin.Stat(); fi != nil && fi.Mode()&os.ModeCharDevice != 0 {
+		fmt.Fprint(os.Stderr, "value (end with Enter): ")
+	}
+	value, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	return strings.TrimRight(value, "\r\n"), nil
+}
+
+func (c *client) vars(args []string) error {
+	if len(args) < 2 {
+		usage(2)
+	}
+	p := url.PathEscape(args[1])
+	switch args[0] {
+	case "list":
+		var vs []struct {
+			Name, Value string
+			Secret      bool
+		}
+		if err := c.do("GET", "/api/v1/projects/"+p+"/variables", nil, &vs); err != nil {
+			return err
+		}
+		var rows [][]string
+		for _, v := range vs {
+			val := v.Value
+			if v.Secret {
+				val = "(secret)"
+			}
+			rows = append(rows, []string{v.Name, val})
+		}
+		table("NAME\tVALUE", rows)
+		return nil
+	case "set":
+		if len(args) < 3 || len(args) > 4 || (len(args) == 4 && args[3] != "--plain") {
+			usage(2)
+		}
+		value, err := readValue()
+		if err != nil {
+			return err
+		}
+		secret := len(args) == 3
+		if err := c.do("PUT", "/api/v1/projects/"+p+"/variables/"+url.PathEscape(args[2]), map[string]any{"value": value, "secret": secret}, nil); err != nil {
+			return err
+		}
+		fmt.Printf("variable %s saved; run \"platformctl redeploy %s\" to apply it\n", args[2], args[1])
+		return nil
+	case "unset":
+		if len(args) != 3 {
+			usage(2)
+		}
+		if err := c.do("DELETE", "/api/v1/projects/"+p+"/variables/"+url.PathEscape(args[2]), nil, nil); err != nil {
+			return err
+		}
+		fmt.Printf("variable %s deleted; run \"platformctl redeploy %s\" to apply it\n", args[2], args[1])
+		return nil
+	}
+	usage(2)
+	return nil
+}
+
+func (c *client) redeploy(project string) error {
+	var out struct {
+		Redeploying int `json:"redeploying"`
+	}
+	if err := c.do("POST", "/api/v1/projects/"+url.PathEscape(project)+"/redeploy", nil, &out); err != nil {
+		return err
+	}
+	fmt.Printf("redeploying %d service(s)\n", out.Redeploying)
 	return nil
 }
 

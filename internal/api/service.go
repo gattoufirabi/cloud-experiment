@@ -158,6 +158,7 @@ type domainView struct {
 func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 	var deps []deploymentView
 	var secrets []string
+	var projectVars []projectVar
 	var domains []domainView
 	var scan *scanSummary
 	var findings []finding
@@ -217,6 +218,9 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		if secrets, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
 			return err
 		}
+		if projectVars, err = s.loadProjectVars(r, tx, p.ID); err != nil {
+			return err
+		}
 		rows, err = tx.Query(r.Context(), `SELECT id, hostname, verify_token, verified_at IS NOT NULL FROM domains WHERE service_id = $1 ORDER BY hostname`, sv.ID)
 		if err != nil {
 			return err
@@ -234,7 +238,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 	host := s.serviceHost(o, p, sv)
 	s.render(w, r, "service", http.StatusOK, data{
 		"Org": o, "Project": p, "Service": sv, "EnvText": model.FormatEnv(sv.Env),
-		"Deployments": deps, "Secrets": secrets, "Domains": domains,
+		"Deployments": deps, "Secrets": secrets, "Domains": domains, "ProjectVars": projectVars,
 		"URL": s.appURL(host), "Path": svcPath(o, p, sv), "AppsDomain": s.cfg.AppsDomain,
 		"CanEdit": model.RoleAtLeast(o.Role, "developer"),
 		"Scan":    scan, "Findings": findings, "RegistryHost": s.cfg.RegistryHost,

@@ -139,6 +139,14 @@
     {{end}}
   </div>
 
+  {{if .ProjectVars}}
+  <div class="section">
+    <h2>From the project</h2>
+    <p class="small muted">Shared variables of project <a href="{{.Org.Path}}/p/{{.Project.Slug}}#variables">{{.Project.Name}}</a>, also passed to this service. A variable or secret above with the same name wins.</p>
+    <ul class="list">{{range .ProjectVars}}<li><code>{{.Name}}</code>{{if .Secret}} <span class="small muted">(secret)</span>{{end}}</li>{{end}}</ul>
+  </div>
+  {{end}}
+
   {{if .CanEdit}}
   <div class="section">
     <h2>Delete service</h2>

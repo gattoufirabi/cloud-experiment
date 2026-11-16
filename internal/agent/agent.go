@@ -407,6 +407,30 @@ func (a *Agent) ensureNetwork(ctx context.Context, j job) (string, error) {
 
 func (a *Agent) buildEnv(ctx context.Context, j job) ([]string, error) {
 	env := make([]string, 0, len(j.Spec.Env)+8)
+	// Shared project variables first; the service's own variables and secrets below
+	// override them (dedupEnv keeps the last value of a repeated name).
+	prows, err := a.pool.Query(ctx, `SELECT name, value_enc FROM project_variables WHERE project_id = $1 ORDER BY name`, j.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	for prows.Next() {
+		var name string
+		var enc []byte
+		if err := prows.Scan(&name, &enc); err != nil {
+			prows.Close()
+			return nil, err
+		}
+		plain, err := a.box.Open(enc, "projvar:"+j.ProjectID+":"+name)
+		if err != nil {
+			prows.Close()
+			return nil, fmt.Errorf("decrypt project variable %s: %w", name, err)
+		}
+		env = append(env, name+"="+string(plain))
+	}
+	prows.Close()
+	if err := prows.Err(); err != nil {
+		return nil, err
+	}
 	keys := make([]string, 0, len(j.Spec.Env))
 	for k := range j.Spec.Env {
 		keys = append(keys, k)
@@ -435,7 +459,25 @@ func (a *Agent) buildEnv(ctx context.Context, j job) ([]string, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return append(env, "PORT="+strconv.Itoa(j.Spec.Port)), nil
+	return dedupEnv(append(env, "PORT="+strconv.Itoa(j.Spec.Port))), nil
+}
+
+// dedupEnv keeps one entry per name, the last one, at the position of its first.
+func dedupEnv(env []string) []string {
+	last := map[string]string{}
+	var order []string
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if _, seen := last[k]; !seen {
+			order = append(order, k)
+		}
+		last[k] = kv
+	}
+	out := make([]string, 0, len(order))
+	for _, k := range order {
+		out = append(out, last[k])
+	}
+	return out
 }
 
 func (a *Agent) containerConfig(j job, netName string, env, hosts []string) docker.ContainerConfig {

@@ -6,6 +6,7 @@
 <nav class="tabs" role="tablist" aria-label="Project sections">
   <a role="tab" href="#services">Services <span class="count">{{len .Services}}</span></a>
   <a role="tab" href="#databases">Databases <span class="count">{{len .Databases}}</span></a>
+  <a role="tab" href="#variables">Variables <span class="count">{{len .Variables}}</span></a>
   {{if roleAtLeast .Org.Role "admin"}}<a role="tab" href="#project-settings">Settings</a>{{end}}
 </nav>
 
@@ -65,6 +66,50 @@
       <button type="submit" class="arrow">Create database</button>
     </form>
     <p class="small muted">Starts with 250 millicores and 256 MB, counted against your plan; change it later in its settings.</p>
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="variables" role="tabpanel" aria-label="Variables">
+  <p class="help"><a href="/docs/user#project-variables" target="_blank" rel="noopener">Guide: shared project variables ↗</a></p>
+  <div class="section">
+    <p class="small muted">Passed to every service in this project, and its previews, as environment variables. A service's own variable or secret with the same name wins. Secret values are encrypted and never shown again.</p>
+    {{if .Variables}}
+    <table>
+      <thead><tr><th>Name</th><th>Value</th><th>Updated</th>{{if roleAtLeast .Org.Role "developer"}}<th><span class="sr-only">Actions</span></th>{{end}}</tr></thead>
+      <tbody>
+      {{range .Variables}}
+        <tr><td><code>{{.Name}}</code></td>
+          <td>{{if .Secret}}<span class="st st-none">secret</span>{{else}}<code>{{.Value}}</code>{{end}}</td>
+          <td class="small muted">{{ago .Updated}}</td>
+          {{if roleAtLeast $.Org.Role "developer"}}<td><form method="post" action="{{$.Org.Path}}/p/{{$.Project.Slug}}/variables/{{.Name}}/delete" class="inline-form" data-confirm="Delete variable {{.Name}}?">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"> <button class="link" type="submit">delete</button></form></td>{{end}}</tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="small muted">No shared variables yet. Use them for settings every service needs, such as an API key or a base address.</p>{{end}}
+  </div>
+  {{if roleAtLeast .Org.Role "developer"}}
+  <div class="section">
+    <h2>Add or change a variable</h2>
+    <form method="post" action="{{.Org.Path}}/p/{{.Project.Slug}}/variables" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="inline">
+        <input name="name" placeholder="NAME, e.g. API_BASE_URL" pattern="[A-Z_][A-Z0-9_]{0,63}" required aria-label="Variable name">
+        <input type="password" name="value" placeholder="value" maxlength="8192" autocomplete="off" required aria-label="Variable value">
+      </div>
+      <label class="check"><input type="checkbox" name="secret" value="1" checked> Secret (hide the value after saving)</label>
+      <label class="check"><input type="checkbox" name="redeploy" value="1"> Redeploy the running services now to apply it</label>
+      <div><button type="submit">Save variable</button></div>
+    </form>
+  </div>
+  <div class="section">
+    <h2>Apply changes</h2>
+    <p class="small muted">Starts a new deployment, with the same settings, of every running service in this project. Each switches over with no downtime.</p>
+    <form method="post" action="{{.Org.Path}}/p/{{.Project.Slug}}/redeploy" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" class="secondary">Redeploy all services</button>
+    </form>
   </div>
   {{end}}
 </section>
