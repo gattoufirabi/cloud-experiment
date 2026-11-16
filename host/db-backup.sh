@@ -11,7 +11,7 @@ mkdir -p "$OUT"
 chmod 700 "$OUT"
 file="$OUT/platform-$(date -u +%Y-%m-%dT%H%MZ).sql.gz"
 cd "$DIR/deploy"
-docker compose -f compose.prod.yml exec -T postgres pg_dump -U platform_owner --clean --if-exists platform | gzip -9 > "$file.tmp"
+docker compose -f compose.prod.yml exec -T postgres pg_dump -U platform_owner --clean --if-exists platform </dev/null | gzip -9 > "$file.tmp"
 # A dump that does not end with the completion marker is incomplete: keep the old ones.
 if ! gzip -dc "$file.tmp" | tail -n 5 | grep -q "PostgreSQL database dump complete"; then
   rm -f "$file.tmp"
