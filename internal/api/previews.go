@@ -64,6 +64,9 @@ type previewRequest struct {
 	Name  string `json:"name"`
 	Image string `json:"image"`
 	Hours int    `json:"ttl_hours"`
+	// deferred: create or renew the preview without deploying it; a pull request build
+	// deploys it once its image is ready.
+	deferred bool
 }
 
 type previewResult struct {
@@ -87,7 +90,7 @@ func (s *Server) upsertPreview(r *http.Request, tx pgx.Tx, o *orgInfo, p *projec
 	if req.Hours < 1 || req.Hours > maxPreviewHours {
 		return res, apiErr{http.StatusUnprocessableEntity, "Lifetime: 1 to 720 hours."}
 	}
-	if parent.Image == "" && req.Image == "" {
+	if parent.Image == "" && req.Image == "" && !req.deferred {
 		return res, apiErr{http.StatusUnprocessableEntity, "Give an image: the service has none yet."}
 	}
 	spec := parent.spec()
@@ -96,11 +99,13 @@ func (s *Server) upsertPreview(r *http.Request, tx pgx.Tx, o *orgInfo, p *projec
 	if img := strings.TrimSpace(req.Image); img != "" {
 		spec.Image = img
 	}
-	if err := spec.Validate(); err != nil {
-		return res, apiErr{http.StatusUnprocessableEntity, err.Error()}
-	}
-	if err := registry.CheckNamespace(spec.Image, s.cfg.RegistryHost, o.Slug); err != nil {
-		return res, apiErr{http.StatusUnprocessableEntity, err.Error()}
+	if !req.deferred { // a deferred preview gets its image from the build
+		if err := spec.Validate(); err != nil {
+			return res, apiErr{http.StatusUnprocessableEntity, err.Error()}
+		}
+		if err := registry.CheckNamespace(spec.Image, s.cfg.RegistryHost, o.Slug); err != nil {
+			return res, apiErr{http.StatusUnprocessableEntity, err.Error()}
+		}
 	}
 	expires := time.Now().Add(time.Duration(req.Hours) * time.Hour)
 
@@ -167,14 +172,20 @@ func (s *Server) upsertPreview(r *http.Request, tx pgx.Tx, o *orgInfo, p *projec
 		res.Created = true
 	case err != nil:
 		return res, err
+	case req.deferred: // keep serving the current image until the build deploys the new one
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET expires_at = $2 WHERE id = $1`, id, expires); err != nil {
+			return res, err
+		}
 	default:
 		if _, err := tx.Exec(r.Context(), `UPDATE services SET image = $2, expires_at = $3 WHERE id = $1`, id, spec.Image, expires); err != nil {
 			return res, err
 		}
 	}
-	rev, err := s.createDeployment(r, tx, o, id, spec)
-	if err != nil {
-		return res, err
+	rev := 0
+	if !req.deferred {
+		if rev, err = s.createDeployment(r, tx, o, id, spec); err != nil {
+			return res, err
+		}
 	}
 	action := "preview.updated"
 	if res.Created {

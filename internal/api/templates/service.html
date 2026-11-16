@@ -379,7 +379,7 @@
       <tbody>
       {{range .Builds}}
         <tr><td><span class="st st-{{buildStatus .Status}}">{{.Status}}</span> <a href="{{$.Path}}/builds/{{.Number}}">#{{.Number}}</a></td>
-          <td><code>{{.ShortCommit}}</code></td><td>{{if .By}}{{.By}}{{else}}{{.Trigger}}{{end}}</td><td class="nowrap">{{ago .Created}}{{with .Duration}} · {{.}}{{end}}</td></tr>
+          <td><code>{{.ShortCommit}}</code></td><td>{{with .PR}}pull request #{{.}}{{else}}{{if .By}}{{.By}}{{else}}{{.Trigger}}{{end}}{{end}}</td><td class="nowrap">{{ago .Created}}{{with .Duration}} · {{.}}{{end}}</td></tr>
       {{end}}
       </tbody>
     </table>
@@ -395,13 +395,15 @@
       <label>Folder <span class="hint">the app's folder in the repository; empty = repository root</span><input name="dir" value="{{.Source.Dir}}" placeholder="services/web" maxlength="200"></label>
       <label>Access token <span class="hint">private repositories only: a read-only token; stored encrypted, never shown again</span><input name="token" type="password" autocomplete="off" placeholder="{{if .Source.HasToken}}saved (leave empty to keep){{end}}"></label>
       {{if .Source.HasToken}}<label class="check"><input type="checkbox" name="clear_token" value="1"> remove the saved token</label>{{end}}
+      <label class="check"><input type="checkbox" name="pr_previews" value="1"{{if .Source.PRPreviews}} checked{{end}}> Preview every pull request
+        <span class="hint">builds each pull request's branch and deploys it as preview pr-&lt;number&gt;, deleted when the pull request closes; needs the webhook below with pull request events; pull requests from forks are ignored</span></label>
       <div><button type="submit" class="secondary">Save source</button></div>
     </form>
   </div>
   {{if .Source.Repo}}
   <div class="section">
     <h2>Build on every push</h2>
-    <p class="small muted">Add a webhook in GitHub, Gitea, Forgejo or GitLab (push events, content type JSON) with this platform's address. Pushes to other branches are ignored. {{if .Source.HasHook}}A webhook address exists; creating a new one disables the old one.{{end}}</p>
+    <p class="small muted">Add a webhook in GitHub, Gitea, Forgejo or GitLab (push events{{if .Source.PRPreviews}} and pull request events{{end}}, content type JSON) with this platform's address. Pushes to other branches are ignored. {{if .Source.HasHook}}A webhook address exists; creating a new one disables the old one.{{end}}</p>
     <form method="post" action="{{.Path}}/build-hook" class="inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <button type="submit" class="secondary"{{if .Source.HasHook}} data-confirm="Replace the webhook address? The old one stops working."{{end}}>{{if .Source.HasHook}}New webhook address{{else}}Create webhook address{{end}}</button>

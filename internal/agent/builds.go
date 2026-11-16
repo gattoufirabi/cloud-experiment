@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"net"
 	"net/netip"
 	"net/url"
@@ -42,6 +43,8 @@ type buildJob struct {
 	TokenEnc                                   []byte
 	Deploy                                     bool
 	CreatedBy                                  *string
+	PreviewID                                  *string // pull request build: deploy to this preview
+	PR                                         *int
 }
 
 func (a *Agent) pokeBuilds() {
@@ -88,10 +91,10 @@ func (a *Agent) claimBuild(ctx context.Context) (buildJob, bool) {
 		UPDATE builds bu SET status = 'running', started_at = now()
 		FROM next, services s, orgs o
 		WHERE bu.id = next.id AND s.id = bu.service_id AND o.id = bu.org_id
-		RETURNING bu.id, bu.org_id, o.slug, s.id, s.slug, bu.number, s.source_repo, s.source_branch, s.source_dir,
-		          s.source_token_enc, bu.deploy, bu.created_by`).
+		RETURNING bu.id, bu.org_id, o.slug, s.id, s.slug, bu.number, s.source_repo, coalesce(nullif(bu.branch, ''), s.source_branch), s.source_dir,
+		          s.source_token_enc, bu.deploy, bu.created_by, bu.preview_service_id, bu.pr_number`).
 		Scan(&b.ID, &b.OrgID, &b.OrgSlug, &b.ServiceID, &b.ServiceSlug, &b.Number, &b.Repo, &b.Branch, &b.Dir,
-			&b.TokenEnc, &b.Deploy, &b.CreatedBy)
+			&b.TokenEnc, &b.Deploy, &b.CreatedBy, &b.PreviewID, &b.PR)
 	if err != nil {
 		return b, false
 	}
@@ -138,7 +141,11 @@ func (a *Agent) runBuild(parent context.Context, b buildJob) {
 		a.log.Info("build failed", "build", b.ID, "err", msg)
 	}
 
-	log.step("build #%d of %s (branch %s)", b.Number, b.Repo, b.Branch)
+	if b.PR != nil {
+		log.step("build #%d of %s (pull request #%d, branch %s) for preview pr-%d", b.Number, b.Repo, *b.PR, b.Branch, *b.PR)
+	} else {
+		log.step("build #%d of %s (branch %s)", b.Number, b.Repo, b.Branch)
+	}
 	if err := a.checkRepo(ctx, b.Repo); err != nil {
 		fail(err.Error())
 		return
@@ -332,12 +339,19 @@ chown 1000:1000 /cache`
 	log.step("pushed %s (%d MB)", image, size>>20)
 
 	// 4. record and deploy
-	if b.Deploy {
+	switch {
+	case b.PR != nil && b.PreviewID == nil:
+		log.step("the preview was deleted meanwhile (pull request closed): nothing to deploy")
+	case b.Deploy:
 		if err := a.deployBuilt(ctx, b, image); err != nil {
 			fail("deploy: " + err.Error())
 			return
 		}
-		log.step("deployment started")
+		if b.PR != nil {
+			log.step("preview pr-%d deployment started", *b.PR)
+		} else {
+			log.step("deployment started")
+		}
 	}
 	if _, err := a.pool.Exec(ctx, `
 		UPDATE builds SET status = 'done', commit = $2, image = $3, log = $4, finished_at = now() WHERE id = $1`,
@@ -348,9 +362,13 @@ chown 1000:1000 /cache`
 	a.log.Info("build done", "build", b.ID, "image", image)
 }
 
-// deployBuilt points the service at the new image and queues a deployment with its
-// current settings, as the user who started the build.
+// deployBuilt points the service (or, for a pull request, its preview) at the new image
+// and queues a deployment with its current settings, as the user who started the build.
 func (a *Agent) deployBuilt(ctx context.Context, b buildJob, image string) error {
+	target := b.ServiceID
+	if b.PreviewID != nil {
+		target = *b.PreviewID
+	}
 	tx, err := a.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -360,8 +378,11 @@ func (a *Agent) deployBuilt(ctx context.Context, b buildJob, image string) error
 	var envJSON []byte
 	if err := tx.QueryRow(ctx, `
 		UPDATE services SET image = $2 WHERE id = $1
-		RETURNING port, cpu_millis, memory_mb, health_path, volume_path, env`, b.ServiceID, image).
-		Scan(&spec.Port, &spec.CPUMillis, &spec.MemoryMB, &spec.HealthPath, &spec.VolumePath, &envJSON); err != nil {
+		RETURNING port, cpu_millis, memory_mb, health_path, volume_path, env, worker, instances`, target, image).
+		Scan(&spec.Port, &spec.CPUMillis, &spec.MemoryMB, &spec.HealthPath, &spec.VolumePath, &envJSON, &spec.Worker, &spec.Instances); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) && b.PreviewID != nil {
+			return errors.New("the preview was deleted while building (pull request closed)")
+		}
 		return err
 	}
 	_ = json.Unmarshal(envJSON, &spec.Env)
@@ -373,7 +394,7 @@ func (a *Agent) deployBuilt(ctx context.Context, b buildJob, image string) error
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO deployments (org_id, service_id, revision, spec, created_by)
 		VALUES ($1, $2, (SELECT coalesce(max(revision), 0) + 1 FROM deployments WHERE service_id = $2), $3, $4)`,
-		b.OrgID, b.ServiceID, raw, b.CreatedBy); err != nil {
+		b.OrgID, target, raw, b.CreatedBy); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

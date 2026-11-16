@@ -175,6 +175,20 @@ A preview is a temporary copy of a service, with the same settings, secrets and 
 - Previews never get a persistent folder or backups, and do not appear on public status pages. A preview's logs are under **logs and details** in the Previews tab.
 - Secrets are copied when the preview is created; later changes to the service's secrets do not reach existing previews.
 
+### A preview for each pull request
+
+With builds from git set up, a service can get a preview for every pull request automatically.
+
+1. On the service's **Builds** tab, tick **Preview every pull request** and save.
+2. In your repository's webhook settings (GitHub, Gitea or Forgejo), use the service's webhook address and add **pull request** events to push events.
+3. Open a pull request: its branch is built and deployed as preview `pr-<number>`, at `pr-<number>.<service>-<project>-<organization>.<apps domain>`. Every push to the pull request rebuilds it; closing or merging the pull request deletes the preview.
+
+Good to know:
+
+- Pull requests from forks are ignored: a preview receives the service's secrets and project variables, so only branches of the repository itself are previewed.
+- A pull request preview lives 14 days after its last push if it is never closed.
+- The previews count against the limit of previews per service and your plan's CPU and memory.
+
 ## Managed databases
 
 Managed PostgreSQL and Redis run next to your services, on the project's private network, with nightly consistent backups.

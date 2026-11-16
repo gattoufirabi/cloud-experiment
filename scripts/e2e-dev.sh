@@ -563,6 +563,29 @@ code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$
 OUT=$(pctl build shop/web --wait)
 if echo "$OUT" | grep -q "with Railpack (no Dockerfile)" && echo "$OUT" | grep -q "done: "; then ok "repository without a Dockerfile built with Railpack"; else bad "Railpack build failed: $(echo "$OUT" | tail -3)"; fi
 check "Railpack-built app deployed and serving" "$(for _ in $(seq 1 45); do b=$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/"); echo "$b" | grep -q "built-with-railpack-$RUN" && { echo yes; break; }; sleep 2; done)" yes
+echo "== Preview per pull request"
+(cd "$GITD/src" && git checkout -q -b pr-branch main && echo "pr-preview-$RUN" > index.html \
+  && git -c user.email=e2e@example.test -c user.name=e2e commit -qam "pull request change" && git checkout -q main) >/dev/null
+(cd "$GITD/srv/app.git" && git fetch -q "$GITD/src" pr-branch:pr-branch && git update-server-info) >/dev/null
+pr_event() { # pr_event <action> <number> <head repo> [header]: GitHub-style pull request webhook
+  printf '{"action":"%s","number":%s,"pull_request":{"head":{"ref":"pr-branch","sha":"0","repo":{"full_name":"%s"}},"base":{"repo":{"full_name":"acme/app"}}}}' "$1" "$2" "$3"; }
+pr_builds() { owner_sql "SELECT count(*) FROM builds b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.trigger = 'pull_request'"; }
+PR_HOST=pr-7.web-shop-$A.apps.localhost
+pr_page() { curl -s --resolve "$PR_HOST:$PORT:127.0.0.1" "http://$PR_HOST:$PORT/"; }
+code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$REPO" -d branch=main -d dir= >/dev/null
+check "pull request ignored while previews are off (202, no build)" "$(hook -H 'X-GitHub-Event: pull_request' -d "$(pr_event opened 7 acme/app)" "$HOOK"):$(pr_builds)" 202:0
+check "[A] pull request previews turned on" "$(code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$REPO" -d branch=main -d dir= -d pr_previews=1)" 303
+check "pull request from a fork ignored (no build, no preview)" "$(hook -H 'X-GitHub-Event: pull_request' -d "$(pr_event opened 7 someone-else/app)" "$HOOK"):$(pr_builds)" 202:0
+check "opened pull request queues a preview build (202)" "$(hook -H 'X-GitHub-Event: pull_request' -d "$(pr_event opened 7 acme/app)" "$HOOK")" 202
+check "preview pr-7 created for the pull request" "$(owner_sql "SELECT count(*) FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.preview_name = 'pr-7'")" 1
+check "the pull request's branch is built and served at the preview address" "$(for _ in $(seq 1 90); do pr_page | grep -q "pr-preview-$RUN" && { echo yes; break; }; sleep 2; done)" yes
+check "the service itself keeps its own version" "$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/" | grep -c "pr-preview-$RUN")" 0
+if grep -q "pull request #7" <<<"$(c ja "$BASE$SVC_A")"; then ok "[A] Builds tab shows the pull request build"; else bad "pull request build not listed"; fi
+check "a push to the pull request rebuilds its preview (Gitea event)" "$(hook -H 'X-Gitea-Event: pull_request' -d "$(pr_event synchronized 7 acme/app)" "$HOOK"):$(for _ in $(seq 1 90); do [ "$(pr_builds)" -ge 2 ] && [ "$(owner_sql "SELECT count(*) FROM builds b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.trigger = 'pull_request' AND b.status IN ('queued', 'running')")" = 0 ] && { echo built; break; }; sleep 2; done)" 202:built
+check "rebuilt preview still serves the branch" "$(for _ in $(seq 1 30); do pr_page | grep -q "pr-preview-$RUN" && { echo yes; break; }; sleep 2; done)" yes
+check "closing the pull request deletes its preview (202)" "$(hook -H 'X-GitHub-Event: pull_request' -d "$(pr_event closed 7 acme/app)" "$HOOK")" 202
+check "closed pull request's preview no longer served" "$(for _ in $(seq 1 30); do [ "$(curl -s -o /dev/null -w '%{http_code}' --resolve "$PR_HOST:$PORT:127.0.0.1" "http://$PR_HOST:$PORT/")" = 404 ] && { echo 404; break; }; sleep 2; done)" 404
+check "preview deletion audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'preview.deleted' AND detail->>'preview' = 'pr-7' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" 1
 code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A -d repo= -d branch=main >/dev/null
 check "builds audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'build.done' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 docker rm -f e2e-git >/dev/null 2>&1

@@ -52,15 +52,15 @@ func isPrivate(ip netip.Addr) bool {
 }
 
 type sourceInfo struct {
-	Repo, Branch, Dir string
-	HasToken, HasHook bool
+	Repo, Branch, Dir             string
+	HasToken, HasHook, PRPreviews bool
 }
 
 func loadSource(r *http.Request, tx pgx.Tx, serviceID string) (sourceInfo, error) {
 	var si sourceInfo
 	err := tx.QueryRow(r.Context(), `
-		SELECT source_repo, source_branch, source_dir, source_token_enc IS NOT NULL, build_hook_hash IS NOT NULL
-		FROM services WHERE id = $1`, serviceID).Scan(&si.Repo, &si.Branch, &si.Dir, &si.HasToken, &si.HasHook)
+		SELECT source_repo, source_branch, source_dir, source_token_enc IS NOT NULL, build_hook_hash IS NOT NULL, pr_previews
+		FROM services WHERE id = $1`, serviceID).Scan(&si.Repo, &si.Branch, &si.Dir, &si.HasToken, &si.HasHook, &si.PRPreviews)
 	return si, err
 }
 
@@ -69,6 +69,8 @@ type buildView struct {
 	Status, Trigger, Commit string
 	Image, Error, Log, By   string
 	Deploy                  bool
+	Branch                  string
+	PR                      *int
 	Created                 time.Time
 	Started, Finished       *time.Time
 }
@@ -91,7 +93,7 @@ func (b buildView) ShortCommit() string {
 	return b.Commit
 }
 
-const buildCols = `b.number, b.status, b.trigger, b.commit, b.image, b.error, b.log, coalesce(u.email, ''), b.deploy, b.created_at, b.started_at, b.finished_at`
+const buildCols = `b.number, b.status, b.trigger, b.commit, b.image, b.error, b.log, coalesce(u.email, ''), b.deploy, b.branch, b.pr_number, b.created_at, b.started_at, b.finished_at`
 
 func loadBuilds(r *http.Request, tx pgx.Tx, serviceID string, limit int) ([]buildView, error) {
 	rows, err := tx.Query(r.Context(), `SELECT `+buildCols+` FROM builds b LEFT JOIN users u ON u.id = b.created_by
@@ -175,8 +177,8 @@ func (s *Server) saveSource(w http.ResponseWriter, r *http.Request) {
 			formErr = "Previews are deployed from images; set the repository on the service."
 			return nil
 		}
-		if _, err := tx.Exec(r.Context(), `UPDATE services SET source_repo = $2, source_branch = $3, source_dir = $4 WHERE id = $1`,
-			sv.ID, repo, branch, dir); err != nil {
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET source_repo = $2, source_branch = $3, source_dir = $4, pr_previews = $5 WHERE id = $1`,
+			sv.ID, repo, branch, dir, r.PostFormValue("pr_previews") == "1" && repo != ""); err != nil {
 			return err
 		}
 		switch {
@@ -193,7 +195,7 @@ func (s *Server) saveSource(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		s.audit(r, tx, o.ID, "service.source", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"repo": repo, "branch": branch, "dir": dir, "token_set": token != ""})
+		s.audit(r, tx, o.ID, "service.source", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"repo": repo, "branch": branch, "dir": dir, "token_set": token != "", "pr_previews": r.PostFormValue("pr_previews") == "1"})
 		return nil
 	})
 	if !ok {
@@ -247,7 +249,7 @@ func (s *Server) buildPage(w http.ResponseWriter, r *http.Request) {
 	o, p, sv, err, ok := s.withService(w, r, "viewer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
 		return tx.QueryRow(r.Context(), `SELECT `+buildCols+` FROM builds b LEFT JOIN users u ON u.id = b.created_by
 			WHERE b.service_id = $1 AND b.number = $2`, sv.ID, atoi(r.PathValue("n"))).
-			Scan(&b.Number, &b.Status, &b.Trigger, &b.Commit, &b.Image, &b.Error, &b.Log, &b.By, &b.Deploy, &b.Created, &b.Started, &b.Finished)
+			Scan(&b.Number, &b.Status, &b.Trigger, &b.Commit, &b.Image, &b.Error, &b.Log, &b.By, &b.Deploy, &b.Branch, &b.PR, &b.Created, &b.Started, &b.Finished)
 	})
 	if !ok {
 		return
@@ -305,8 +307,9 @@ func (s *Server) buildHook(w http.ResponseWriter, r *http.Request) {
 	}
 	token := r.PathValue("token")
 	var orgID, serviceID, branch string
-	err := s.pool.QueryRow(r.Context(), `SELECT org_id, service_id, branch FROM build_hook_service($1)`, secure.HashToken(token)).
-		Scan(&orgID, &serviceID, &branch)
+	var prPreviews bool
+	err := s.pool.QueryRow(r.Context(), `SELECT org_id, service_id, branch, pr_previews FROM build_hook_service($1)`, secure.HashToken(token)).
+		Scan(&orgID, &serviceID, &branch, &prPreviews)
 	if err != nil {
 		if !s.limiter.allow("build-hook-fail:"+ip, 20, 10*time.Minute) {
 			apiError(w, http.StatusTooManyRequests, "too many requests")
@@ -315,8 +318,12 @@ func (s *Server) buildHook(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "unknown webhook")
 		return
 	}
-	if r.Header.Get("X-GitHub-Event") == "ping" {
+	switch hookEvent(r) {
+	case "ping":
 		writeJSON(w, map[string]string{"status": "pong"})
+		return
+	case "pull_request":
+		s.prHook(w, r, orgID, serviceID, prPreviews)
 		return
 	}
 	var payload struct {
@@ -396,7 +403,7 @@ func (s *Server) apiBuild(w http.ResponseWriter, r *http.Request, o *orgInfo) {
 	if !s.apiService(w, r, o, func(tx pgx.Tx, p *projectInfo, sv *serviceInfo) error {
 		return tx.QueryRow(r.Context(), `SELECT `+buildCols+` FROM builds b LEFT JOIN users u ON u.id = b.created_by
 			WHERE b.service_id = $1 AND b.number = $2`, sv.ID, atoi(r.PathValue("n"))).
-			Scan(&b.Number, &b.Status, &b.Trigger, &b.Commit, &b.Image, &b.Error, &b.Log, &b.By, &b.Deploy, &b.Created, &b.Started, &b.Finished)
+			Scan(&b.Number, &b.Status, &b.Trigger, &b.Commit, &b.Image, &b.Error, &b.Log, &b.By, &b.Deploy, &b.Branch, &b.PR, &b.Created, &b.Started, &b.Finished)
 	}) {
 		return
 	}
