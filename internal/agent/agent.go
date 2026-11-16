@@ -52,6 +52,7 @@ type Agent struct {
 	buildWake   chan struct{}
 	cleanWake   chan struct{}
 	diskWake    chan struct{}
+	jobWake     chan struct{}
 	alertHTTP   *http.Client
 	probeFails  map[string]int
 	attached    map[string]bool // project networks the proxy and agent are known to be on
@@ -108,6 +109,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		buildWake:   make(chan struct{}, 1),
 		cleanWake:   make(chan struct{}, 1),
 		diskWake:    make(chan struct{}, 1),
+		jobWake:     make(chan struct{}, 1),
 		alertHTTP:   newAlertHTTP(cfg.AlertAllowPrivate),
 		probeFails:  map[string]int{},
 		attached:    map[string]bool{},
@@ -136,6 +138,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.registryCleanLoop(ctx)
 	go a.diskLoop(ctx)
 	go a.nodeLoop(ctx)
+	go a.jobLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)
@@ -176,6 +179,8 @@ func (a *Agent) listen(ctx context.Context) {
 							a.pokeBuilds()
 						case "registry-clean":
 							a.pokeRegistryClean()
+						case "jobs":
+							a.pokeJobs()
 						case "disk":
 							a.pokeDisk()
 						default:
@@ -326,7 +331,7 @@ func (a *Agent) deploy(ctx context.Context, j job) error {
 		return err
 	}
 	upstream := ""
-	if !a.isPrimary() {
+	if !a.isPrimary() && !j.Spec.Worker {
 		info, err := a.dk.ContainerInspect(ctx, id)
 		port := strconv.Itoa(j.Spec.Port) + "/tcp"
 		if err != nil || len(info.NetworkSettings.Ports[port]) == 0 {
@@ -459,7 +464,10 @@ func (a *Agent) buildEnv(ctx context.Context, j job) ([]string, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return dedupEnv(append(env, "PORT="+strconv.Itoa(j.Spec.Port))), nil
+	if !j.Spec.Worker {
+		env = append(env, "PORT="+strconv.Itoa(j.Spec.Port))
+	}
+	return dedupEnv(env), nil
 }
 
 // dedupEnv keeps one entry per name, the last one, at the position of its first.
@@ -515,7 +523,7 @@ func (a *Agent) containerConfig(j job, netName string, env, hosts []string) dock
 		},
 		HostConfig: hc,
 	}
-	if !a.isPrimary() { // reachable only on the private (WireGuard) address
+	if !a.isPrimary() && !j.Spec.Worker { // reachable only on the private (WireGuard) address
 		port := strconv.Itoa(j.Spec.Port) + "/tcp"
 		cfg.ExposedPorts = map[string]struct{}{port: {}}
 		cfg.HostConfig.PortBindings = map[string][]docker.PortBinding{port: {{HostIP: a.cfg.NodeBind}}}
@@ -527,6 +535,25 @@ func (a *Agent) waitHealthy(ctx context.Context, id, netName string, s model.Spe
 	client := &http.Client{
 		Timeout:       3 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	if s.Worker { // no port to probe: healthy if it is still running after a few seconds
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(8 * time.Second):
+		}
+		info, err := a.dk.ContainerInspect(ctx, id)
+		if err != nil {
+			return fmt.Errorf("inspect container: %w", err)
+		}
+		if !info.State.Running || info.RestartCount > 0 {
+			reason := fmt.Sprintf("exit code %d", info.State.ExitCode)
+			if info.State.OOMKilled {
+				reason = "killed: out of memory, raise the memory limit"
+			}
+			return fmt.Errorf("worker stopped (%s)%s", reason, a.tail(ctx, id))
+		}
+		return nil
 	}
 	deadline := time.Now().Add(90 * time.Second)
 	lastErr := errors.New("no answer yet")
@@ -599,8 +626,8 @@ func (a *Agent) promote(ctx context.Context, j job, id, name, upstream string) (
 			return err
 		}
 		_, err = tx.Exec(ctx, `
-			UPDATE deployments SET status = 'live', message = '', container_id = $2, container_name = $3, upstream = $4, updated_at = now()
-			WHERE id = $1`, j.ID, id, name, upstream)
+			UPDATE deployments SET status = 'live', message = '', container_id = $2, container_name = $3, upstream = $4, node_id = $5, updated_at = now()
+			WHERE id = $1`, j.ID, id, name, upstream, a.selfID)
 		return err
 	})
 	return old, err
@@ -610,11 +637,11 @@ func (a *Agent) promote(ctx context.Context, j job, id, name, upstream string) (
 
 func (a *Agent) reconcile(ctx context.Context) {
 	type live struct {
-		DepID, ContainerID, OrgID, ProjectID, ServiceID, Upstream string
-		Suspended                                                 bool
+		DepID, ContainerID, OrgID, ProjectID, ServiceID, Upstream, NodeID string
+		Suspended                                                         bool
 	}
 	rows, err := a.pool.Query(ctx, `
-		SELECT d.id, coalesce(d.container_id, ''), d.org_id, s.project_id, d.service_id, d.upstream, o.suspended
+		SELECT d.id, coalesce(d.container_id, ''), d.org_id, s.project_id, d.service_id, d.upstream, coalesce(d.node_id, ''), o.suspended
 		FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id
 		JOIN projects p ON p.id = s.project_id
 		WHERE d.status = 'live' AND `+mineSQL, a.mineArgs()...)
@@ -624,7 +651,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 	}
 	lives, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (live, error) {
 		var l live
-		err := r.Scan(&l.DepID, &l.ContainerID, &l.OrgID, &l.ProjectID, &l.ServiceID, &l.Upstream, &l.Suspended)
+		err := r.Scan(&l.DepID, &l.ContainerID, &l.OrgID, &l.ProjectID, &l.ServiceID, &l.Upstream, &l.NodeID, &l.Suspended)
 		return l, err
 	})
 	if err != nil {
@@ -656,7 +683,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 	// node's deployment is live (that supersedes this one), then it is removed here.
 	var mine []string
 	for _, c := range containers {
-		if c.Labels["platform.database"] == "" && a.owns(c.Labels) && !keep[c.Labels["platform.deployment"]] {
+		if c.Labels["platform.database"] == "" && c.Labels["platform.job"] == "" && a.owns(c.Labels) && !keep[c.Labels["platform.deployment"]] {
 			mine = append(mine, c.ID)
 		}
 	}
@@ -671,7 +698,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 	}
 	byDep := map[string]docker.ContainerSummary{}
 	for _, c := range containers {
-		if c.Labels["platform.database"] != "" || !a.owns(c.Labels) {
+		if c.Labels["platform.database"] != "" || c.Labels["platform.job"] != "" || !a.owns(c.Labels) {
 			continue
 		}
 		dep := c.Labels["platform.deployment"]
@@ -728,7 +755,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 			}
 			continue
 		}
-		if !ok && a.ranElsewhere(l.Upstream) {
+		if !ok && a.ranElsewhere(l.NodeID, l.Upstream) {
 			// The project was moved here (drain, placement): start a new revision on this
 			// node; the old container keeps serving until it is live.
 			tag, err := a.pool.Exec(ctx, `
@@ -953,9 +980,13 @@ func (a *Agent) projectHosts(ctx context.Context, projectID, netName string) []s
 
 // owns tells whether a container or network belongs to this node: labelled with its
 // node ID, or unlabelled (created before multi-node support) and this is the primary.
-// ranElsewhere reports whether a live deployment with this upstream was started by
-// another node: the primary never records an upstream, a worker records its own address.
-func (a *Agent) ranElsewhere(upstream string) bool {
+// ranElsewhere reports whether a live deployment was started by another node: the
+// recorded node when there is one; for older rows, from the upstream (the primary never
+// records one, a worker node records its own address).
+func (a *Agent) ranElsewhere(nodeID, upstream string) bool {
+	if nodeID != "" {
+		return nodeID != a.selfID
+	}
 	if upstream == "" {
 		return !a.isPrimary()
 	}

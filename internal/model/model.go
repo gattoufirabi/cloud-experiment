@@ -30,6 +30,9 @@ type Spec struct {
 	HealthPath string            `json:"health_path"`
 	VolumePath string            `json:"volume_path,omitempty"`
 	Env        map[string]string `json:"env"`
+	// Worker: no public address (queue consumer, bot). Not routed by the proxy, no
+	// port or HTTP health check: healthy while the container keeps running.
+	Worker bool `json:"worker,omitempty"`
 }
 
 func (s Spec) Validate() error {
@@ -38,13 +41,13 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("an image is required (for example nginx:1.27-alpine)")
 	case !imageRe.MatchString(s.Image) || strings.Contains(s.Image, "..") || strings.Contains(s.Image, "//"):
 		return fmt.Errorf("invalid image reference")
-	case s.Port < 1 || s.Port > 65535:
+	case !s.Worker && (s.Port < 1 || s.Port > 65535):
 		return fmt.Errorf("port must be between 1 and 65535")
 	case s.CPUMillis < 50 || s.CPUMillis > 8000:
 		return fmt.Errorf("CPU must be between 50 and 8000 millicores")
 	case s.MemoryMB < 32 || s.MemoryMB > 16384:
 		return fmt.Errorf("memory must be between 32 and 16384 MB")
-	case !pathRe.MatchString(s.HealthPath):
+	case !s.Worker && !pathRe.MatchString(s.HealthPath):
 		return fmt.Errorf("health check path must start with / and contain no spaces")
 	}
 	if s.VolumePath != "" {

@@ -79,6 +79,12 @@ func (a *Agent) meterMinute(ctx context.Context) {
 		JOIN projects p ON p.id = db.project_id
 		JOIN orgs o ON o.id = db.org_id
 		WHERE db.status = 'running' AND NOT o.suspended
+		UNION ALL
+		SELECT r.org_id, r.job_id, 'service', p.slug || '/' || s.slug || ' job ' || j.slug, date_trunc('hour', now()),
+		       sum(r.cpu_millis), sum(r.memory_mb)
+		FROM job_runs r JOIN jobs j ON j.id = r.job_id JOIN services s ON s.id = j.service_id JOIN projects p ON p.id = s.project_id
+		WHERE r.status = 'running'
+		GROUP BY r.org_id, r.job_id, p.slug, s.slug, j.slug
 		ON CONFLICT (resource_id, hour) DO UPDATE SET
 		    cpu_milli_minutes = usage_hourly.cpu_milli_minutes + EXCLUDED.cpu_milli_minutes,
 		    mem_mb_minutes    = usage_hourly.mem_mb_minutes + EXCLUDED.mem_mb_minutes,

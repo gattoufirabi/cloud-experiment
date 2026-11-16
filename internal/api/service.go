@@ -21,6 +21,7 @@ import (
 type serviceInfo struct {
 	ID, Slug, Image, HealthPath, VolumePath string
 	Port, CPUMillis, MemoryMB               int
+	Worker                                  bool
 	Env                                     map[string]string
 	PreviewName, ParentSlug                 string // set for preview environments
 	Expires                                 *time.Time
@@ -38,18 +39,18 @@ func (s *Server) serviceHost(o *orgInfo, p *projectInfo, sv *serviceInfo) string
 
 func (sv *serviceInfo) spec() model.Spec {
 	return model.Spec{Image: sv.Image, Port: sv.Port, CPUMillis: sv.CPUMillis, MemoryMB: sv.MemoryMB,
-		HealthPath: sv.HealthPath, VolumePath: sv.VolumePath, Env: sv.Env}
+		HealthPath: sv.HealthPath, VolumePath: sv.VolumePath, Env: sv.Env, Worker: sv.Worker}
 }
 
 func (s *Server) loadService(r *http.Request, tx pgx.Tx, projectID string) (*serviceInfo, error) {
 	var sv serviceInfo
 	err := tx.QueryRow(r.Context(), `
 		SELECT s.id, s.slug, s.image, s.health_path, s.volume_path, s.port, s.cpu_millis, s.memory_mb, s.env,
-		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker
 		FROM services s LEFT JOIN services ps ON ps.id = s.preview_of
 		WHERE s.project_id = $1 AND s.slug = $2`, projectID, r.PathValue("service")).
 		Scan(&sv.ID, &sv.Slug, &sv.Image, &sv.HealthPath, &sv.VolumePath, &sv.Port, &sv.CPUMillis, &sv.MemoryMB, &sv.Env,
-			&sv.PreviewName, &sv.ParentSlug, &sv.Expires)
+			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker)
 	if sv.Env == nil {
 		sv.Env = map[string]string{}
 	}
@@ -235,8 +236,24 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	var jobs []jobView
+	var jobRuns []jobRunView
+	if !sv.isPreview() {
+		if err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+			var err error
+			if jobs, err = loadJobs(r, tx, sv.ID); err != nil {
+				return err
+			}
+			jobRuns, err = loadJobRuns(r, tx, sv.ID, "", 15, true)
+			return err
+		}); err != nil {
+			s.serverError(w, r, err)
+			return
+		}
+	}
 	host := s.serviceHost(o, p, sv)
 	s.render(w, r, "service", http.StatusOK, data{
+		"Jobs": jobs, "JobRuns": jobRuns,
 		"Org": o, "Project": p, "Service": sv, "EnvText": model.FormatEnv(sv.Env),
 		"Deployments": deps, "Secrets": secrets, "Domains": domains, "ProjectVars": projectVars,
 		"URL": s.appURL(host), "Path": svcPath(o, p, sv), "AppsDomain": s.cfg.AppsDomain,
@@ -279,6 +296,17 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			HealthPath: strings.TrimSpace(r.PostFormValue("health_path")),
 			VolumePath: strings.TrimSpace(r.PostFormValue("volume_path")),
 			Env:        env,
+			Worker:     r.PostFormValue("kind") == "worker",
+		}
+		if next.Worker && !sv.Worker {
+			var n int
+			if err := tx.QueryRow(r.Context(), `SELECT count(*) FROM domains WHERE service_id = $1`, sv.ID).Scan(&n); err != nil {
+				return err
+			}
+			if n > 0 {
+				formErr = "Remove this service's custom domains first: a worker has no public address."
+				return nil
+			}
 		}
 		if err := next.Validate(); err != nil {
 			formErr = err.Error()
@@ -298,11 +326,11 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		envJSON, _ := json.Marshal(next.Env)
 		if _, err := tx.Exec(r.Context(), `
-			UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8
-			WHERE id = $1`, sv.ID, next.Image, next.Port, next.CPUMillis, next.MemoryMB, next.HealthPath, next.VolumePath, envJSON); err != nil {
+			UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8, worker = $9
+			WHERE id = $1`, sv.ID, next.Image, next.Port, next.CPUMillis, next.MemoryMB, next.HealthPath, next.VolumePath, envJSON, next.Worker); err != nil {
 			return err
 		}
-		s.audit(r, tx, o.ID, "service.updated", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"image": next.Image, "cpu_millis": next.CPUMillis, "memory_mb": next.MemoryMB})
+		s.audit(r, tx, o.ID, "service.updated", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"image": next.Image, "cpu_millis": next.CPUMillis, "memory_mb": next.MemoryMB, "worker": next.Worker})
 		if deployNow {
 			_, err := s.createDeployment(r, tx, o, sv.ID, next)
 			return err
@@ -407,8 +435,8 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 		}
 		envJSON, _ := json.Marshal(spec.Env)
 		if _, err := tx.Exec(r.Context(), `
-			UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8
-			WHERE id = $1`, sv.ID, spec.Image, spec.Port, spec.CPUMillis, spec.MemoryMB, spec.HealthPath, spec.VolumePath, envJSON); err != nil {
+			UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8, worker = $9
+			WHERE id = $1`, sv.ID, spec.Image, spec.Port, spec.CPUMillis, spec.MemoryMB, spec.HealthPath, spec.VolumePath, envJSON, spec.Worker); err != nil {
 			return err
 		}
 		var err error
@@ -522,6 +550,10 @@ func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) {
 	var formErr string
 	o, p, sv, err, ok := s.withService(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
 		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(r.PostFormValue("hostname"))), ".")
+		if sv.Worker {
+			formErr = "A worker has no public address, so it cannot have a domain."
+			return nil
+		}
 		if !model.ValidHostname(host) {
 			formErr = "Enter a domain name such as shop.example.com."
 			return nil

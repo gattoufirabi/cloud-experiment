@@ -296,9 +296,10 @@ func (c *Client) ContainerRemove(ctx context.Context, id string) error {
 }
 
 type ContainerInfo struct {
-	ID         string `json:"Id"`
-	Name       string `json:"Name"`
-	HostConfig struct {
+	ID           string `json:"Id"`
+	Name         string `json:"Name"`
+	RestartCount int    `json:"RestartCount"`
+	HostConfig   struct {
 		ExtraHosts []string `json:"ExtraHosts"`
 	} `json:"HostConfig"`
 	State struct {

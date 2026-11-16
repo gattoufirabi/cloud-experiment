@@ -2,16 +2,17 @@
 {{define "content"}}
 <div class="head">
   <h1>{{.Service.Slug}}</h1>
-  <a class="right" href="{{.URL}}" target="_blank" rel="noopener">{{.URL}} ↗</a>
+  {{if .Service.Worker}}<span class="right badge">worker · no public address</span>{{else}}<a class="right" href="{{.URL}}" target="_blank" rel="noopener">{{.URL}} ↗</a>{{end}}
 </div>
 {{if .Service.PreviewName}}<p class="notice">Preview <strong>{{.Service.PreviewName}}</strong> of <a href="{{.Org.Path}}/p/{{.Project.Slug}}/s/{{.Service.ParentSlug}}#previews">{{.Service.ParentSlug}}</a>{{with .Service.Expires}}, deleted automatically {{datetime .}}{{end}}.</p>{{end}}
-<p class="lede"><code>{{if .Service.Image}}{{.Service.Image}}{{else}}no image set{{end}}</code> · port {{.Service.Port}} · {{.Service.CPUMillis}} millicores · {{.Service.MemoryMB}} MB{{if .Service.VolumePath}} · folder {{.Service.VolumePath}}{{end}}</p>
+<p class="lede"><code>{{if .Service.Image}}{{.Service.Image}}{{else}}no image set{{end}}</code> · {{if .Service.Worker}}worker{{else}}port {{.Service.Port}}{{end}} · {{.Service.CPUMillis}} millicores · {{.Service.MemoryMB}} MB{{if .Service.VolumePath}} · folder {{.Service.VolumePath}}{{end}}</p>
 
 <nav class="tabs" role="tablist" aria-label="Service sections">
   <a role="tab" href="#overview">Overview</a>
   <a role="tab" href="#logs-pane">Logs</a>
   <a role="tab" href="#settings">Settings</a>
-  <a role="tab" href="#domains">Domains{{with .Domains}} <span class="count">{{len .}}</span>{{end}}</a>
+  {{if not .Service.Worker}}<a role="tab" href="#domains">Domains{{with .Domains}} <span class="count">{{len .}}</span>{{end}}</a>{{end}}
+  {{if not .Service.PreviewName}}<a role="tab" href="#jobs">Jobs{{with .Jobs}} <span class="count">{{len .}}</span>{{end}}</a>{{end}}
   <a role="tab" href="#security">Security</a>
   {{if .Service.VolumePath}}<a role="tab" href="#backups">Backups</a>{{end}}
   <a role="tab" href="#alerts">Alerts</a>
@@ -68,7 +69,7 @@
     <div>
       <h2>At a glance</h2>
       <ul class="brackets small">
-        <li><strong>Address</strong> <a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a></li>
+        {{if .Service.Worker}}<li><strong>Type</strong> worker, no public address</li>{{else}}<li><strong>Address</strong> <a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a></li>{{end}}
         {{range .Domains}}{{if .Verified}}<li><strong>Domain</strong> {{.Hostname}}</li>{{end}}{{end}}
         {{with .Scan}}<li><strong>Vulnerabilities</strong> {{if eq .Status "done"}}{{template "sevcounts" .}}{{else}}{{.Status}}{{end}}</li>{{end}}
         {{if .Service.VolumePath}}<li><strong>Backups</strong> {{if .Backups.Enabled}}nightly at {{printf "%02d:00" .Backups.Hour}} UTC{{else}}paused{{end}}{{with .Backups.Snaps}}, {{len .}} snapshot{{if ne (len .) 1}}s{{end}}{{end}}</li>{{end}}
@@ -104,8 +105,13 @@
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <fieldset {{if not .CanEdit}}disabled{{end}}>
       <label class="wide">Container image <input name="image" value="{{.Service.Image}}" placeholder="nginx:1.27-alpine or {{if .RegistryHost}}{{.RegistryHost}}{{else}}registry.example.com{{end}}/{{.Org.Slug}}/app:1.4.2" required></label>
-      <label>Port the app listens on <input type="number" name="port" min="1" max="65535" value="{{.Service.Port}}" required></label>
-      <label>Health check path <input name="health_path" value="{{.Service.HealthPath}}" required></label>
+      <label class="wide">Type
+        <select name="kind">
+          <option value="web"{{if not .Service.Worker}} selected{{end}}>Web service: answers HTTP at a public address</option>
+          <option value="worker"{{if .Service.Worker}} selected{{end}}>Worker: runs in the background, no public address</option>
+        </select></label>
+      <label>Port the app listens on <span class="hint">web services only</span><input type="number" name="port" min="1" max="65535" value="{{.Service.Port}}" required></label>
+      <label>Health check path <span class="hint">web services only</span><input name="health_path" value="{{.Service.HealthPath}}" required></label>
       <label>CPU <span class="hint">millicores, 1000 = 1 core</span><input type="number" name="cpu_millis" min="50" max="8000" step="50" value="{{.Service.CPUMillis}}" required></label>
       <label>Memory <span class="hint">MB</span><input type="number" name="memory_mb" min="32" max="16384" step="32" value="{{.Service.MemoryMB}}" required></label>
       <label class="wide">Persistent folder <span class="hint">optional, kept and backed up, e.g. /data</span><input name="volume_path" value="{{.Service.VolumePath}}" placeholder="/data"></label>
@@ -401,6 +407,72 @@
     </form>
   </div>
   {{end}}
+  {{end}}
+</section>
+{{end}}
+
+<!-- ============ jobs ============ -->
+{{if not .Service.PreviewName}}
+<section class="pane" id="jobs" role="tabpanel" aria-label="Jobs">
+  <p class="help"><a href="/docs/user#scheduled-jobs" target="_blank" rel="noopener">Guide: scheduled jobs ↗</a></p>
+  <div class="section">
+    <p class="small muted">A job runs a command on a schedule in a fresh container made from this service's current deployment: same image, variables, secrets and private network. Times are UTC. A job never overlaps itself.</p>
+    {{if .Jobs}}
+    <table>
+      <thead><tr><th>Job</th><th>Schedule</th><th>Command</th><th>Last run</th><th>Next run</th>{{if .CanEdit}}<th><span class="sr-only">Actions</span></th>{{end}}</tr></thead>
+      <tbody>
+      {{range .Jobs}}
+        <tr><td><strong>{{.Slug}}</strong>{{if not .Enabled}} <span class="st st-none">paused</span>{{end}}</td>
+          <td><code>{{.Schedule}}</code></td>
+          <td><code>{{.Command}}</code></td>
+          <td>{{if .LastStatus}}{{template "status" (jobStatus .LastStatus)}} <span class="small muted">{{with .LastRun}}{{ago .}}{{end}}</span>{{else}}<span class="small muted">never</span>{{end}}</td>
+          <td class="small">{{if .Requested}}starting…{{else if and .Enabled .NextRun}}{{datetime .NextRun}}{{else}}<span class="muted">—</span>{{end}}</td>
+          {{if $.CanEdit}}<td class="nowrap">
+            <form method="post" action="{{$.Path}}/jobs/{{.Slug}}/run" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">run now</button></form>
+            <form method="post" action="{{$.Path}}/jobs/{{.Slug}}/{{if .Enabled}}pause{{else}}resume{{end}}" class="inline-form"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">{{if .Enabled}}pause{{else}}resume{{end}}</button></form>
+            <form method="post" action="{{$.Path}}/jobs/{{.Slug}}/delete" class="inline-form" data-confirm="Delete job {{.Slug}} and its run history?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">delete</button></form>
+          </td>{{end}}</tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="small muted">No jobs yet. Typical uses: a nightly report, cleaning old records, sending reminder emails, warming a cache.</p>{{end}}
+  </div>
+  {{if .CanEdit}}
+  <div class="section">
+    <h2>Add or change a job</h2>
+    <form method="post" action="{{.Path}}/jobs" class="form-grid">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Job ID <span class="hint">an existing ID updates that job</span><input name="slug" placeholder="nightly-report" pattern="[a-z0-9][a-z0-9-]{1,29}" required></label>
+      <label>Schedule <span class="hint">cron, UTC: minute hour day month weekday</span><input name="schedule" placeholder="0 3 * * *" required list="cron-examples"></label>
+      <datalist id="cron-examples">
+        <option value="*/15 * * * *">every 15 minutes</option>
+        <option value="0 * * * *">every hour</option>
+        <option value="0 3 * * *">every day at 03:00 UTC</option>
+        <option value="0 8 * * MON-FRI">weekdays at 08:00 UTC</option>
+        <option value="0 4 * * SUN">every Sunday at 04:00 UTC</option>
+        <option value="0 2 1 * *">the 1st of each month at 02:00 UTC</option>
+      </datalist>
+      <label class="wide">Command <span class="hint">run with /bin/sh -c in the service's image</span><input name="command" placeholder="python manage.py send_reminders" maxlength="2000" required></label>
+      <label>Time limit <span class="hint">seconds, 10 to 3600</span><input type="number" name="timeout_seconds" min="10" max="3600" value="600" required></label>
+      <div class="wide inline flush"><button type="submit">Save job</button></div>
+    </form>
+  </div>
+  {{end}}
+  {{if .JobRuns}}
+  <div class="section">
+    <h2>Recent runs</h2>
+    <table>
+      <thead><tr><th>Job</th><th>Status</th><th>Started</th><th>Duration</th><th>Output</th></tr></thead>
+      <tbody>
+      {{range .JobRuns}}
+        <tr><td>{{.Job}}{{if eq .Trigger "manual"}} <span class="small muted">(manual)</span>{{end}}</td>
+          <td>{{template "status" (jobStatus .Status)}}{{with .ExitCode}}{{if ne . 0}} <span class="small muted">exit {{.}}</span>{{end}}{{end}}</td>
+          <td class="small">{{datetime .Started}}</td><td class="small">{{.Duration}}</td>
+          <td>{{if .Log}}<details><summary class="small">last lines</summary><pre class="log">{{.Log}}</pre><a class="small" href="{{$.Path}}/job-runs/{{.ID}}" target="_blank" rel="noopener">full log ↗</a></details>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
   {{end}}
 </section>
 {{end}}

@@ -213,6 +213,9 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST "+svc+"/deploy", s.auth(authFull, s.deployService))
 	m.HandleFunc("POST "+svc+"/rollback/{rev}", s.auth(authFull, s.rollback))
 	m.HandleFunc("POST "+svc+"/secrets", s.auth(authFull, s.setSecret))
+	m.HandleFunc("POST "+svc+"/jobs", s.auth(authFull, s.saveJobForm))
+	m.HandleFunc("POST "+svc+"/jobs/{job}/{action}", s.auth(authFull, s.jobAction))
+	m.HandleFunc("GET "+svc+"/job-runs/{run}", s.auth(authFull, s.jobRunLog))
 	m.HandleFunc("POST "+svc+"/secrets/{name}/delete", s.auth(authFull, s.deleteSecret))
 	m.HandleFunc("POST "+svc+"/domains", s.auth(authFull, s.addDomain))
 	m.HandleFunc("POST "+svc+"/domains/{id}/verify", s.auth(authFull, s.verifyDomain))
@@ -439,6 +442,7 @@ func parseTemplates() (map[string]*template.Template, error) {
 			}
 			return s
 		},
+		"jobStatus": func(s string) string { return s }, // succeeded, failed, timed_out, skipped, running
 		"dbStatus": func(s string) string {
 			if s == "running" {
 				return "live"

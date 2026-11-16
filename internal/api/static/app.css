@@ -185,11 +185,11 @@ ul.brackets li strong { margin-right: 6px; color: var(--text); }
 .st { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 650; line-height: 1; padding: 5px 10px; border-radius: 999px;
   background: var(--idle-soft); color: var(--text-2); white-space: nowrap; vertical-align: middle; }
 .st::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .85; }
-.st-live, .st-done, .st-sent, .st-verified, .st-resolved { background: var(--ok-soft); color: var(--ok-text); }
-.st-failed, .st-error, .st-firing { background: var(--bad-soft); color: var(--bad-text); }
+.st-live, .st-done, .st-succeeded, .st-sent, .st-verified, .st-resolved { background: var(--ok-soft); color: var(--ok-text); }
+.st-failed, .st-error, .st-firing, .st-timed_out { background: var(--bad-soft); color: var(--bad-text); }
 .st-pending, .st-deploying, .st-queued, .st-running { background: var(--warn-soft); color: var(--warn-text); }
 .st-pending::before, .st-deploying::before, .st-queued::before, .st-running::before { animation: pulse 1.4s ease-in-out infinite; }
-.st-superseded, .st-event, .st-none { background: var(--idle-soft); color: var(--text-3); }
+.st-superseded, .st-event, .st-none, .st-skipped { background: var(--idle-soft); color: var(--text-3); }
 @keyframes pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .st::before { animation: none !important; } }
 .sev { display: inline-block; font-size: 14px; font-weight: 600; color: var(--text-2); margin-right: 14px; white-space: nowrap; font-variant-numeric: tabular-nums; }

@@ -69,7 +69,8 @@ Settings take effect at the next deployment: use **Save and deploy**, or **Save 
 | Setting | Default | Rules and tips |
 | --- | --- | --- |
 | Container image | none | Public (`nginx:1.27-alpine`) or private (`{{registry}}/<organization>/<name>:<tag>`). Pin a version tag rather than `latest`. |
-| Port | 8080 | 1 to 65535. Also passed to the application as the `PORT` environment variable. |
+| Type | Web service | **Web service:** answers HTTP at a public address. **Worker:** runs in the background (a queue consumer, a bot) with no address, no port and no domains; it is healthy while it keeps running. |
+| Port | 8080 | 1 to 65535. Also passed to the application as the `PORT` environment variable. Web services only. |
 | Health check path | `/` | Any answer below HTTP 500 counts as healthy. The application has 90 seconds to answer after it starts. |
 | CPU | 250 millicores | 50 to 8000; 1000 = one core. Counts against your plan. |
 | Memory | 256 MB | 32 to 16384. The application is stopped if it uses more, so leave headroom. |
@@ -124,6 +125,34 @@ Instead of pushing images yourself, the platform can build your repository for y
 - Builds run in an isolated sandbox: no access to the platform's internal network, other customers or the server; the internet is reachable for base images and packages. Limits per build: 2 CPU, 2 GB memory, 15 minutes, 8 GB image (uncompressed).
 - One build at a time per service: starting a build while one is waiting reuses the waiting one. At most 5 builds waiting or running per organization.
 - Without a Dockerfile, make your app listen on the `PORT` environment variable (the platform sets it to the service's port). If Railpack cannot detect the project, the build fails with its explanation: add a Dockerfile.
+
+## Scheduled jobs
+
+A job runs a command on a schedule, in a fresh container made from the service's current deployment: same image, environment variables, secrets, project variables and private network (so it reaches the project's databases). Typical uses: a nightly report, cleaning old records, sending reminder emails.
+
+1. Open the service and its **Jobs** tab.
+2. Give the job an ID (`nightly-report`), a schedule and a command, for example `python manage.py send_reminders`. The command runs with `/bin/sh -c`, so the image needs a shell.
+3. Click **Save job**. **run now** starts it at once; **pause** stops the schedule without deleting the job.
+
+Schedules use the classic cron format, in UTC: `minute hour day-of-month month day-of-week`.
+
+| Schedule | Runs |
+| --- | --- |
+| `*/15 * * * *` | every 15 minutes |
+| `0 3 * * *` | every day at 03:00 UTC |
+| `0 8 * * MON-FRI` | weekdays at 08:00 UTC |
+| `0 2 1 * *` | the 1st of each month at 02:00 UTC |
+| `@hourly`, `@daily`, `@weekly`, `@monthly` | shortcuts |
+
+Good to know:
+
+- The service must have a running deployment; a job always uses the image deployed at that moment.
+- A job never overlaps itself: a run due while the previous one is still going is recorded as **skipped**.
+- Each run has a time limit (10 s to 1 hour, 10 minutes by default); a run over it is stopped and marked **timed out**.
+- The job gets the service's CPU and memory, counted in your usage for the minutes it runs. It does not get the service's persistent folder.
+- `PLATFORM_JOB` (the job ID) and `PLATFORM_JOB_RUN` (the run ID) are set in the job's environment.
+- The last 50 runs of each job are kept, with their exit code and the end of their output. A failed or timed-out run sends a **Scheduled job failed** alert to channels that subscribe to it.
+- A service can have up to 20 jobs.
 
 ## Preview environments
 
@@ -299,6 +328,9 @@ platformctl deploy shop/web --image {{registry}}/<organization>/web:1.4.2 --wait
 | `platformctl var set <project> NAME [--plain]` | Sets a shared project variable, secret unless `--plain`; the value is read from standard input. |
 | `platformctl var unset <project> NAME` | Deletes a shared project variable. |
 | `platformctl redeploy <project>` | Redeploys every running service of the project, for example after changing variables. |
+| `platformctl job list <project>/<service>` | Lists the service's scheduled jobs, their last run and next run. |
+| `platformctl job run <project>/<service> JOB [--wait]` | Runs a job now; `--wait` prints its output and exits with an error if it fails. |
+| `platformctl job logs <project>/<service> JOB` | Prints the output of the job's last run. |
 
 `platformctl` is a single program with no dependencies; build it with `go build ./cmd/platformctl` from the platform's source, or ask your operator for a copy.
 
@@ -318,6 +350,11 @@ The same operations are available over HTTP with `Authorization: Bearer <token>`
 | `PUT /api/v1/projects/{project}/variables/{NAME}` with `{"value": "…", "secret": true}` | developer |
 | `DELETE /api/v1/projects/{project}/variables/{NAME}` | developer |
 | `POST /api/v1/projects/{project}/redeploy` | developer |
+| `GET /api/v1/projects/{project}/services/{service}/jobs` | viewer |
+| `PUT /api/v1/projects/{project}/services/{service}/jobs/{job}` with `{"schedule": "0 3 * * *", "command": "…", "timeout_seconds": 600, "enabled": true}` | developer |
+| `DELETE /api/v1/projects/{project}/services/{service}/jobs/{job}` | developer |
+| `POST /api/v1/projects/{project}/services/{service}/jobs/{job}/run` | developer |
+| `GET /api/v1/projects/{project}/services/{service}/jobs/{job}/runs` and `…/runs/{id}` (with the log) | viewer |
 
 A token works only inside its organization and only with its role. Every change made with a token appears in the audit log, named after the token.
 

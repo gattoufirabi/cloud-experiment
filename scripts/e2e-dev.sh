@@ -416,20 +416,22 @@ echo "== Shared project variables"
 VARS=/api/v1/projects/shop/variables
 WEB_CID() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND p.slug = 'shop' AND s.slug = 'web' AND s.preview_name IS NULL AND d.status = 'live'"; }
 check "[API] secret project variable saved" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"value":"shared-secret-xyz"}' "$BASE$VARS/SHARED_TOKEN")" 200
-check "[API] project variable shadowed by the service's own" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"value":"from-project","secret":false}' "$BASE$VARS/GREETING")" 200
+check "[API] project variable shadowed by the service's own secret" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"value":"from-project","secret":false}' "$BASE$VARS/API_KEY")" 200
 check "[API] reserved name refused (422)" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"value":"1"}' "$BASE$VARS/PORT")" 422
 check "[API] viewer token cannot set variables (403)" "$(api_code "$TOK_VIEW" -X PUT -H 'Content-Type: application/json' -d '{"value":"x"}' "$BASE$VARS/X")" 403
-check "[B->A] B cannot read A's project variables (404)" "$(api_code "$TOK_B" "$BASE$VARS")" 404
-check "[B->A] B cannot set A's project variables (404)" "$(api_code "$TOK_B" -X PUT -H 'Content-Type: application/json' -d '{"value":"evil"}' "$BASE$VARS/SHARED_TOKEN")" 404
 OLD_WEB=$(WEB_CID)
 check "[A] plain variable saved in the console, services redeployed" "$(code_of ja -X POST "$BASE/o/$A/p/shop/variables" -d csrf=$CSRF_A -d name=SHARED_HOST -d value=shared.example.test -d redeploy=1)" 303
 for _ in $(seq 1 45); do NEW_WEB=$(WEB_CID); [ -n "$NEW_WEB" ] && [ "$NEW_WEB" != "$OLD_WEB" ] && break; sleep 2; done
 check "service redeployed with the project variables" "$([ -n "$NEW_WEB" ] && [ "$NEW_WEB" != "$OLD_WEB" ] && echo yes)" yes
 check "service receives the secret project variable" "$(docker exec "$NEW_WEB" printenv SHARED_TOKEN | tr -d '\r')" shared-secret-xyz
 check "service receives the plain project variable" "$(docker exec "$NEW_WEB" printenv SHARED_HOST | tr -d '\r')" shared.example.test
-check "the service's own variable wins over the project's" "$(docker exec "$NEW_WEB" printenv GREETING | tr -d '\r')" hello
-check "the service's own secret still applies" "$(docker exec "$NEW_WEB" printenv API_KEY | tr -d '\r')" tenant-a-secret
-check "each name appears once in the environment" "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$NEW_WEB" | grep -c '^GREETING=')" 1
+check "the service's own secret wins over the project variable" "$(docker exec "$NEW_WEB" printenv API_KEY | tr -d '\r')" tenant-a-secret
+check "each name appears once in the environment" "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$NEW_WEB" | grep -c '^API_KEY=')" 1
+BVARS=$(api_get "$TOK_B" "$BASE$VARS")   # B's own project is also called "shop"
+if ! grep -q "shared.example.test\|SHARED_HOST" <<<"$BVARS"; then ok "[B->A] B's token sees only B's project variables"; else bad "[B->A] B sees A's variables"; fi
+BEFORE_B=$(owner_sql "SELECT now()")
+api_code "$TOK_B" -X PUT -H 'Content-Type: application/json' -d '{"value":"evil"}' "$BASE$VARS/SHARED_TOKEN" >/dev/null
+check "[B->A] B's write lands in B's own project only" "$(owner_sql "SELECT string_agg(o.slug, ',' ORDER BY o.slug) FROM project_variables v JOIN orgs o ON o.id = v.org_id WHERE v.name = 'SHARED_TOKEN' AND o.slug IN ('$A', '$B') AND v.updated_at > '$BEFORE_B'")" "$B"
 PPAGE=$(c ja "$BASE/o/$A/p/shop")
 if grep -q "shared.example.test" <<<"$PPAGE" && ! grep -q "shared-secret-xyz" <<<"$PPAGE"; then ok "project page shows plain values and hides secret ones"; else bad "project page shows the wrong values"; fi
 if c ja "$BASE$SVC_A" | grep -q "<code>SHARED_TOKEN</code>"; then ok "service page lists the variables it receives from the project"; else bad "inherited variables not listed"; fi
@@ -444,7 +446,53 @@ check "new variable applied after the redeploy" "$(docker exec "$(WEB_CID)" prin
 if pctl var unset shop CLI_VAR | grep -q deleted; then ok "[CLI] platformctl var unset"; else bad "[CLI] var unset failed"; fi
 check "[API] deleted variable no longer listed" "$(api_get "$TOK_DEV" "$BASE$VARS" | grep -c CLI_VAR)" 0
 check "project variable changes audited" "$(owner_sql "SELECT count(*) >= 4 FROM audit_events WHERE action IN ('project_variable.set', 'project_variable.deleted') AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
-owner_sql "DELETE FROM project_variables WHERE name = 'GREETING' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')" >/dev/null
+owner_sql "DELETE FROM project_variables WHERE name = 'API_KEY' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')" >/dev/null
+
+echo "== Workers and scheduled jobs"
+SVC_Q=/o/$A/p/shop/s/queue
+code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=queue -d image=nginx:1.27-alpine >/dev/null
+check "[A] worker service saved and deployed" "$(code_of ja -X POST "$BASE$SVC_Q/settings" -d csrf=$CSRF_A -d kind=worker -d image=nginx:1.27-alpine \
+  -d port=80 -d health_path=%2F -d cpu_millis=100 -d memory_mb=64 -d volume_path= -d env= -d deploy=1)" 303
+check "worker reaches live without a health check URL" "$(wait_status ja $SVC_Q)" live
+Q_CID=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'queue' AND d.status = 'live'")
+check "worker gets no PORT variable" "$(docker exec "$Q_CID" sh -c 'echo "${PORT:-none}"' | tr -d '\r')" none
+check "worker has no public address" "$(curl -s -o /dev/null -w '%{http_code}' --resolve "queue-shop-$A.apps.localhost:$PORT:127.0.0.1" "http://queue-shop-$A.apps.localhost:$PORT/")" 404
+code_of ja -X POST "$BASE$SVC_Q/domains" -d csrf=$CSRF_A -d hostname=worker.example.test >/dev/null
+check "a worker cannot get a domain" "$(owner_sql "SELECT count(*) FROM domains WHERE hostname = 'worker.example.test'")" 0
+if c ja "$BASE$SVC_Q" | grep -q "worker · no public address"; then ok "service page marks the worker"; else bad "worker not shown as such"; fi
+check "[A] worker deleted" "$(code_of ja -X POST "$BASE$SVC_Q/delete" -d csrf=$CSRF_A -d confirm=queue)" 303
+
+JOBS=/api/v1/projects/shop/services/web/jobs
+last_run() { owner_sql "SELECT r.$2 FROM job_runs r JOIN jobs j ON j.id = r.job_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND j.slug = '$1' ORDER BY r.started_at DESC LIMIT 1"; }
+wait_run() { local st; for _ in $(seq 1 45); do st=$(last_run "$1" status); [ -n "$st" ] && [ "$st" != running ] && break; sleep 2; done; echo "$st"; }
+check "[A] job created in the console" "$(code_of ja -X POST "$BASE$SVC_A/jobs" -d csrf=$CSRF_A -d slug=hello -d 'schedule=* * * * *' \
+  --data-urlencode 'command=echo "job says $SHARED_HOST" && echo "run of $PLATFORM_JOB"' -d timeout_seconds=60)" 303
+check "[API] invalid schedule refused (422)" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"schedule":"61 * * * *","command":"true"}' "$BASE$JOBS/bad")" 422
+check "[API] job created with the API" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"schedule":"0 0 1 1 *","command":"echo about to fail; exit 3"}' "$BASE$JOBS/fail")" 200
+check "[API] viewer token cannot run a job (403)" "$(api_code "$TOK_VIEW" -X POST "$BASE$JOBS/fail/run")" 403
+check "[B->A] B cannot run A's job (404)" "$(api_code "$TOK_B" -X POST "$BASE$JOBS/fail/run")" 404
+if ! api_get "$TOK_B" "$BASE$JOBS" | grep -q '"hello"'; then ok "[B->A] B's job list shows none of A's jobs"; else bad "[B->A] B sees A's jobs"; fi
+JOUT=$(pctl job run shop/web hello --wait)
+if grep -q "job says shared.example.test" <<<"$JOUT" && grep -q "run of hello" <<<"$JOUT" && grep -q "succeeded" <<<"$JOUT"; then ok "[CLI] platformctl job run --wait: output with project variables, success"; else bad "[CLI] job run: $JOUT"; fi
+check "manual run recorded as succeeded" "$(owner_sql "SELECT r.status || ':' || r.exit_code FROM job_runs r JOIN jobs j ON j.id = r.job_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND j.slug = 'hello' AND r.trigger = 'manual' ORDER BY r.started_at DESC LIMIT 1")" succeeded:0
+check "[API] job run requested (202)" "$(api_code "$TOK_DEV" -X POST "$BASE$JOBS/fail/run")" 202
+check "failing job recorded with its exit code" "$(wait_run fail):$(last_run fail exit_code)" failed:3
+check "failed job raises a job_failed alert event" "$(for _ in $(seq 1 10); do n=$(owner_sql "SELECT count(*) FROM alert_incidents i JOIN orgs o ON o.id = i.org_id WHERE o.slug = '$A' AND i.kind = 'job_failed' AND i.summary LIKE 'job fail %exit code 3'"); [ "$n" -ge 1 ] && { echo yes; break; }; sleep 1; done)" yes
+if pctl job logs shop/web fail | grep -q "about to fail"; then ok "[CLI] platformctl job logs shows the last run"; else bad "[CLI] job logs missing output"; fi
+api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"schedule":"0 0 1 1 *","command":"sleep 60","timeout_seconds":10}' "$BASE$JOBS/slow" >/dev/null
+api_code "$TOK_DEV" -X POST "$BASE$JOBS/slow/run" >/dev/null
+check "a job over its time limit is stopped" "$(wait_run slow)" timed_out
+check "scheduled run happens on time (every minute)" "$(for _ in $(seq 1 45); do [ "$(owner_sql "SELECT count(*) FROM job_runs r JOIN jobs j ON j.id = r.job_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND j.slug = 'hello' AND r.trigger = 'schedule'")" -ge 1 ] && { echo yes; break; }; sleep 2; done)" yes
+check "job containers removed after each run" "$(for _ in $(seq 1 15); do [ "$(docker ps -aq --filter label=platform.job | wc -l | tr -d ' ')" = 0 ] && { echo 0; break; }; sleep 2; done)" 0
+RUN_ID=$(last_run fail id)
+if c ja "$BASE$SVC_A/job-runs/$RUN_ID" | grep -q "about to fail"; then ok "[A] full run log opens in the console"; else bad "run log page missing"; fi
+check "[B->A] B cannot open A's run log (404)" "$(code_of jb "$BASE$SVC_A/job-runs/$RUN_ID")" 404
+if c ja "$BASE$SVC_A" | grep -q "<strong>hello</strong>"; then ok "[A] Jobs tab lists the jobs"; else bad "jobs not listed"; fi
+code_of ja -X POST "$BASE$SVC_A/jobs/hello/pause" -d csrf=$CSRF_A >/dev/null
+check "paused job has no next run" "$(owner_sql "SELECT enabled::text || ':' || (next_run_at IS NULL) FROM jobs j JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND j.slug = 'hello'")" "false:true"
+for j in hello fail slow; do api_code "$TOK_DEV" -X DELETE "$BASE$JOBS/$j" >/dev/null; done
+check "[API] jobs deleted" "$(api_get "$TOK_DEV" "$BASE$JOBS")" "[]"
+check "job changes audited" "$(owner_sql "SELECT count(*) >= 6 FROM audit_events WHERE action LIKE 'job.%' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 
 echo "== Builds from git"
 # A local git server (static "dumb HTTP" repository) reached from the build sandbox
@@ -589,6 +637,7 @@ check "[B->A] B cannot trigger A's channel through A's org (404)" "$(code_of jb 
 check "[B->A] B cannot use A's channel ID in its own org (404)" "$(code_of jb -X POST "$BASE/o/$B/alerts/channels/$CH_PUSH/test" -d csrf=$CSRF_B)" 404
 check "[B->A] B cannot delete A's channel (404)" "$(code_of jb -X POST "$BASE/o/$B/alerts/channels/$CH_PUSH/delete" -d csrf=$CSRF_B)" 404
 
+CID_F=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'files' AND d.status = 'live'")
 docker pause "$CID_F" >/dev/null
 ST=""; for _ in $(seq 1 30); do ST=$(incident_status files service_down); [ "$ST" = firing ] && break; sleep 2; done
 check "[A] paused app detected: service_down incident open" "$ST" firing

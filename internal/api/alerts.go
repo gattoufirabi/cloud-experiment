@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	alertKinds = []string{"service_down", "deploy_failed", "backup_failed", "critical_vulns", "cpu_high", "memory_high"}
+	alertKinds = []string{"service_down", "deploy_failed", "backup_failed", "critical_vulns", "cpu_high", "memory_high", "job_failed"}
 	topicRe    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 )
 
@@ -52,6 +52,8 @@ func (i incidentView) Title() string {
 		return "Critical vulnerabilities"
 	case "disk_quota":
 		return "Disk limit"
+	case "job_failed":
+		return "Scheduled job failed"
 	}
 	return "Test notification"
 }

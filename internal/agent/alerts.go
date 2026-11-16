@@ -141,13 +141,15 @@ func (a *Agent) alertEvent(ctx context.Context, orgID, serviceID, kind, summary 
 type probeTarget struct {
 	OrgID, ServiceID, ContainerID, ProjectID, Service, Project string
 	Port                                                       int
-	HealthPath, Upstream                                       string
+	HealthPath, Upstream, NodeID                               string
+	Worker                                                     bool
 }
 
 func (a *Agent) checkHealth(ctx context.Context) {
 	rows, err := a.pool.Query(ctx, `
 		SELECT d.org_id, d.service_id, coalesce(d.container_id, ''), s.project_id, s.slug, p.slug,
-		       (d.spec->>'port')::int, d.spec->>'health_path', d.upstream
+		       coalesce((d.spec->>'port')::int, 0), coalesce(d.spec->>'health_path', ''), d.upstream, coalesce(d.node_id, ''),
+		       coalesce((d.spec->>'worker')::boolean, false)
 		FROM deployments d JOIN services s ON s.id = d.service_id
 		JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = d.org_id
 		WHERE d.status = 'live' AND NOT o.suspended AND `+mineSQL, a.mineArgs()...) // each node probes only its own apps (it cannot reach the others' networks)
@@ -163,7 +165,7 @@ func (a *Agent) checkHealth(ctx context.Context) {
 	// live: nothing to probe locally yet.
 	targets := all[:0]
 	for _, t := range all {
-		if !a.ranElsewhere(t.Upstream) {
+		if !a.ranElsewhere(t.NodeID, t.Upstream) {
 			targets = append(targets, t)
 		}
 	}

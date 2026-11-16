@@ -86,6 +86,8 @@ func main() {
 		err = c.setSecret(args[1], args[2])
 	case "var":
 		err = c.vars(args)
+	case "job":
+		err = c.jobs(args)
 	case "redeploy":
 		if len(args) != 1 {
 			usage(2)
@@ -119,6 +121,9 @@ func usage(code int) {
                                            value from standard input; secret unless --plain
   var unset <project> NAME                 delete a shared variable
   redeploy <project>                       redeploy every running service of the project
+  job list <project>/<service>             scheduled jobs and their last run
+  job run <project>/<service> JOB [--wait] run a job now; --wait prints its log and exit status
+  job logs <project>/<service> JOB         log of the job's last run
   preview create <project>/<service> NAME [--image IMAGE] [--ttl HOURS] [--wait]
                                            create or update a preview environment (e.g. pr-42)
   preview list <project>/<service>         list previews
@@ -388,6 +393,111 @@ func (c *client) vars(args []string) error {
 		}
 		fmt.Printf("variable %s deleted; run \"platformctl redeploy %s\" to apply it\n", args[2], args[1])
 		return nil
+	}
+	usage(2)
+	return nil
+}
+
+type jobRun struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	ExitCode *int   `json:"exit_code"`
+	Log      string `json:"log"`
+	Started  string `json:"started_at"`
+}
+
+func (c *client) jobs(args []string) error {
+	if len(args) < 2 {
+		usage(2)
+	}
+	p, s := target(args[1:2])
+	base := "/api/v1/projects/" + p + "/services/" + s + "/jobs"
+	switch args[0] {
+	case "list":
+		var js []struct {
+			ID, Schedule, Command string
+			Enabled               bool
+			NextRun               *string `json:"next_run_at"`
+			LastStatusJSON        string  `json:"last_status"`
+		}
+		if err := c.do("GET", base, nil, &js); err != nil {
+			return err
+		}
+		var rows [][]string
+		for _, j := range js {
+			next := "-"
+			if j.NextRun != nil && j.Enabled {
+				next = *j.NextRun
+			}
+			state := j.LastStatusJSON
+			if state == "" {
+				state = "never run"
+			}
+			if !j.Enabled {
+				state += " (paused)"
+			}
+			rows = append(rows, []string{j.ID, j.Schedule, state, next, j.Command})
+		}
+		table("JOB\tSCHEDULE\tLAST RUN\tNEXT RUN (UTC)\tCOMMAND", rows)
+		return nil
+	case "run", "logs":
+		if len(args) < 3 {
+			usage(2)
+		}
+		job := url.PathEscape(args[2])
+		latest := func() (*jobRun, error) {
+			var runs []jobRun
+			if err := c.do("GET", base+"/"+job+"/runs", nil, &runs); err != nil {
+				return nil, err
+			}
+			if len(runs) == 0 {
+				return nil, nil
+			}
+			var full jobRun
+			err := c.do("GET", base+"/"+job+"/runs/"+runs[0].ID, nil, &full)
+			return &full, err
+		}
+		if args[0] == "logs" {
+			r, err := latest()
+			if err != nil {
+				return err
+			}
+			if r == nil {
+				return errors.New("this job has not run yet")
+			}
+			fmt.Println(r.Log)
+			fmt.Printf("status: %s\n", r.Status)
+			return nil
+		}
+		before, err := latest()
+		if err != nil {
+			return err
+		}
+		if err := c.do("POST", base+"/"+job+"/run", nil, nil); err != nil {
+			return err
+		}
+		if len(args) < 4 || args[3] != "--wait" {
+			fmt.Printf("job %s requested\n", args[2])
+			return nil
+		}
+		deadline := time.Now().Add(65 * time.Minute)
+		for time.Now().Before(deadline) {
+			time.Sleep(3 * time.Second)
+			r, err := latest()
+			if err != nil {
+				return err
+			}
+			if r == nil || (before != nil && r.ID == before.ID) || r.Status == "running" {
+				continue
+			}
+			fmt.Println(r.Log)
+			if r.Status != "succeeded" {
+				return fmt.Errorf("job %s %s", args[2], strings.ReplaceAll(r.Status, "_", " "))
+			}
+			fmt.Printf("job %s succeeded\n", args[2])
+			return nil
+		}
+		return errors.New("gave up waiting for the job")
 	}
 	usage(2)
 	return nil
