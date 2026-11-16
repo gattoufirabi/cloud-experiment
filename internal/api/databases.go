@@ -16,7 +16,7 @@ import (
 	"platform/internal/secure"
 )
 
-// Managed PostgreSQL in the console. The API stores the desired database (with a
+// Managed databases (PostgreSQL, MySQL, MariaDB, Redis) in the console. The API stores the desired database (with a
 // generated, encrypted password); the agent runs it on the project's private network.
 
 type databaseInfo struct {
@@ -31,18 +31,24 @@ type databaseInfo struct {
 func (d *databaseInfo) Host() string { return "pd-" + model.Compact(d.ID)[:12] }
 
 // Port and Label describe the engine for templates.
-func (d *databaseInfo) Port() int {
-	if d.Engine == "redis" {
-		return 6379
-	}
-	return 5432
-}
+func (d *databaseInfo) Port() int { return model.EngineInfo(d.Engine).Port }
 
-func (d *databaseInfo) Label() string {
-	if d.Engine == "redis" {
-		return "Redis " + d.Version
+func (d *databaseInfo) Label() string { return model.EngineInfo(d.Engine).Name + " " + d.Version }
+
+// SQL reports whether the engine has a database name and user (all but Redis).
+func (d *databaseInfo) SQL() bool { return d.Engine != "redis" }
+
+// DumpTool names the tool that takes this engine's consistent backups.
+func (d *databaseInfo) DumpTool() string {
+	switch d.Engine {
+	case "redis":
+		return "Redis snapshot"
+	case "mysql":
+		return "mysqldump"
+	case "mariadb":
+		return "mariadb-dump"
 	}
-	return "PostgreSQL " + d.Version
+	return "pg_dump"
 }
 
 // DefaultSecret is the usual environment variable name for this engine's URL.
@@ -105,6 +111,10 @@ func (s *Server) dbURL(d *databaseInfo) string {
 		u := url.URL{Scheme: "redis", User: url.UserPassword("default", s.dbPassword(d)), Host: d.Host() + ":6379", Path: "/0"}
 		return u.String()
 	}
+	if model.MySQLFamily(d.Engine) {
+		u := url.URL{Scheme: "mysql", User: url.UserPassword(d.Username, s.dbPassword(d)), Host: d.Host() + ":3306", Path: "/" + d.DBName}
+		return u.String()
+	}
 	u := url.URL{Scheme: "postgres", User: url.UserPassword(d.Username, s.dbPassword(d)), Host: d.Host() + ":5432", Path: "/" + d.DBName, RawQuery: "sslmode=disable"}
 	return u.String()
 }
@@ -115,16 +125,13 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := strings.TrimSpace(r.PostFormValue("slug"))
-	// "postgres:17", "postgres:16" or "redis:7"; anything else falls back to PostgreSQL 17.
-	engine, version, _ := strings.Cut(r.PostFormValue("engine"), ":")
-	switch {
-	case engine == "redis":
-		version = "7"
-	case engine == "postgres" && version == "16":
-	default:
-		engine, version = "postgres", "17"
+	// "postgres:17", "mysql:8.4", "redis:7"...; an unknown choice falls back to the default.
+	eng, found := model.FindEngine(r.PostFormValue("engine"))
+	if !found {
+		eng = model.Engines[0]
 	}
-	dbName, user := "app", "app" // PostgreSQL database and role
+	engine, version := eng.ID, eng.Version
+	dbName, user := "app", "app" // SQL database and user
 	if engine == "redis" {
 		dbName, user = "0", "default" // Redis logical database and ACL user
 	}
@@ -408,3 +415,6 @@ func (s *Server) databaseRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	back(w, r, dbPath(o, p, d)+"#db-backups", "Restore started. Connections may be interrupted while the data is replaced.", "")
 }
+
+// engineName is the display name of a database engine, for templates.
+func engineName(id string) string { return model.EngineInfo(id).Name }

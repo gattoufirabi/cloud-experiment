@@ -439,7 +439,8 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services, "Databases": dbs, "Variables": vars, "BaseURL": s.cfg.BaseURL})
+	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services, "Databases": dbs, "Variables": vars, "BaseURL": s.cfg.BaseURL,
+		"Engines": model.Engines})
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {

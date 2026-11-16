@@ -443,6 +443,7 @@ func parseTemplates() (map[string]*template.Template, error) {
 			return s
 		},
 		"jobStatus": func(s string) string { return s }, // succeeded, failed, timed_out, skipped, running
+		"engineName": engineName,
 		"dbStatus": func(s string) string {
 			if s == "running" {
 				return "live"

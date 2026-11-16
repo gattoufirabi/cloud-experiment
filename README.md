@@ -22,7 +22,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Vulnerability scanning** (Trivy): every push, every deploy (cached 24 h per image), nightly rescan of running images; report per service | done, tested |
 | Scan policy per organization: `warn` (default) or `block-critical` | done, tested |
 | **Per-client backups** (restic) of each service's persistent folder: nightly + on demand, retention, self-service restore with a safety snapshot | done, tested |
-| **Managed PostgreSQL** (16 or 17) **and Redis 7**: per-project private database, resources counted against the plan, one-click `DATABASE_URL` secret, consistent backups (`pg_dump` / Redis snapshot) with self-service restore | done, tested |
+| **Managed PostgreSQL** (16 or 17), **MySQL 8.4, MariaDB 11.4 and Redis 7**: per-project private database, resources counted against the plan, one-click `DATABASE_URL` secret, consistent backups (`pg_dump` / `mysqldump` / Redis snapshot) with self-service restore | done, tested |
 | **API tokens, REST API v1 and `platformctl`** (deploy from CI, status, logs, secrets), org- and role-scoped, audited | done, tested |
 | **Passkeys** (WebAuthn, discoverable, user verification required) as an alternative to password + code; managed on the Account page | done, tested with a software authenticator |
 | **Public status pages** per project (opt-in): live state, 30-day uptime, recent outages, nothing sensitive | done, tested |
@@ -49,7 +49,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | gVisor sandbox for tenant containers | done, verified on a Debian 12 server (Phase 0 gate) |
 | Host firewall for tenant networks, isolation test (Phase 0 gate) | done, gate PASSED on a real server via `host/deploy.sh` |
 
-The end-to-end test (`scripts/e2e-dev.sh`) runs 367 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds, self-signup, the operator console and a second node (placement, proxying, zero-downtime drain). Unit tests: `go test ./...` (outbound request guard).
+The end-to-end test (`scripts/e2e-dev.sh`) runs 396 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds, self-signup, the operator console and a second node (placement, proxying, zero-downtime drain). Unit tests: `go test ./...` (outbound request guard).
 
 **Not built yet** (next phases in ARCHITECTURE.md): multi-node: moving projects with persistent data automatically, control plane on two nodes (database replica); hard filesystem disk quotas (XFS project quotas).
 

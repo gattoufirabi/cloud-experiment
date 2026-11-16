@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"platform/internal/model"
 )
 
 // The service page renders with jobs, finished runs (exit codes), a worker and
@@ -68,5 +70,43 @@ func TestProjectPageRendersVariables(t *testing.T) {
 	}
 	if !strings.Contains(b.String(), "https://api.example.test") {
 		t.Error("plain value not shown")
+	}
+}
+
+// The project page offers every engine, and a MariaDB database page renders its SQL
+// connection details and dump tool.
+func TestDatabasePagesRenderMySQLFamily(t *testing.T) {
+	pages, err := parseTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	org, proj := &orgInfo{Slug: "acme", Name: "Acme", Role: "owner"}, &projectInfo{Slug: "shop", Name: "Shop"}
+	var b strings.Builder
+	if err := pages["project"].ExecuteTemplate(&b, "content", data{
+		"Org": org, "Project": proj, "Services": []any{}, "Variables": []projectVar{}, "Engines": model.Engines,
+		"Databases": []struct {
+			Slug, Engine, Version, Status string
+			CPUMillis, MemoryMB           int
+		}{{"main", "mariadb", "11.4", "running", 250, 256}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`value="mysql:8.4"`, "MariaDB 11.4", "MariaDB 11.4</option>", "<td>MariaDB 11.4</td>"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("project page lacks %q", want)
+		}
+	}
+	b.Reset()
+	d := &databaseInfo{ID: "0b6c1e2a-1111-2222-3333-444455556666", Slug: "main", Engine: "mariadb", Version: "11.4", DBName: "app", Username: "app", Status: "running", CPUMillis: 250, MemoryMB: 256}
+	if err := pages["database"].ExecuteTemplate(&b, "content", data{
+		"Org": org, "Project": proj, "Database": d, "Services": []string{"web"}, "Backups": &backupView{Enabled: true, Hour: 3},
+		"Path": "/o/acme/p/shop/d/main", "CanEdit": true, "Password": "pw", "URL": "mysql://app:pw@pd-0b6c1e2a1111:3306/app",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"MariaDB 11.4", "<code>3306</code>", "<dt>user</dt>", "mariadb-dump", "mysql://app:pw@"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("database page lacks %q", want)
+		}
 	}
 }

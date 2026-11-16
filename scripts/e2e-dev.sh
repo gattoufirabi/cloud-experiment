@@ -277,6 +277,47 @@ check "[A] Redis restore completes" "$RS" done
 check "[A] Redis key is back to the snapshot" "$(rd_cli "GET marker")" "$MARK-r1"
 code_of ja -X POST "$BASE/o/$A/p/shop/d/cache/delete" -d csrf=$CSRF_A -d confirm=cache >/dev/null
 
+echo "== Managed MySQL and MariaDB"
+my_db() { owner_sql "SELECT d.$2 FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = '$1'"; }
+my_job() { owner_sql "SELECT j.status FROM backup_jobs j JOIN databases d ON d.id = j.database_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND d.slug = '$1' AND j.kind = '$2' ORDER BY j.created_at DESC LIMIT 1"; }
+my_wait_job() { local st=; for _ in $(seq 1 90); do st=$(my_job "$1" "$2"); [ "$st" = done ] || [ "$st" = error ] && break; sleep 2; done; echo "$st"; }
+mysql_engine() { # mysql_engine <slug> <engine:version> <client> <label>
+  local slug=$1 choice=$2 cli=$3 label=$4 st= cid host
+  check "[A] $label created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=$slug -d engine=$choice)" 303
+  for _ in $(seq 1 120); do st=$(my_db $slug status); [ "$st" = running ] || [ "$st" = failed ] && break; sleep 2; done
+  check "[A] $label running" "$st" running
+  cid=$(my_db $slug container_id)
+  host=$(owner_sql "SELECT 'pd-' || left(replace(d.id::text, '-', ''), 12) FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = '$slug'")
+  my_sql() { dx exec "$cid" sh -c "MYSQL_PWD=\"\${MYSQL_PASSWORD:-\$MARIADB_PASSWORD}\" $cli -h 127.0.0.1 -u app app -N -e \"$1\"" 2>&1 | tr -d '\r'; }
+  check "[A] $label refuses a wrong password" "$(dx exec "$cid" sh -c "MYSQL_PWD=wrong $cli -h 127.0.0.1 -u app app -e 'SELECT 1'" >/dev/null 2>&1 && echo yes || echo no)" no
+  check "[A] $label root cannot log in with the app password" "$(dx exec "$cid" sh -c "MYSQL_PWD=\"\${MYSQL_PASSWORD:-\$MARIADB_PASSWORD}\" $cli -h 127.0.0.1 -u root -e 'SELECT 1'" >/dev/null 2>&1 && echo yes || echo no)" no
+  if dx exec "$CID_F" sh -c "echo | nc -w 3 $host 3306" >/dev/null 2>&1; then ok "[A] service in the same project reaches $label"; else bad "[A] service cannot reach $label"; fi
+  if dx exec "$CID_B" sh -c "echo | nc -w 3 $host 3306" >/dev/null 2>&1; then bad "[B->A] B's service reached A's $label"; else ok "[B->A] B's service cannot reach A's $label"; fi
+  code_of ja -X POST "$BASE/o/$A/p/shop/d/$slug/attach" -d csrf=$CSRF_A -d service=files -d name=MY_${slug^^}_URL >/dev/null
+  check "[A] $label connection URL stored as a secret" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name = 'MY_${slug^^}_URL'")" 1
+  if grep -q "mysql://app:" <<<"$(c ja "$BASE/o/$A/p/shop/d/$slug")"; then ok "[A] $label page shows a mysql:// URL"; else bad "$label page lacks the connection URL"; fi
+  my_sql "CREATE TABLE notes (t varchar(100)); INSERT INTO notes VALUES ('$MARK-m1')" >/dev/null
+  check "[A] $label stores rows" "$(my_sql "SELECT t FROM notes")" "$MARK-m1"
+  code_of ja -X POST "$BASE/o/$A/p/shop/d/$slug/backups" -d csrf=$CSRF_A >/dev/null
+  check "[A] $label backup completes" "$(my_wait_job $slug backup)" done
+  local snap; snap=$(owner_sql "SELECT b.snapshot_id FROM backup_snapshots b JOIN databases d ON d.id = b.database_id JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND d.slug = '$slug' ORDER BY b.taken_at DESC LIMIT 1")
+  my_sql "UPDATE notes SET t = '$MARK-m2'" >/dev/null
+  code_of ja -X POST "$BASE/o/$A/p/shop/d/$slug/backups/restore/$snap" -d csrf=$CSRF_A -d confirm=$slug >/dev/null
+  check "[A] $label restore completes" "$(my_wait_job $slug restore)" done
+  check "[A] $label rows are back to the snapshot" "$(my_sql "SELECT t FROM notes")" "$MARK-m1"
+  code_of ja -X POST "$BASE/o/$A/p/shop/d/$slug/settings" -d csrf=$CSRF_A -d cpu_millis=250 -d memory_mb=384 -d backup_hour=3 -d backup_enabled=1 >/dev/null
+  st=; for _ in $(seq 1 120); do [ "$(my_db $slug container_id)" != "$cid" ] && [ "$(my_db $slug status)" = running ] && { st=yes; break; }; sleep 2; done
+  check "[A] $label recreated with more memory" "${st:-no}" yes
+  cid=$(my_db $slug container_id)
+  check "[A] $label data kept across the settings change" "$(my_sql "SELECT t FROM notes")" "$MARK-m1"
+  code_of ja -X POST "$BASE/o/$A/p/shop/d/$slug/delete" -d csrf=$CSRF_A -d confirm=$slug >/dev/null
+  code_of ja -X POST "$BASE/o/$A/p/shop/s/files/secrets/MY_${slug^^}_URL/delete" -d csrf=$CSRF_A >/dev/null
+}
+mysql_engine maria mariadb:11.4 mariadb "MariaDB"
+mysql_engine mysql mysql:8.4 mysql "MySQL"
+check "[A] unknown engine falls back to PostgreSQL" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=oracle -d engine=oracle:23 >/dev/null; my_db oracle engine)" postgres
+code_of ja -X POST "$BASE/o/$A/p/shop/d/oracle/delete" -d csrf=$CSRF_A -d confirm=oracle >/dev/null
+
 echo "== API tokens and platformctl"
 api_code() { local t=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" "$@"; }
 api_get() { local t=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" "$@"; }

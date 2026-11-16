@@ -15,11 +15,11 @@ import (
 	"platform/internal/model"
 )
 
-// Managed databases: PostgreSQL and Redis. Each is one container on its project's
-// private network (reachable only by that project's services), under the same sandbox
-// and limits as client apps, with its data in a volume and a second "dump" volume that
-// holds a consistent export for backups (pg_dump, or a Redis RDB snapshot). A settings
-// change recreates the container; data is kept.
+// Managed databases: PostgreSQL, MySQL, MariaDB and Redis. Each is one container on its
+// project's private network (reachable only by that project's services), under the same
+// sandbox and limits as client apps, with its data in a volume and a second "dump" volume
+// that holds a consistent export for backups (pg_dump, mysqldump / mariadb-dump, or a
+// Redis RDB snapshot). A settings change recreates the container; data is kept.
 
 type managedDB struct {
 	ID, OrgID, ProjectID, Engine, Version string
@@ -120,8 +120,50 @@ func (a *Agent) setDBStatus(ctx context.Context, id, status, msg, containerID st
 	_, _ = a.pool.Exec(ctx, `UPDATE databases SET status = $2, message = $3, container_id = $4 WHERE id = $1`, id, status, msg, cid)
 }
 
+// mysqlTools returns the client, the dump tool (with its engine-specific options) and the
+// environment variable holding the password, for MySQL or MariaDB.
+func mysqlTools(d managedDB) (client, dump, pwVar string) {
+	if d.Engine == "mariadb" {
+		return "mariadb", "mariadb-dump", "MARIADB_PASSWORD"
+	}
+	return "mysql", "mysqldump --set-gtid-purged=OFF", "MYSQL_PASSWORD"
+}
+
+// mysqlShell runs a client command inside a MySQL/MariaDB container as the application
+// user over TCP (so it only succeeds once the real server is up, not the one the image
+// runs during initialisation), with the password read from the container's environment.
+func mysqlShell(d managedDB, tool, args string) []string {
+	_, _, pwVar := mysqlTools(d)
+	return []string{"sh", "-c", fmt.Sprintf(`MYSQL_PWD="$%s" %s -h 127.0.0.1 -u %s %s`, pwVar, tool, d.Username, args)}
+}
+
 // engineConfig returns the image, command, environment and data mount for an engine.
 func engineConfig(d managedDB, password string) (image string, cmd, env []string, dataPath string) {
+	if model.MySQLFamily(d.Engine) {
+		// No native AIO (not available under gVisor), no performance schema (it alone
+		// needs ~100 MB), and few enough connections that the server's threads stay under
+		// the container's process limit. The named time zone tables are not loaded: that
+		// first-start step needs more memory than a small database has (MySQL is killed).
+		// MySQL itself uses more memory than MariaDB, so it gets a quarter of the memory for
+		// the buffer pool (MariaDB half), no X protocol and no binary log (no replicas).
+		pool := d.MemoryMB / 2
+		prefix, image := "MARIADB_", "mariadb:"+d.Version
+		var extra []string
+		if d.Engine == "mysql" {
+			pool = d.MemoryMB / 4
+			prefix, image = "MYSQL_", "mysql:"+d.Version
+			extra = []string{"--mysqlx=OFF", "--skip-log-bin"}
+		}
+		if pool < 32 {
+			pool = 32
+		}
+		return image,
+			append([]string{"--innodb-use-native-aio=0", "--performance-schema=OFF", fmt.Sprintf("--innodb-buffer-pool-size=%dM", pool),
+				"--max-connections=100", "--skip-name-resolve"}, extra...),
+			[]string{prefix + "RANDOM_ROOT_PASSWORD=yes", prefix + "INITDB_SKIP_TZINFO=1", prefix + "DATABASE=" + d.DBName,
+				prefix + "USER=" + d.Username, prefix + "PASSWORD=" + password},
+			"/var/lib/mysql"
+	}
 	if d.Engine == "redis" {
 		// RDB snapshots only (no append-only file) so a restore is one file; a memory cap
 		// below the container limit makes a full cache refuse writes instead of being killed.
@@ -212,6 +254,10 @@ func (a *Agent) startDatabase(ctx context.Context, d managedDB) error {
 // readyCmd is run inside the container: pg_isready, or redis-cli PING with the password
 // taken from the container's own environment (never on the agent's command line).
 func readyCmd(d managedDB) []string {
+	if model.MySQLFamily(d.Engine) {
+		client, _, _ := mysqlTools(d)
+		return mysqlShell(d, client, d.DBName+` -e "SELECT 1" >/dev/null`)
+	}
 	if d.Engine == "redis" {
 		return []string{"sh", "-c", `redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG`}
 	}
@@ -219,7 +265,11 @@ func readyCmd(d managedDB) []string {
 }
 
 func (a *Agent) waitReady(ctx context.Context, id string, d managedDB) error {
-	deadline := time.Now().Add(90 * time.Second)
+	limit := 90 * time.Second
+	if model.MySQLFamily(d.Engine) { // the first start initialises the data directory
+		limit = 180 * time.Second
+	}
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		info, err := a.dk.ContainerInspect(ctx, id)
 		if err != nil {
@@ -237,7 +287,7 @@ func (a *Agent) waitReady(ctx context.Context, id string, d managedDB) error {
 		case <-time.After(2 * time.Second):
 		}
 	}
-	return fmt.Errorf("database did not become ready within 90 s%s", a.tail(ctx, id))
+	return fmt.Errorf("database did not become ready within %d s%s", int(limit.Seconds()), a.tail(ctx, id))
 }
 
 func (a *Agent) dbForBackup(ctx context.Context, id string) (managedDB, error) {
@@ -262,6 +312,14 @@ func (a *Agent) backupDatabase(ctx context.Context, j backupJob, tag string) (st
 	}
 	cmd := []string{"pg_dump", "-U", d.Username, "-d", d.DBName, "-h", "127.0.0.1", "-Fc", "-f", "/backup/db.dump"}
 	tool := "pg_dump"
+	if model.MySQLFamily(d.Engine) {
+		// One consistent InnoDB snapshot; written aside, then renamed, so a failed dump
+		// never replaces the previous one.
+		_, dump, _ := mysqlTools(d)
+		cmd = mysqlShell(d, dump, "--single-transaction --no-tablespaces --routines --triggers "+d.DBName+
+			" > /backup/db.sql.part && mv /backup/db.sql.part /backup/db.sql")
+		tool = strings.Fields(dump)[0]
+	}
 	if d.Engine == "redis" {
 		// --rdb asks the server for a point-in-time snapshot and saves it as dump.rdb.
 		cmd = []string{"sh", "-c", `rm -f /backup/* && redis-cli -a "$REDIS_PASSWORD" --no-auth-warning --rdb /backup/dump.rdb >/dev/null`}
@@ -276,6 +334,8 @@ func (a *Agent) backupDatabase(ctx context.Context, j backupJob, tag string) (st
 
 // restoreDatabase: safety snapshot first, then load the chosen snapshot.
 //   - PostgreSQL: restore the dump file, then pg_restore --clean in one transaction.
+//   - MySQL/MariaDB: restore the dump file, then load it (it drops and recreates each
+//     table it contains; tables created after the snapshot are left in place).
 //   - Redis: stop the server, put the snapshot's dump.rdb in the data volume, start it.
 func (a *Agent) restoreDatabase(ctx context.Context, j backupJob) (string, error) {
 	if !a.snapshotBelongs(ctx, j) {
@@ -317,6 +377,14 @@ func (a *Agent) restoreDatabase(ctx context.Context, j backupJob) (string, error
 	}
 	if err := a.restoreVolume(ctx, j, dbDumpVolume(d.ID)); err != nil {
 		return "", err
+	}
+	if model.MySQLFamily(d.Engine) {
+		client, _, _ := mysqlTools(d)
+		_, stderr, code, err := a.dk.ContainerExec(ctx, d.ContainerID, mysqlShell(d, client, d.DBName+" < /backup/db.sql"), nil)
+		if err != nil || code != 0 {
+			return "", fmt.Errorf("%s restore failed (code %d): %s", client, code, truncate(strings.TrimSpace(string(stderr)), 400))
+		}
+		return done, nil
 	}
 	_, stderr, code, err := a.dk.ContainerExec(ctx, d.ContainerID, []string{
 		"pg_restore", "-U", d.Username, "-d", d.DBName, "-h", "127.0.0.1",
