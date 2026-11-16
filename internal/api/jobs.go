@@ -46,6 +46,14 @@ type jobRunView struct {
 	Log      string     `json:"log,omitempty"`
 }
 
+// ExitNote is "exit N" for a non-zero exit code, empty otherwise.
+func (r jobRunView) ExitNote() string {
+	if r.ExitCode == nil || *r.ExitCode == 0 {
+		return ""
+	}
+	return "exit " + strconv.Itoa(*r.ExitCode)
+}
+
 func (r jobRunView) Duration() string {
 	if r.Finished == nil {
 		return ""

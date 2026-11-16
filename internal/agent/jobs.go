@@ -207,6 +207,7 @@ func (a *Agent) runJob(ctx context.Context, d dueJob, runID string) {
 	}
 	spec.Worker = true   // nothing to publish or probe
 	spec.VolumePath = "" // the service's folder stays with the service
+	spec.Instances = 1   // one container per run
 	j := job{ID: runID, OrgID: d.OrgID, ServiceID: d.ServiceID, ProjectID: d.ProjectID, Spec: spec}
 	netName, err := a.ensureNetwork(ctx, j)
 	if err != nil {

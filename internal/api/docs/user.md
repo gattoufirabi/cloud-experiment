@@ -70,6 +70,7 @@ Settings take effect at the next deployment: use **Save and deploy**, or **Save 
 | --- | --- | --- |
 | Container image | none | Public (`nginx:1.27-alpine`) or private (`{{registry}}/<organization>/<name>:<tag>`). Pin a version tag rather than `latest`. |
 | Type | Web service | **Web service:** answers HTTP at a public address. **Worker:** runs in the background (a queue consumer, a bot) with no address, no port and no domains; it is healthy while it keeps running. |
+| Instances | 1 | 1 to 10 identical copies (up to your plan's limit). The proxy spreads requests over them and skips one that stops answering; CPU and memory count for each. A service with a persistent folder runs a single instance. |
 | Port | 8080 | 1 to 65535. Also passed to the application as the `PORT` environment variable. Web services only. |
 | Health check path | `/` | Any answer below HTTP 500 counts as healthy. The application has 90 seconds to answer after it starts. |
 | CPU | 250 millicores | 50 to 8000; 1000 = one core. Counts against your plan. |
@@ -96,6 +97,16 @@ How they combine:
 - A service's page lists the project variables it receives, under **From the project**.
 - Changes apply at the next deployment of each service. Rolling back to an earlier revision uses the current values.
 - `PORT` and names starting with `PLATFORM_` are reserved.
+
+## Several instances
+
+Run more than one copy of a service to share the load and keep it up if one copy fails.
+
+- Set **Instances** in the service's settings and click **Save and deploy**, or run `platformctl scale <project>/<service> 3 --wait`.
+- Every update starts all new instances, waits until each one passes its health check, then switches traffic at once: there is no downtime.
+- The proxy sends requests to the instances in turn and stops sending to one that fails for 20 seconds. If an instance disappears, the platform replaces the whole set with a fresh revision.
+- Each instance gets the plan's CPU and memory again: 3 instances of 250 millicores use 750 millicores of your plan and are billed that way.
+- Instances do not share memory or local files: keep sessions and uploads in a database, Redis or object storage. A service with a persistent folder runs a single instance; previews always run one.
 
 ## Updates and rollbacks
 
@@ -322,6 +333,7 @@ platformctl deploy shop/web --image {{registry}}/<organization>/web:1.4.2 --wait
 | `platformctl services <project>` | Lists services and the status of their last deployment. |
 | `platformctl status <project>/<service>` | Settings, address and recent deployments. |
 | `platformctl deploy <project>/<service> [--image IMAGE] [--wait]` | Deploys current settings, optionally with a new image; `--wait` follows it until live or failed and exits with an error on failure. |
+| `platformctl scale <project>/<service> N [--wait]` | Runs N instances (1 to 10) with no downtime. |
 | `platformctl logs <project>/<service> [--filter TEXT]` | Prints recent log lines. |
 | `platformctl secret set <project>/<service> NAME` | Sets a secret; the value is read from standard input, never from the command line. |
 | `platformctl var list <project>` | Lists the project's shared variables (secret values hidden). |
@@ -343,6 +355,7 @@ The same operations are available over HTTP with `Authorization: Bearer <token>`
 | `GET /api/v1/projects/{project}/services` | viewer |
 | `GET /api/v1/projects/{project}/services/{service}` | viewer |
 | `POST /api/v1/projects/{project}/services/{service}/deploy` with optional `{"image": "…"}` | developer |
+| `POST /api/v1/projects/{project}/services/{service}/scale` with `{"instances": 3}` | developer |
 | `GET /api/v1/projects/{project}/services/{service}/deployments/{revision}` | viewer |
 | `GET /api/v1/projects/{project}/services/{service}/logs?q=text` | viewer |
 | `PUT /api/v1/projects/{project}/services/{service}/secrets/{NAME}` with `{"value": "…"}` | developer |

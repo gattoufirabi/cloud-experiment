@@ -120,16 +120,17 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 type plan struct {
 	Name                                                     string
 	MaxServices, MaxCPU, MaxMemory, MaxDomains, MaxDatabases int
-	MaxDiskMB, DiskUsedMB                                    int
+	MaxDiskMB, DiskUsedMB, MaxInstances                      int
 }
 
 func (s *Server) loadPlan(r *http.Request, q pgx.Tx, id string) (plan, error) {
 	var p plan
 	err := q.QueryRow(r.Context(), `
 		SELECT p.name, p.max_services, p.max_cpu_millis, p.max_memory_mb, p.max_domains, p.max_databases, p.max_disk_mb,
-		       coalesce((SELECT disk_used_mb FROM orgs WHERE id = nullif(current_setting('app.org_id', true), '')::uuid), 0)
+		       coalesce((SELECT disk_used_mb FROM orgs WHERE id = nullif(current_setting('app.org_id', true), '')::uuid), 0),
+		       p.max_instances
 		FROM plans p WHERE p.id = $1`, id).
-		Scan(&p.Name, &p.MaxServices, &p.MaxCPU, &p.MaxMemory, &p.MaxDomains, &p.MaxDatabases, &p.MaxDiskMB, &p.DiskUsedMB)
+		Scan(&p.Name, &p.MaxServices, &p.MaxCPU, &p.MaxMemory, &p.MaxDomains, &p.MaxDatabases, &p.MaxDiskMB, &p.DiskUsedMB, &p.MaxInstances)
 	return p, err
 }
 
@@ -484,9 +485,9 @@ func (s *Server) checkQuota(r *http.Request, tx pgx.Tx, o *orgInfo, excludeID st
 	// the service or database being edited.
 	if err := tx.QueryRow(r.Context(), `
 		SELECT (SELECT count(*) FROM services WHERE id::text <> $1 AND preview_of IS NULL),
-		       (SELECT coalesce(sum(cpu_millis), 0) FROM services WHERE id::text <> $1) +
+		       (SELECT coalesce(sum(cpu_millis * instances), 0) FROM services WHERE id::text <> $1) +
 		       (SELECT coalesce(sum(cpu_millis), 0) FROM databases WHERE id::text <> $1),
-		       (SELECT coalesce(sum(memory_mb), 0) FROM services WHERE id::text <> $1) +
+		       (SELECT coalesce(sum(memory_mb * instances), 0) FROM services WHERE id::text <> $1) +
 		       (SELECT coalesce(sum(memory_mb), 0) FROM databases WHERE id::text <> $1)`, excludeID).Scan(&n, &usedCPU, &usedMem); err != nil {
 		return err
 	}
@@ -497,6 +498,21 @@ func (s *Server) checkQuota(r *http.Request, tx pgx.Tx, o *orgInfo, excludeID st
 		return quotaError(fmt.Sprintf("CPU limit reached: your plan allows %d millicores in total and %d are already allocated to other services.", p.MaxCPU, usedCPU))
 	case usedMem+mem > p.MaxMemory:
 		return quotaError(fmt.Sprintf("Memory limit reached: your plan allows %d MB in total and %d MB are already allocated to other services.", p.MaxMemory, usedMem))
+	}
+	return nil
+}
+
+// checkInstances refuses more instances per service than the plan allows.
+func (s *Server) checkInstances(r *http.Request, tx pgx.Tx, o *orgInfo, n int) error {
+	if n <= 1 {
+		return nil
+	}
+	p, err := s.loadPlan(r, tx, o.PlanID)
+	if err != nil {
+		return err
+	}
+	if n > p.MaxInstances {
+		return quotaError(fmt.Sprintf("Your %s plan allows %d instance(s) per service.", p.Name, p.MaxInstances))
 	}
 	return nil
 }

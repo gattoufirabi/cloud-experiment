@@ -72,7 +72,7 @@ func (c *caddyClient) get(ctx context.Context, path string) ([]byte, error) {
 
 type route struct {
 	Hosts   []string
-	Dial    string
+	Dials   []string // one per instance
 	Zone    string   // rate-limit zone name (service ID)
 	WAF     bool     // OWASP Core Rule Set
 	RPM     int      // requests per minute per visitor IP; 0 = no limit
@@ -84,7 +84,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		SELECT d.container_name, (d.spec->>'port')::int, s.slug, p.slug, o.slug,
 		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}'),
 		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.blocked_ips::text[],
-		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
 		LEFT JOIN services ps ON ps.id = s.preview_of
@@ -93,7 +93,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		LEFT JOIN domains dm ON dm.service_id = s.id
 		WHERE d.status = 'live' AND NOT o.suspended AND d.container_name IS NOT NULL
 		  AND NOT coalesce((d.spec->>'worker')::boolean, false) -- workers have no public address
-		GROUP BY d.id, s.id, ps.slug, p.slug, o.slug, d.upstream
+		GROUP BY d.id, s.id, ps.slug, p.slug, o.slug, d.upstream, d.instances
 		ORDER BY o.slug, p.slug, s.slug`)
 	if err != nil {
 		return nil, err
@@ -103,8 +103,9 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		var port int
 		var custom, blocked []string
 		var previewName, parentSlug, upstream string
+		var insts []instance
 		rt := route{}
-		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream); err != nil {
+		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream, &insts); err != nil {
 			return route{}, err
 		}
 		host := model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)
@@ -112,9 +113,15 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 			host = previewName + "." + model.DefaultHost(parentSlug, proj, org, a.cfg.AppsDomain)
 		}
 		rt.Hosts = append([]string{host}, custom...)
-		rt.Dial = name + ":" + strconv.Itoa(port)
-		if upstream != "" { // runs on another node: reached on its private address
-			rt.Dial = upstream
+		if len(insts) == 0 { // deployed before instances were recorded
+			insts = []instance{{Name: name, Upstream: upstream}}
+		}
+		for _, in := range insts {
+			if in.Upstream != "" { // runs on another node: reached on its private address
+				rt.Dials = append(rt.Dials, in.Upstream)
+			} else {
+				rt.Dials = append(rt.Dials, in.Name+":"+strconv.Itoa(port))
+			}
 		}
 		rt.Blocked = blocked
 		return rt, nil
@@ -211,7 +218,16 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 				}},
 			}}})
 		}
-		sub = append(sub, obj{"handle": []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": r.Dial}}}}})
+		ups := make([]any, 0, len(r.Dials))
+		for _, d := range r.Dials {
+			ups = append(ups, obj{"dial": d})
+		}
+		rp := obj{"handler": "reverse_proxy", "upstreams": ups}
+		if len(ups) > 1 { // spread requests; skip an instance that stops answering, retry elsewhere
+			rp["load_balancing"] = obj{"selection_policy": obj{"policy": "round_robin"}, "try_duration": "3s", "try_interval": "250ms"}
+			rp["health_checks"] = obj{"passive": obj{"fail_duration": "20s", "max_fails": 1}}
+		}
+		sub = append(sub, obj{"handle": []any{rp}})
 		rs = append(rs, obj{
 			"match":    []any{obj{"host": r.Hosts}},
 			"handle":   []any{obj{"handler": "subroute", "routes": sub}},

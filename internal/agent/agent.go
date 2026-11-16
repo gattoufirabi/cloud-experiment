@@ -67,7 +67,21 @@ type Agent struct {
 }
 
 type target struct {
-	ContainerID, DeploymentID, OrgID, ProjectID, ServiceID string
+	ContainerID, DeploymentID, OrgID, ProjectID, ServiceID, Instance string
+}
+
+// instance is one container of a live deployment (deployments.instances).
+type instance struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Upstream string `json:"upstream,omitempty"`
+}
+
+func instanceName(j job, i int) string {
+	if i == 0 {
+		return containerName(j)
+	}
+	return fmt.Sprintf("%s-%d", containerName(j), i)
 }
 
 type job struct {
@@ -311,37 +325,71 @@ func (a *Agent) deploy(ctx context.Context, j job) error {
 	if err != nil {
 		return err
 	}
-	name := containerName(j)
-	_ = a.dk.ContainerRemove(ctx, name) // leftover from an interrupted attempt
-
-	a.setMessage(ctx, j.ID, "starting container")
-	id, err := a.dk.ContainerCreate(ctx, name, a.containerConfig(j, netName, env, a.projectHosts(ctx, j.ProjectID, netName)))
-	if err != nil {
-		return fmt.Errorf("create container: %w", err)
+	// Start every instance, wait until all are healthy, then switch traffic at once.
+	n := j.Spec.Count()
+	var insts []instance
+	cleanup := func() {
+		for _, in := range insts {
+			_ = a.dk.ContainerRemove(context.Background(), in.ID)
+		}
 	}
-	cleanup := func() { _ = a.dk.ContainerRemove(context.Background(), id) }
-	if err := a.dk.ContainerStart(ctx, id); err != nil {
-		cleanup()
-		return fmt.Errorf("start container: %w", err)
+	if n > 1 {
+		a.setMessage(ctx, j.ID, fmt.Sprintf("starting %d instances", n))
+	} else {
+		a.setMessage(ctx, j.ID, "starting container")
+	}
+	hosts := a.projectHosts(ctx, j.ProjectID, netName)
+	for i := 0; i < n; i++ {
+		name := instanceName(j, i)
+		_ = a.dk.ContainerRemove(ctx, name) // leftover from an interrupted attempt
+		cfg := a.containerConfig(j, netName, env, hosts)
+		cfg.Labels["platform.instance"] = strconv.Itoa(i)
+		id, err := a.dk.ContainerCreate(ctx, name, cfg)
+		if err != nil {
+			cleanup()
+			return fmt.Errorf("create container: %w", err)
+		}
+		insts = append(insts, instance{ID: id, Name: name})
+		if err := a.dk.ContainerStart(ctx, id); err != nil {
+			cleanup()
+			return fmt.Errorf("start container: %w", err)
+		}
 	}
 
 	a.setMessage(ctx, j.ID, "waiting for health check")
-	if err := a.waitHealthy(ctx, id, netName, j.Spec); err != nil {
-		cleanup()
-		return err
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range insts {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = a.waitHealthy(ctx, insts[i].ID, netName, j.Spec)
+		}(i)
 	}
-	upstream := ""
-	if !a.isPrimary() && !j.Spec.Worker {
-		info, err := a.dk.ContainerInspect(ctx, id)
-		port := strconv.Itoa(j.Spec.Port) + "/tcp"
-		if err != nil || len(info.NetworkSettings.Ports[port]) == 0 {
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
 			cleanup()
-			return errors.New("the app port was not published on this node")
+			if n > 1 {
+				return fmt.Errorf("instance %d of %d: %w", i+1, n, err)
+			}
+			return err
 		}
-		upstream = a.cfg.NodeAddress + ":" + info.NetworkSettings.Ports[port][0].HostPort
 	}
+	if !a.isPrimary() && !j.Spec.Worker {
+		port := strconv.Itoa(j.Spec.Port) + "/tcp"
+		for i := range insts {
+			info, err := a.dk.ContainerInspect(ctx, insts[i].ID)
+			if err != nil || len(info.NetworkSettings.Ports[port]) == 0 {
+				cleanup()
+				return errors.New("the app port was not published on this node")
+			}
+			insts[i].Upstream = a.cfg.NodeAddress + ":" + info.NetworkSettings.Ports[port][0].HostPort
+		}
+	}
+	name := insts[0].Name
 
-	old, err := a.promote(ctx, j, id, name, upstream)
+	old, err := a.promote(ctx, j, insts)
 	if err != nil {
 		cleanup()
 		return err
@@ -612,25 +660,53 @@ func (a *Agent) tail(ctx context.Context, id string) string {
 	return "\n--- last log lines ---\n" + strings.Join(lines, "\n")
 }
 
-func (a *Agent) promote(ctx context.Context, j job, id, name, upstream string) ([]string, error) {
+// promote makes the deployment live with its instances and supersedes the previous
+// one; it returns the containers of the deployments it replaced.
+func (a *Agent) promote(ctx context.Context, j job, insts []instance) ([]string, error) {
 	var old []string
+	raw, _ := json.Marshal(insts)
 	err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 			UPDATE deployments SET status = 'superseded', updated_at = now()
 			WHERE service_id = $1 AND status = 'live' AND id <> $2
-			RETURNING coalesce(container_id, '')`, j.ServiceID, j.ID)
+			RETURNING coalesce(container_id, ''), instances`, j.ServiceID, j.ID)
 		if err != nil {
 			return err
 		}
-		if old, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		seen := map[string]bool{}
+		for rows.Next() {
+			var first string
+			var list []instance
+			if err := rows.Scan(&first, &list); err != nil {
+				rows.Close()
+				return err
+			}
+			for _, id := range append([]string{first}, instanceIDs(list)...) {
+				if id != "" && !seen[id] {
+					seen[id] = true
+					old = append(old, id)
+				}
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, `
-			UPDATE deployments SET status = 'live', message = '', container_id = $2, container_name = $3, upstream = $4, node_id = $5, updated_at = now()
-			WHERE id = $1`, j.ID, id, name, upstream, a.selfID)
+			UPDATE deployments SET status = 'live', message = '', container_id = $2, container_name = $3, upstream = $4, node_id = $5,
+			       instances = $6, updated_at = now()
+			WHERE id = $1`, j.ID, insts[0].ID, insts[0].Name, insts[0].Upstream, a.selfID, raw)
 		return err
 	})
 	return old, err
+}
+
+func instanceIDs(list []instance) []string {
+	out := make([]string, 0, len(list))
+	for _, in := range list {
+		out = append(out, in.ID)
+	}
+	return out
 }
 
 // ---------- reconcile ----------
@@ -639,9 +715,11 @@ func (a *Agent) reconcile(ctx context.Context) {
 	type live struct {
 		DepID, ContainerID, OrgID, ProjectID, ServiceID, Upstream, NodeID string
 		Suspended                                                         bool
+		Count                                                             int
 	}
 	rows, err := a.pool.Query(ctx, `
-		SELECT d.id, coalesce(d.container_id, ''), d.org_id, s.project_id, d.service_id, d.upstream, coalesce(d.node_id, ''), o.suspended
+		SELECT d.id, coalesce(d.container_id, ''), d.org_id, s.project_id, d.service_id, d.upstream, coalesce(d.node_id, ''), o.suspended,
+		       greatest(1, jsonb_array_length(d.instances))
 		FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id
 		JOIN projects p ON p.id = s.project_id
 		WHERE d.status = 'live' AND `+mineSQL, a.mineArgs()...)
@@ -651,7 +729,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 	}
 	lives, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (live, error) {
 		var l live
-		err := r.Scan(&l.DepID, &l.ContainerID, &l.OrgID, &l.ProjectID, &l.ServiceID, &l.Upstream, &l.NodeID, &l.Suspended)
+		err := r.Scan(&l.DepID, &l.ContainerID, &l.OrgID, &l.ProjectID, &l.ServiceID, &l.Upstream, &l.NodeID, &l.Suspended, &l.Count)
 		return l, err
 	})
 	if err != nil {
@@ -688,7 +766,9 @@ func (a *Agent) reconcile(ctx context.Context) {
 		}
 	}
 	if len(mine) > 0 {
-		if rows, err := a.pool.Query(ctx, `SELECT id::text FROM deployments WHERE status = 'live' AND container_id = ANY($1)`, mine); err == nil {
+		if rows, err := a.pool.Query(ctx, `
+			SELECT id::text FROM deployments d WHERE status = 'live' AND (container_id = ANY($1)
+			   OR EXISTS (SELECT 1 FROM jsonb_array_elements(d.instances) e WHERE e->>'id' = ANY($1)))`, mine); err == nil {
 			if ids, err := pgx.CollectRows(rows, pgx.RowTo[string]); err == nil {
 				for _, id := range ids {
 					keep[id] = true
@@ -696,7 +776,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 			}
 		}
 	}
-	byDep := map[string]docker.ContainerSummary{}
+	byDep := map[string][]docker.ContainerSummary{}
 	for _, c := range containers {
 		if c.Labels["platform.database"] != "" || c.Labels["platform.job"] != "" || !a.owns(c.Labels) {
 			continue
@@ -708,7 +788,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 			_ = a.dk.ContainerRemove(ctx, c.ID)
 			continue
 		}
-		byDep[dep] = c
+		byDep[dep] = append(byDep[dep], c)
 	}
 
 	a.mu.Lock()
@@ -747,17 +827,20 @@ func (a *Agent) reconcile(ctx context.Context) {
 
 	var running []target
 	for _, l := range lives {
-		c, ok := byDep[l.DepID]
+		cs := byDep[l.DepID]
+		ok := len(cs) >= l.Count
 		if l.Suspended {
-			if ok && c.State == "running" {
-				a.log.Info("stopping container of suspended organization", "org", l.OrgID)
-				_ = a.dk.ContainerStop(ctx, c.ID, 10)
+			for _, c := range cs {
+				if c.State == "running" {
+					a.log.Info("stopping container of suspended organization", "org", l.OrgID)
+					_ = a.dk.ContainerStop(ctx, c.ID, 10)
+				}
 			}
 			continue
 		}
-		if !ok && a.ranElsewhere(l.NodeID, l.Upstream) {
-			// The project was moved here (drain, placement): start a new revision on this
-			// node; the old container keeps serving until it is live.
+		if !ok && (len(cs) > 0 || a.ranElsewhere(l.NodeID, l.Upstream)) {
+			// The project was moved here (drain, placement), or some instances were lost:
+			// start a new revision; what still runs keeps serving until it is live.
 			tag, err := a.pool.Exec(ctx, `
 				INSERT INTO deployments (org_id, service_id, revision, spec)
 				SELECT d.org_id, d.service_id, (SELECT max(revision) + 1 FROM deployments WHERE service_id = d.service_id), d.spec
@@ -765,8 +848,12 @@ func (a *Agent) reconcile(ctx context.Context) {
 				  AND NOT EXISTS (SELECT 1 FROM deployments x WHERE x.service_id = d.service_id AND (x.status IN ('pending', 'deploying')
 				      OR (x.status = 'failed' AND x.revision > d.revision AND x.updated_at > now() - interval '5 minutes')))`, l.DepID)
 			if err == nil && tag.RowsAffected() > 0 {
-				_ = auditAgent(ctx, a, l.OrgID, "deployment.redeployed", "service:"+l.ServiceID, map[string]string{"reason": "project moved to node " + a.selfID})
-				a.log.Info("project moved here, redeploying", "service", l.ServiceID, "node", a.selfID)
+				reason := "project moved to node " + a.selfID
+				if len(cs) > 0 {
+					reason = fmt.Sprintf("%d of %d instances were lost", l.Count-len(cs), l.Count)
+				}
+				_ = auditAgent(ctx, a, l.OrgID, "deployment.redeployed", "service:"+l.ServiceID, map[string]string{"reason": reason})
+				a.log.Info("redeploying", "service", l.ServiceID, "node", a.selfID, "reason", reason)
 				a.poke()
 			}
 			continue
@@ -777,13 +864,15 @@ func (a *Agent) reconcile(ctx context.Context) {
 			a.poke()
 			continue
 		}
-		if c.State != "running" {
-			if err := a.dk.ContainerStart(ctx, c.ID); err != nil {
-				a.log.Warn("restart container", "deployment", l.DepID, "err", err)
-				continue
+		for _, c := range cs {
+			if c.State != "running" {
+				if err := a.dk.ContainerStart(ctx, c.ID); err != nil {
+					a.log.Warn("restart container", "deployment", l.DepID, "err", err)
+					continue
+				}
 			}
+			running = append(running, target{c.ID, l.DepID, l.OrgID, l.ProjectID, l.ServiceID, c.Labels["platform.instance"]})
 		}
-		running = append(running, target{c.ID, l.DepID, l.OrgID, l.ProjectID, l.ServiceID})
 	}
 
 	a.mu.Lock()

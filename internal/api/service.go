@@ -20,7 +20,7 @@ import (
 
 type serviceInfo struct {
 	ID, Slug, Image, HealthPath, VolumePath string
-	Port, CPUMillis, MemoryMB               int
+	Port, CPUMillis, MemoryMB, Instances    int
 	Worker                                  bool
 	Env                                     map[string]string
 	PreviewName, ParentSlug                 string // set for preview environments
@@ -39,18 +39,18 @@ func (s *Server) serviceHost(o *orgInfo, p *projectInfo, sv *serviceInfo) string
 
 func (sv *serviceInfo) spec() model.Spec {
 	return model.Spec{Image: sv.Image, Port: sv.Port, CPUMillis: sv.CPUMillis, MemoryMB: sv.MemoryMB,
-		HealthPath: sv.HealthPath, VolumePath: sv.VolumePath, Env: sv.Env, Worker: sv.Worker}
+		HealthPath: sv.HealthPath, VolumePath: sv.VolumePath, Env: sv.Env, Worker: sv.Worker, Instances: sv.Instances}
 }
 
 func (s *Server) loadService(r *http.Request, tx pgx.Tx, projectID string) (*serviceInfo, error) {
 	var sv serviceInfo
 	err := tx.QueryRow(r.Context(), `
 		SELECT s.id, s.slug, s.image, s.health_path, s.volume_path, s.port, s.cpu_millis, s.memory_mb, s.env,
-		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker, s.instances
 		FROM services s LEFT JOIN services ps ON ps.id = s.preview_of
 		WHERE s.project_id = $1 AND s.slug = $2`, projectID, r.PathValue("service")).
 		Scan(&sv.ID, &sv.Slug, &sv.Image, &sv.HealthPath, &sv.VolumePath, &sv.Port, &sv.CPUMillis, &sv.MemoryMB, &sv.Env,
-			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker)
+			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker, &sv.Instances)
 	if sv.Env == nil {
 		sv.Env = map[string]string{}
 	}
@@ -297,6 +297,10 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			VolumePath: strings.TrimSpace(r.PostFormValue("volume_path")),
 			Env:        env,
 			Worker:     r.PostFormValue("kind") == "worker",
+			Instances:  max(1, atoi(r.PostFormValue("instances"))),
+		}
+		if sv.isPreview() {
+			next.Instances = 1 // previews run a single instance
 		}
 		if next.Worker && !sv.Worker {
 			var n int
@@ -316,7 +320,15 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			formErr = err.Error()
 			return nil
 		}
-		if err := s.checkQuota(r, tx, o, sv.ID, next.CPUMillis, next.MemoryMB, false); err != nil {
+		if err := s.checkInstances(r, tx, o, next.Count()); err != nil {
+			var qe quotaError
+			if errors.As(err, &qe) {
+				formErr = qe.Error()
+				return nil
+			}
+			return err
+		}
+		if err := s.checkQuota(r, tx, o, sv.ID, next.CPUMillis*next.Count(), next.MemoryMB*next.Count(), false); err != nil {
 			var qe quotaError
 			if errors.As(err, &qe) {
 				formErr = qe.Error()
@@ -326,11 +338,12 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		envJSON, _ := json.Marshal(next.Env)
 		if _, err := tx.Exec(r.Context(), `
-			UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8, worker = $9
-			WHERE id = $1`, sv.ID, next.Image, next.Port, next.CPUMillis, next.MemoryMB, next.HealthPath, next.VolumePath, envJSON, next.Worker); err != nil {
+			UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8, worker = $9,
+			       instances = $10
+			WHERE id = $1`, sv.ID, next.Image, next.Port, next.CPUMillis, next.MemoryMB, next.HealthPath, next.VolumePath, envJSON, next.Worker, next.Count()); err != nil {
 			return err
 		}
-		s.audit(r, tx, o.ID, "service.updated", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"image": next.Image, "cpu_millis": next.CPUMillis, "memory_mb": next.MemoryMB, "worker": next.Worker})
+		s.audit(r, tx, o.ID, "service.updated", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"image": next.Image, "cpu_millis": next.CPUMillis, "memory_mb": next.MemoryMB, "worker": next.Worker, "instances": next.Count()})
 		if deployNow {
 			_, err := s.createDeployment(r, tx, o, sv.ID, next)
 			return err
@@ -435,8 +448,9 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 		}
 		envJSON, _ := json.Marshal(spec.Env)
 		if _, err := tx.Exec(r.Context(), `
-			UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8, worker = $9
-			WHERE id = $1`, sv.ID, spec.Image, spec.Port, spec.CPUMillis, spec.MemoryMB, spec.HealthPath, spec.VolumePath, envJSON, spec.Worker); err != nil {
+			UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8, worker = $9,
+			       instances = $10
+			WHERE id = $1`, sv.ID, spec.Image, spec.Port, spec.CPUMillis, spec.MemoryMB, spec.HealthPath, spec.VolumePath, envJSON, spec.Worker, spec.Count()); err != nil {
 			return err
 		}
 		var err error

@@ -5,7 +5,7 @@
   {{if .Service.Worker}}<span class="right badge">worker · no public address</span>{{else}}<a class="right" href="{{.URL}}" target="_blank" rel="noopener">{{.URL}} ↗</a>{{end}}
 </div>
 {{if .Service.PreviewName}}<p class="notice">Preview <strong>{{.Service.PreviewName}}</strong> of <a href="{{.Org.Path}}/p/{{.Project.Slug}}/s/{{.Service.ParentSlug}}#previews">{{.Service.ParentSlug}}</a>{{with .Service.Expires}}, deleted automatically {{datetime .}}{{end}}.</p>{{end}}
-<p class="lede"><code>{{if .Service.Image}}{{.Service.Image}}{{else}}no image set{{end}}</code> · {{if .Service.Worker}}worker{{else}}port {{.Service.Port}}{{end}} · {{.Service.CPUMillis}} millicores · {{.Service.MemoryMB}} MB{{if .Service.VolumePath}} · folder {{.Service.VolumePath}}{{end}}</p>
+<p class="lede"><code>{{if .Service.Image}}{{.Service.Image}}{{else}}no image set{{end}}</code> · {{if .Service.Worker}}worker{{else}}port {{.Service.Port}}{{end}}{{if gt .Service.Instances 1}} · {{.Service.Instances}} instances{{end}} · {{.Service.CPUMillis}} millicores · {{.Service.MemoryMB}} MB{{if .Service.VolumePath}} · folder {{.Service.VolumePath}}{{end}}</p>
 
 <nav class="tabs" role="tablist" aria-label="Service sections">
   <a role="tab" href="#overview">Overview</a>
@@ -114,6 +114,7 @@
       <label>Health check path <span class="hint">web services only</span><input name="health_path" value="{{.Service.HealthPath}}" required></label>
       <label>CPU <span class="hint">millicores, 1000 = 1 core</span><input type="number" name="cpu_millis" min="50" max="8000" step="50" value="{{.Service.CPUMillis}}" required></label>
       <label>Memory <span class="hint">MB</span><input type="number" name="memory_mb" min="32" max="16384" step="32" value="{{.Service.MemoryMB}}" required></label>
+      <label>Instances <span class="hint">identical copies sharing the traffic; CPU and memory count for each</span><input type="number" name="instances" min="1" max="10" value="{{.Service.Instances}}" required{{if .Service.PreviewName}} disabled{{end}}></label>
       <label class="wide">Persistent folder <span class="hint">optional, kept and backed up, e.g. /data</span><input name="volume_path" value="{{.Service.VolumePath}}" placeholder="/data"></label>
       <label class="wide">Environment variables <span class="hint">one KEY=value per line; not for passwords</span>
         <textarea name="env" rows="5" spellcheck="false">{{.EnvText}}</textarea></label>
@@ -466,7 +467,7 @@
       <tbody>
       {{range .JobRuns}}
         <tr><td>{{.Job}}{{if eq .Trigger "manual"}} <span class="small muted">(manual)</span>{{end}}</td>
-          <td>{{template "status" (jobStatus .Status)}}{{with .ExitCode}}{{if ne . 0}} <span class="small muted">exit {{.}}</span>{{end}}{{end}}</td>
+          <td>{{template "status" (jobStatus .Status)}}{{with .ExitNote}} <span class="small muted">{{.}}</span>{{end}}</td>
           <td class="small">{{datetime .Started}}</td><td class="small">{{.Duration}}</td>
           <td>{{if .Log}}<details><summary class="small">last lines</summary><pre class="log">{{.Log}}</pre><a class="small" href="{{$.Path}}/job-runs/{{.ID}}" target="_blank" rel="noopener">full log ↗</a></details>{{end}}</td></tr>
       {{end}}

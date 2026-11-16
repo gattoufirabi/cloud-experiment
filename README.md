@@ -30,6 +30,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Usage metering and invoices**: allocated CPU/memory and network out metered per minute, per-plan prices, monthly invoices (printable), estimate so far, billing details, operator records payments (no payment provider) | done, tested |
 | **Shared project variables**: set once per project, passed to every service and preview, secret or plain, overridden by service settings, one-click redeploy (console, API, `platformctl var`) | done, tested |
 | **Workers and scheduled jobs**: background services with no public address; cron jobs (UTC) run in a fresh container from the service's deployment, with time limits, no overlap, run history, failure alerts, metered usage (console, API, `platformctl job`) | done, tested |
+| **Several instances per service**: 1 to 10 identical containers behind the proxy (round robin, failing instances skipped), all-at-once zero-downtime updates, lost instances replaced, CPU/memory counted per instance (console, API, `platformctl scale`) | done, tested |
 | **Preview environments**: temporary copies of a service with another image at `<name>.<service>-…` (console, API, `platformctl preview`), secrets copied, auto-expiry | done, tested |
 | **Builds from git**: Dockerfile builds in a rootless BuildKit sandbox (no Docker socket, isolated network), push to the org's registry space, optional deploy; console, API, `platformctl build`, push webhooks | done; rootless BuildKit verified under gVisor (`BUILD_RUNTIME=runsc`) on a Debian 12 server |
 | **Self-signup with abuse controls**: email confirmation (any SMTP server), proof-of-work instead of CAPTCHA, honeypot, IP/daily limits, disposable-domain block, 14-day trial plan (no custom domains or builds), auto-suspension of expired trials and CPU-maxing (mining-like) trial apps, operator notices | done, tested |
@@ -47,7 +48,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | gVisor sandbox for tenant containers | done, verified on a Debian 12 server (Phase 0 gate) |
 | Host firewall for tenant networks, isolation test (Phase 0 gate) | done, gate PASSED on a real server via `host/deploy.sh` |
 
-The end-to-end test (`scripts/e2e-dev.sh`) runs 288 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds, self-signup, the operator console and a second node (placement, proxying, zero-downtime drain). Unit tests: `go test ./...` (outbound request guard).
+The end-to-end test (`scripts/e2e-dev.sh`) runs 354 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds, self-signup, the operator console and a second node (placement, proxying, zero-downtime drain). Unit tests: `go test ./...` (outbound request guard).
 
 **Not built yet** (next phases in ARCHITECTURE.md): multi-node: moving projects with persistent data automatically, control plane on two nodes (database replica); hard filesystem disk quotas (XFS project quotas).
 

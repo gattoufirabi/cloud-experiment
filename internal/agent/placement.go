@@ -29,7 +29,7 @@ func (a *Agent) placeProjects(ctx context.Context) {
 	}
 	rows, err := a.pool.Query(ctx, `
 		SELECT p.id, o.cluster,
-		       coalesce((SELECT sum(s.memory_mb) FROM services s WHERE s.project_id = p.id), 0)
+		       coalesce((SELECT sum(s.memory_mb * s.instances) FROM services s WHERE s.project_id = p.id), 0)
 		         + coalesce((SELECT sum(db.memory_mb) FROM databases db WHERE db.project_id = p.id), 0)
 		FROM projects p JOIN orgs o ON o.id = p.org_id
 		WHERE p.node_id IS NULL AND (
@@ -58,7 +58,7 @@ func (a *Agent) placeProjects(ctx context.Context) {
 			WHERE n.last_seen > now() - interval '2 minutes' AND NOT n.cordoned
 			  AND ($1 = '' OR n.cluster = $1)
 			ORDER BY n.mem_mb * 0.8
-			       - coalesce((SELECT sum(s.memory_mb) FROM services s JOIN projects pp ON pp.id = s.project_id WHERE pp.node_id = n.id), 0)
+			       - coalesce((SELECT sum(s.memory_mb * s.instances) FROM services s JOIN projects pp ON pp.id = s.project_id WHERE pp.node_id = n.id), 0)
 			       - coalesce((SELECT sum(db.memory_mb) FROM databases db JOIN projects pp ON pp.id = db.project_id WHERE pp.node_id = n.id), 0)
 			       DESC, n.role = 'primary' DESC, n.id
 			LIMIT 1`, p.cluster).Scan(&node)

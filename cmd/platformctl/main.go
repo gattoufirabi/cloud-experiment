@@ -88,6 +88,11 @@ func main() {
 		err = c.vars(args)
 	case "job":
 		err = c.jobs(args)
+	case "scale":
+		if len(args) < 2 {
+			usage(2)
+		}
+		err = c.scale(args)
 	case "redeploy":
 		if len(args) != 1 {
 			usage(2)
@@ -121,6 +126,7 @@ func usage(code int) {
                                            value from standard input; secret unless --plain
   var unset <project> NAME                 delete a shared variable
   redeploy <project>                       redeploy every running service of the project
+  scale <project>/<service> N [--wait]     run N instances (1 to 10) behind the proxy, with no downtime
   job list <project>/<service>             scheduled jobs and their last run
   job run <project>/<service> JOB [--wait] run a job now; --wait prints its log and exit status
   job logs <project>/<service> JOB         log of the job's last run
@@ -289,11 +295,16 @@ func (c *client) deploy(args []string) error {
 	if !*wait {
 		return nil
 	}
+	return c.waitDeployment(res.StatusURL)
+}
+
+// waitDeployment follows a deployment until it is live (nil) or failed (error).
+func (c *client) waitDeployment(statusURL string) error {
 	last := ""
 	deadline := time.Now().Add(15 * time.Minute)
 	for time.Now().Before(deadline) {
 		var d deployment
-		if err := c.do("GET", res.StatusURL, nil, &d); err != nil {
+		if err := c.do("GET", statusURL, nil, &d); err != nil {
 			return err
 		}
 		if line := d.Status + " " + firstLine(d.Message); line != last && d.Status != "live" && d.Status != "failed" {
@@ -500,6 +511,26 @@ func (c *client) jobs(args []string) error {
 		return errors.New("gave up waiting for the job")
 	}
 	usage(2)
+	return nil
+}
+
+func (c *client) scale(args []string) error {
+	p, s := target(args[:1])
+	var n int
+	if _, err := fmt.Sscan(args[1], &n); err != nil {
+		return errors.New("the number of instances must be a number from 1 to 10")
+	}
+	var out struct {
+		Revision  int    `json:"revision"`
+		StatusURL string `json:"status_url"`
+	}
+	if err := c.do("POST", "/api/v1/projects/"+p+"/services/"+s+"/scale", map[string]int{"instances": n}, &out); err != nil {
+		return err
+	}
+	fmt.Printf("scaling %s to %d instance(s): revision %d queued\n", args[0], n, out.Revision)
+	if len(args) > 2 && args[2] == "--wait" {
+		return c.waitDeployment(out.StatusURL)
+	}
 	return nil
 }
 

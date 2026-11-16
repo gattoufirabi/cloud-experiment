@@ -434,7 +434,7 @@ api_code "$TOK_B" -X PUT -H 'Content-Type: application/json' -d '{"value":"evil"
 check "[B->A] B's write lands in B's own project only" "$(owner_sql "SELECT string_agg(o.slug, ',' ORDER BY o.slug) FROM project_variables v JOIN orgs o ON o.id = v.org_id WHERE v.name = 'SHARED_TOKEN' AND o.slug IN ('$A', '$B') AND v.updated_at > '$BEFORE_B'")" "$B"
 PPAGE=$(c ja "$BASE/o/$A/p/shop")
 if grep -q "shared.example.test" <<<"$PPAGE" && ! grep -q "shared-secret-xyz" <<<"$PPAGE"; then ok "project page shows plain values and hides secret ones"; else bad "project page shows the wrong values"; fi
-if c ja "$BASE$SVC_A" | grep -q "<code>SHARED_TOKEN</code>"; then ok "service page lists the variables it receives from the project"; else bad "inherited variables not listed"; fi
+if grep -q "<code>SHARED_TOKEN</code>" <<<"$(c ja "$BASE$SVC_A")"; then ok "service page lists the variables it receives from the project"; else bad "inherited variables not listed"; fi
 VLIST=$(pctl var list shop)
 if grep -q "SHARED_HOST *shared.example.test" <<<"$VLIST" && grep -q "SHARED_TOKEN *(secret)" <<<"$VLIST" && ! grep -q "shared-secret-xyz" <<<"$VLIST"; then ok "[CLI] platformctl var list hides secret values"; else bad "[CLI] var list wrong: $VLIST"; fi
 check "secret values encrypted at rest" "$(owner_sql "SELECT count(*) FROM project_variables WHERE position(convert_to('shared-secret-xyz', 'UTF8') IN value_enc) > 0")" 0
@@ -459,7 +459,7 @@ check "worker gets no PORT variable" "$(docker exec "$Q_CID" sh -c 'echo "${PORT
 check "worker has no public address" "$(curl -s -o /dev/null -w '%{http_code}' --resolve "queue-shop-$A.apps.localhost:$PORT:127.0.0.1" "http://queue-shop-$A.apps.localhost:$PORT/")" 404
 code_of ja -X POST "$BASE$SVC_Q/domains" -d csrf=$CSRF_A -d hostname=worker.example.test >/dev/null
 check "a worker cannot get a domain" "$(owner_sql "SELECT count(*) FROM domains WHERE hostname = 'worker.example.test'")" 0
-if c ja "$BASE$SVC_Q" | grep -q "worker · no public address"; then ok "service page marks the worker"; else bad "worker not shown as such"; fi
+if grep -q "worker · no public address" <<<"$(c ja "$BASE$SVC_Q")"; then ok "service page marks the worker"; else bad "worker not shown as such"; fi
 check "[A] worker deleted" "$(code_of ja -X POST "$BASE$SVC_Q/delete" -d csrf=$CSRF_A -d confirm=queue)" 303
 
 JOBS=/api/v1/projects/shop/services/web/jobs
@@ -485,14 +485,37 @@ check "a job over its time limit is stopped" "$(wait_run slow)" timed_out
 check "scheduled run happens on time (every minute)" "$(for _ in $(seq 1 45); do [ "$(owner_sql "SELECT count(*) FROM job_runs r JOIN jobs j ON j.id = r.job_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND j.slug = 'hello' AND r.trigger = 'schedule'")" -ge 1 ] && { echo yes; break; }; sleep 2; done)" yes
 check "job containers removed after each run" "$(for _ in $(seq 1 15); do [ "$(docker ps -aq --filter label=platform.job | wc -l | tr -d ' ')" = 0 ] && { echo 0; break; }; sleep 2; done)" 0
 RUN_ID=$(last_run fail id)
-if c ja "$BASE$SVC_A/job-runs/$RUN_ID" | grep -q "about to fail"; then ok "[A] full run log opens in the console"; else bad "run log page missing"; fi
+if grep -q "about to fail" <<<"$(c ja "$BASE$SVC_A/job-runs/$RUN_ID")"; then ok "[A] full run log opens in the console"; else bad "run log page missing"; fi
 check "[B->A] B cannot open A's run log (404)" "$(code_of jb "$BASE$SVC_A/job-runs/$RUN_ID")" 404
-if c ja "$BASE$SVC_A" | grep -q "<strong>hello</strong>"; then ok "[A] Jobs tab lists the jobs"; else bad "jobs not listed"; fi
+if grep -q "<strong>hello</strong>" <<<"$(c ja "$BASE$SVC_A")"; then ok "[A] Jobs tab lists the jobs"; else bad "jobs not listed"; fi
 code_of ja -X POST "$BASE$SVC_A/jobs/hello/pause" -d csrf=$CSRF_A >/dev/null
 check "paused job has no next run" "$(owner_sql "SELECT enabled::text || ':' || (next_run_at IS NULL) FROM jobs j JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND j.slug = 'hello'")" "false:true"
 for j in hello fail slow; do api_code "$TOK_DEV" -X DELETE "$BASE$JOBS/$j" >/dev/null; done
 check "[API] jobs deleted" "$(api_get "$TOK_DEV" "$BASE$JOBS")" "[]"
 check "job changes audited" "$(owner_sql "SELECT count(*) >= 6 FROM audit_events WHERE action LIKE 'job.%' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
+
+echo "== Several instances per service"
+WEB_DEP() { owner_sql "SELECT d.$1 FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND p.slug = 'shop' AND s.slug = 'web' AND s.preview_name IS NULL AND d.status = 'live'"; }
+if pctl scale shop/web 3 --wait | grep -q "is live"; then ok "[CLI] platformctl scale to 3 instances reaches live"; else bad "[CLI] scale failed"; fi
+check "three instances recorded" "$(WEB_DEP 'instances' | grep -o '"id"' | wc -l | tr -d ' ')" 3
+DEP3=$(WEB_DEP id)
+check "three containers running" "$(docker ps -q --filter label=platform.deployment=$DEP3 | wc -l | tr -d ' ')" 3
+for _ in $(seq 1 15); do app_code / >/dev/null; done
+check "the proxy spreads requests over the instances" "$(n=0; for c in $(docker ps -q --filter label=platform.deployment=$DEP3); do docker logs "$c" 2>&1 | grep -q 'GET / ' && n=$((n+1)); done; [ "$n" -ge 2 ] && echo yes)" yes
+check "the service page shows the instance count" "$(grep -c '3 instances' <<<"$(c ja "$BASE$SVC_A")" | tr -d ' ')" 1
+LOST=$(docker ps -q --filter label=platform.deployment=$DEP3 | head -1)
+docker rm -f "$LOST" >/dev/null
+check "app keeps answering with an instance lost" "$(app_code /)" 200
+check "a lost instance is replaced (new revision, 3 instances)" "$(for _ in $(seq 1 45); do d=$(WEB_DEP id); [ -n "$d" ] && [ "$d" != "$DEP3" ] && [ "$(docker ps -q --filter label=platform.deployment=$d | wc -l | tr -d ' ')" = 3 ] && { echo yes; break; }; sleep 2; done)" yes
+check "replacement audited" "$(owner_sql "SELECT count(*) >= 1 FROM audit_events WHERE action = 'deployment.redeployed' AND detail->>'reason' LIKE '%instances were lost' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
+check "the old instances are removed" "$(for _ in $(seq 1 20); do [ "$(docker ps -aq --filter label=platform.deployment=$DEP3 | wc -l | tr -d ' ')" = 0 ] && { echo yes; break; }; sleep 2; done)" yes
+check "[API] more instances than the plan allows refused (422)" "$(api_code "$TOK_DEV" -X POST -H 'Content-Type: application/json' -d '{"instances":6}' "$BASE/api/v1/projects/shop/services/web/scale")" 422
+check "[API] several instances with a persistent folder refused (422)" "$(api_code "$TOK_DEV" -X POST -H 'Content-Type: application/json' -d '{"instances":2}' "$BASE/api/v1/projects/shop/services/files/scale")" 422
+api_code "$TOK_B" -X POST -H 'Content-Type: application/json' -d '{"instances":1}' "$BASE/api/v1/projects/shop/services/web/scale" >/dev/null   # B's own shop/web
+check "[B->A] B's token scales only B's service" "$(owner_sql "SELECT instances FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'web' AND s.preview_name IS NULL")" 3
+if pctl scale shop/web 1 --wait | grep -q "is live"; then ok "[CLI] scale back to 1 instance"; else bad "[CLI] scale back failed"; fi
+check "one container after scaling down" "$(docker ps -q --filter label=platform.deployment=$(WEB_DEP id) | wc -l | tr -d ' ')" 1
+check "app answers after scaling down" "$(app_code /)" 200
 
 echo "== Builds from git"
 # A local git server (static "dumb HTTP" repository) reached from the build sandbox
@@ -801,6 +824,12 @@ login jr5 "owner@$B.test" b-new-correct-horse-battery >/dev/null
 check "after operator two-step reset, the user sets it up again" "$(c jr5 -o /dev/null -w '%{redirect_url}' "$BASE/totp/verify")" "$BASE/totp/setup"
 
 echo
+# Remove this run's test organizations (their apps, databases and networks follow), so
+# repeated runs do not pile up containers. KEEP=1 keeps them for debugging.
+if [ "${KEEP:-0}" != 1 ]; then
+  owner_sql "DELETE FROM orgs WHERE slug IN ('$A', '$B', 't$RUN')" >/dev/null
+  owner_sql "SELECT pg_notify('deployments', '')" >/dev/null
+fi
 echo "Result: $PASS passed, $FAIL failed"
 rm -rf "$TMP"
 [ "$FAIL" -eq 0 ]

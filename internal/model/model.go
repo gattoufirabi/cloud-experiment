@@ -33,6 +33,16 @@ type Spec struct {
 	// Worker: no public address (queue consumer, bot). Not routed by the proxy, no
 	// port or HTTP health check: healthy while the container keeps running.
 	Worker bool `json:"worker,omitempty"`
+	// Instances: identical containers behind the proxy (1 when unset).
+	Instances int `json:"instances,omitempty"`
+}
+
+// Count is the number of instances to run (at least 1).
+func (s Spec) Count() int {
+	if s.Instances < 1 {
+		return 1
+	}
+	return s.Instances
 }
 
 func (s Spec) Validate() error {
@@ -49,6 +59,12 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("memory must be between 32 and 16384 MB")
 	case !s.Worker && !pathRe.MatchString(s.HealthPath):
 		return fmt.Errorf("health check path must start with / and contain no spaces")
+	}
+	if s.Instances < 0 || s.Instances > 10 {
+		return fmt.Errorf("instances must be between 1 and 10")
+	}
+	if s.Count() > 1 && s.VolumePath != "" {
+		return fmt.Errorf("a service with a persistent folder runs a single instance (the folder cannot be shared)")
 	}
 	if s.VolumePath != "" {
 		if !pathRe.MatchString(s.VolumePath) || s.VolumePath == "/" || strings.Contains(s.VolumePath, "..") {

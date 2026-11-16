@@ -124,6 +124,7 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("POST /api/v1/projects/{project}/redeploy", s.apiAuth("developer", s.apiRedeployProject))
 	m.HandleFunc("GET "+svc, s.apiAuth("viewer", s.apiService1))
 	m.HandleFunc("POST "+svc+"/deploy", s.apiAuth("developer", s.apiDeploy))
+	m.HandleFunc("POST "+svc+"/scale", s.apiAuth("developer", s.apiScale))
 	m.HandleFunc("GET "+svc+"/deployments/{rev}", s.apiAuth("viewer", s.apiDeployment))
 	m.HandleFunc("GET "+svc+"/logs", s.apiAuth("viewer", s.apiLogs))
 	m.HandleFunc("PUT "+svc+"/secrets/{name}", s.apiAuth("developer", s.apiSetSecret))
@@ -233,6 +234,7 @@ func (s *Server) apiService1(w http.ResponseWriter, r *http.Request, o *orgInfo)
 		resp = map[string]any{
 			"id": sv.Slug, "project": p.Slug, "image": sv.Image, "port": sv.Port, "health_path": sv.HealthPath,
 			"cpu_millis": sv.CPUMillis, "memory_mb": sv.MemoryMB, "volume_path": sv.VolumePath,
+			"instances": sv.Instances, "worker": sv.Worker,
 			"url":         s.appURL(s.serviceHost(o, p, sv)),
 			"deployments": toAPIDeployments(deps),
 		}
@@ -241,6 +243,60 @@ func (s *Server) apiService1(w http.ResponseWriter, r *http.Request, o *orgInfo)
 		return
 	}
 	writeJSON(w, resp)
+}
+
+// apiScale changes the number of instances and deploys: POST {"instances": 3}
+func (s *Server) apiScale(w http.ResponseWriter, r *http.Request, o *orgInfo) {
+	var body struct {
+		Instances int `json:"instances"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+		apiError(w, http.StatusBadRequest, `body must be JSON, for example {"instances": 3}`)
+		return
+	}
+	var rev int
+	var path string
+	if !s.apiService(w, r, o, func(tx pgx.Tx, p *projectInfo, sv *serviceInfo) error {
+		if sv.isPreview() {
+			return apiErr{http.StatusUnprocessableEntity, "a preview runs a single instance"}
+		}
+		spec := sv.spec()
+		spec.Instances = body.Instances
+		if body.Instances < 1 {
+			return apiErr{http.StatusUnprocessableEntity, "instances must be between 1 and 10"}
+		}
+		if err := spec.Validate(); err != nil {
+			return apiErr{http.StatusUnprocessableEntity, err.Error()}
+		}
+		for _, check := range []func() error{
+			func() error { return s.checkInstances(r, tx, o, spec.Count()) },
+			func() error {
+				return s.checkQuota(r, tx, o, sv.ID, spec.CPUMillis*spec.Count(), spec.MemoryMB*spec.Count(), false)
+			},
+		} {
+			if err := check(); err != nil {
+				var qe quotaError
+				if errors.As(err, &qe) {
+					return apiErr{http.StatusUnprocessableEntity, qe.Error()}
+				}
+				return err
+			}
+		}
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET instances = $2 WHERE id = $1`, sv.ID, spec.Count()); err != nil {
+			return err
+		}
+		s.audit(r, tx, o.ID, "service.scaled", "service:"+p.Slug+"/"+sv.Slug, map[string]int{"instances": spec.Count()})
+		var err error
+		rev, err = s.createDeployment(r, tx, o, sv.ID, spec)
+		path = "/api/v1/projects/" + p.Slug + "/services/" + sv.Slug + "/deployments/" + itoa(rev)
+		return err
+	}) {
+		return
+	}
+	w.Header().Set("Location", path)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{"instances": body.Instances, "revision": rev, "status": "pending", "status_url": path})
 }
 
 // apiDeploy deploys the current settings, optionally with a new image first:

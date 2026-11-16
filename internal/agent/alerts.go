@@ -143,13 +143,14 @@ type probeTarget struct {
 	Port                                                       int
 	HealthPath, Upstream, NodeID                               string
 	Worker                                                     bool
+	Instances                                                  []instance
 }
 
 func (a *Agent) checkHealth(ctx context.Context) {
 	rows, err := a.pool.Query(ctx, `
 		SELECT d.org_id, d.service_id, coalesce(d.container_id, ''), s.project_id, s.slug, p.slug,
 		       coalesce((d.spec->>'port')::int, 0), coalesce(d.spec->>'health_path', ''), d.upstream, coalesce(d.node_id, ''),
-		       coalesce((d.spec->>'worker')::boolean, false)
+		       coalesce((d.spec->>'worker')::boolean, false), d.instances
 		FROM deployments d JOIN services s ON s.id = d.service_id
 		JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = d.org_id
 		WHERE d.status = 'live' AND NOT o.suspended AND `+mineSQL, a.mineArgs()...) // each node probes only its own apps (it cannot reach the others' networks)
@@ -173,20 +174,51 @@ func (a *Agent) checkHealth(ctx context.Context) {
 		Timeout:       3 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	// Probe in parallel (bounded), so one hanging app cannot delay the others.
-	reasons := make([]string, len(targets))
+	// Probe every instance in parallel (bounded), so one hanging app cannot delay the
+	// others. A service is down when none of its instances answers.
+	type one struct {
+		target int
+		t      probeTarget
+	}
+	var probes []one
+	for i, t := range targets {
+		if len(t.Instances) == 0 {
+			probes = append(probes, one{i, t})
+			continue
+		}
+		for _, in := range t.Instances {
+			c := t
+			c.ContainerID = in.ID
+			probes = append(probes, one{i, c})
+		}
+	}
+	results := make([]string, len(probes))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 10)
-	for i, t := range targets {
+	for k, pr := range probes {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(i int, t probeTarget) {
+		go func(k int, t probeTarget) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			reasons[i] = a.probe(ctx, client, t)
-		}(i, t)
+			results[k] = a.probe(ctx, client, t)
+		}(k, pr.t)
 	}
 	wg.Wait()
+	reasons := make([]string, len(targets))
+	healthy := make([]bool, len(targets))
+	for k, pr := range probes {
+		if results[k] == "" {
+			healthy[pr.target] = true
+		} else if reasons[pr.target] == "" {
+			reasons[pr.target] = results[k]
+		}
+	}
+	for i := range reasons {
+		if healthy[i] {
+			reasons[i] = ""
+		}
+	}
 
 	seen := map[string]bool{}
 	for i, t := range targets {
@@ -277,7 +309,7 @@ func (a *Agent) checkResources(ctx context.Context) {
 		CPUPct, MemPct         *int
 	}
 	rows, err := a.pool.Query(ctx, `
-		SELECT s.org_id, s.id, s.slug, s.cpu_millis, s.alert_cpu_pct, s.alert_mem_pct
+		SELECT s.org_id, s.id, s.slug, s.cpu_millis * s.instances, s.alert_cpu_pct, s.alert_mem_pct
 		FROM services s JOIN orgs o ON o.id = s.org_id
 		WHERE NOT o.suspended AND (s.alert_cpu_pct IS NOT NULL OR s.alert_mem_pct IS NOT NULL)
 		  AND EXISTS (SELECT 1 FROM deployments d WHERE d.service_id = s.id AND d.status = 'live')`)

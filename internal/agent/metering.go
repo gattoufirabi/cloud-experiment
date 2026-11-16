@@ -66,7 +66,9 @@ func (a *Agent) meterMinute(ctx context.Context) {
 	if _, err := a.pool.Exec(ctx, `
 		INSERT INTO usage_hourly (org_id, resource_id, kind, name, hour, cpu_milli_minutes, mem_mb_minutes)
 		SELECT d.org_id, d.service_id, 'service', p.slug || '/' || coalesce(ps.slug || ' preview ' || s.preview_name, s.slug),
-		       date_trunc('hour', now()), (d.spec->>'cpu_millis')::int, (d.spec->>'memory_mb')::int
+		       date_trunc('hour', now()),
+		       (d.spec->>'cpu_millis')::int * greatest(1, coalesce((d.spec->>'instances')::int, 1)),
+		       (d.spec->>'memory_mb')::int * greatest(1, coalesce((d.spec->>'instances')::int, 1))
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
 		LEFT JOIN services ps ON ps.id = s.preview_of
@@ -99,7 +101,10 @@ func (a *Agent) meterMinute(ctx context.Context) {
 func (a *Agent) meterEgress(ctx context.Context, last map[string]uint64, abuse *abuseState) {
 	seen := map[string]bool{}
 	cpuLimit := map[string]int{} // container ID -> allocated millicores
-	if rows, err := a.pool.Query(ctx, `SELECT container_id, (spec->>'cpu_millis')::int FROM deployments WHERE status = 'live' AND container_id IS NOT NULL`); err == nil {
+	if rows, err := a.pool.Query(ctx, `
+		SELECT coalesce(e->>'id', d.container_id), (d.spec->>'cpu_millis')::int
+		FROM deployments d LEFT JOIN LATERAL jsonb_array_elements(d.instances) e ON true
+		WHERE d.status = 'live' AND coalesce(e->>'id', d.container_id) IS NOT NULL`); err == nil {
 		for rows.Next() {
 			var id string
 			var m int

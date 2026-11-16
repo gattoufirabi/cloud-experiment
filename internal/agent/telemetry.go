@@ -205,7 +205,11 @@ func (a *Agent) metricsLoop(ctx context.Context) {
 				rx += n.RxBytes
 				tx += n.TxBytes
 			}
-			l := fmt.Sprintf(`{org_id="%s",project_id="%s",service_id="%s"}`, t.OrgID, t.ProjectID, t.ServiceID)
+			inst := t.Instance
+			if inst == "" {
+				inst = "0"
+			}
+			l := fmt.Sprintf(`{org_id="%s",project_id="%s",service_id="%s",instance="%s"}`, t.OrgID, t.ProjectID, t.ServiceID, inst)
 			fmt.Fprintf(&buf, "platform_container_cpu_seconds_total%s %f %d\n", l, float64(st.CPUStats.CPUUsage.TotalUsage)/1e9, now)
 			fmt.Fprintf(&buf, "platform_container_memory_bytes%s %d %d\n", l, mem, now)
 			fmt.Fprintf(&buf, "platform_container_memory_limit_bytes%s %d %d\n", l, st.MemoryStats.Limit, now)
