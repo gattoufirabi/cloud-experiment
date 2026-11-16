@@ -52,6 +52,24 @@ func (c *caddyClient) load(ctx context.Context, body []byte) error {
 	return nil
 }
 
+// get reads a path of the admin API (used by the health check).
+func (c *caddyClient) get(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://caddy"+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("caddy admin: HTTP %d", resp.StatusCode)
+	}
+	return b, nil
+}
+
 type route struct {
 	Hosts   []string
 	Dial    string
@@ -66,7 +84,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		SELECT d.container_name, (d.spec->>'port')::int, s.slug, p.slug, o.slug,
 		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}'),
 		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.blocked_ips::text[],
-		       coalesce(s.preview_name, ''), coalesce(ps.slug, '')
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
 		LEFT JOIN services ps ON ps.id = s.preview_of
@@ -74,7 +92,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		JOIN orgs o ON o.id = d.org_id
 		LEFT JOIN domains dm ON dm.service_id = s.id
 		WHERE d.status = 'live' AND NOT o.suspended AND d.container_name IS NOT NULL
-		GROUP BY d.id, s.id, ps.slug, p.slug, o.slug
+		GROUP BY d.id, s.id, ps.slug, p.slug, o.slug, d.upstream
 		ORDER BY o.slug, p.slug, s.slug`)
 	if err != nil {
 		return nil, err
@@ -83,9 +101,9 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		var name, svc, proj, org string
 		var port int
 		var custom, blocked []string
-		var previewName, parentSlug string
+		var previewName, parentSlug, upstream string
 		rt := route{}
-		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug); err != nil {
+		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream); err != nil {
 			return route{}, err
 		}
 		host := model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)
@@ -94,12 +112,18 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		}
 		rt.Hosts = append([]string{host}, custom...)
 		rt.Dial = name + ":" + strconv.Itoa(port)
+		if upstream != "" { // runs on another node: reached on its private address
+			rt.Dial = upstream
+		}
 		rt.Blocked = blocked
 		return rt, nil
 	})
 }
 
 func (a *Agent) syncCaddy(ctx context.Context, force bool) {
+	if !a.isPrimary() {
+		return // the proxy runs on the primary node
+	}
 	routes, err := a.loadRoutes(ctx)
 	if err != nil {
 		a.log.Error("load routes", "err", err)

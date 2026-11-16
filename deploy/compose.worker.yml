@@ -1,0 +1,56 @@
+# A worker node: runs only the agent. It joins the primary over WireGuard and runs the
+# projects the primary places on it (apps published on this node's WireGuard address,
+# reached by the primary's proxy). Installed by:  host/deploy.sh --worker --bundle ...
+#
+#   docker compose -f compose.worker.yml up -d --build
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  agent:
+    build: ..
+    image: platform:${PLATFORM_VERSION:-local}
+    container_name: platform-agent
+    command: ["agent"]
+    user: "0:0"
+    restart: unless-stopped
+    read_only: true
+    logging: *logging
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      DATABASE_URL: postgres://platform_agent:${AGENT_DB_PASSWORD:?missing}@${CONTROL_PLANE_ADDRESS:?missing}:5432/platform
+      MASTER_KEY_FILE: /run/secrets/master.key
+      BASE_URL: https://${CONSOLE_HOST:?missing}
+      CONSOLE_HOST: ${CONSOLE_HOST}
+      APPS_DOMAIN: ${APPS_DOMAIN:?missing}
+      REGISTRY_HOST: ${REGISTRY_HOST:-}
+      REGISTRY_INTERNAL_SECRET: ${REGISTRY_INTERNAL_SECRET:-}
+      VICTORIALOGS_URL: http://${CONTROL_PLANE_ADDRESS}:9428
+      VICTORIAMETRICS_URL: http://${CONTROL_PLANE_ADDRESS}:8428
+      SCANNER_ENABLED: "true"
+      TRIVY_SERVER_URL: http://${CONTROL_PLANE_ADDRESS}:4954
+      TRIVY_TOKEN: ${TRIVY_TOKEN:-}
+      SCANNER_NETWORK: bridge
+      RUNTIME: runsc
+      AGENT_CONTAINER: platform-agent
+      NODE_ID: ${NODE_ID:?missing}
+      NODE_ROLE: worker
+      NODE_CLUSTER: ${NODE_CLUSTER:-default}
+      NODE_ADDRESS: ${NODE_ADDRESS:?missing}
+      TENANT_RESOLV_CONF: ${TENANT_RESOLV_CONF:-}
+      BACKUPS_ENABLED: "true"
+      BACKUP_REST_URL: ${BACKUP_REST_URL:-}
+      BACKUP_VOLUME: platform-backups
+      ALERTS_ENABLED: "true"
+      MAX_CPU_MILLIS: ${MAX_CPU_MILLIS:-4000}
+      MAX_MEMORY_MB: ${MAX_MEMORY_MB:-8192}
+    volumes:
+      - ./secrets/master.key:/run/secrets/master.key:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy: { resources: { limits: { memory: 256M } } }
+
+volumes:
+  backups:
+    name: platform-backups

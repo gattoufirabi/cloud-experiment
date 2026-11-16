@@ -1,0 +1,64 @@
+{{define "title"}}{{.O.Name}} · Operator{{end}}
+{{define "content"}}
+<p class="small"><a href="/operator#op-orgs">← Operator console</a></p>
+<div class="head"><h1>{{.O.Name}}</h1><span class="badge">{{.O.PlanID}}</span>
+  {{if .O.Suspended}}<span class="st st-failed">suspended · {{.O.SuspendReason}}</span>{{else}}<span class="st st-live">active</span>{{end}}</div>
+<p class="lede">{{.O.Slug}} · owner {{.O.Owner}} · created {{datetime .O.Created}}{{with .O.TrialEnds}} · trial ends {{datetime .}}{{end}}</p>
+<form method="post" action="/operator/orgs/{{.O.Slug}}/cluster" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Cluster <span class="hint">new projects are placed on nodes of this cluster; empty = any node</span>
+    <input name="cluster" value="{{.Cluster}}" maxlength="31" pattern="([a-z0-9][a-z0-9-]{0,30})?" placeholder="any"></label>
+  <button type="submit" class="secondary">Save</button>
+</form>
+<p class="notice">Operator view: resources, usage and statuses only. Secrets, environment values, logs and stored data are never shown here. This visit is recorded in the audit log.</p>
+
+{{with .Usage}}
+<div class="stats">
+  <div class="stat"><span>CPU allocated / used</span><b>{{.CPUAlloc}} m · {{printf "%.0f" .CPUUsedPct}}%</b></div>
+  <div class="stat"><span>Memory allocated / used</span><b>{{.MemAlloc}} · {{.MemUsedMB}} MB</b></div>
+  <div class="stat"><span>Disk used</span><b>{{.DiskUsedMB}} / {{$.O.MaxDiskMB}} MB</b></div>
+  <div class="stat"><span>This month</span><b>{{printf "%.1f" .VCPUHours}} vCPU-h</b></div>
+  <div class="stat"><span>Network out</span><b>{{printf "%.2f" .GBOut}} GB</b></div>
+  <div class="stat"><span>Build minutes</span><b>{{printf "%.0f" .BuildMins}}</b></div>
+</div>
+{{end}}
+
+<div class="section">
+  <h2>Services</h2>
+  {{if .Services}}
+  <div class="scroll-x"><table>
+    <thead><tr><th>Service</th><th>Image</th><th>Status</th><th class="num">CPU</th><th class="num">Memory</th><th>Node</th><th>Notes</th></tr></thead>
+    <tbody>
+    {{range .Services}}<tr>
+      <td><strong>{{.Project}}/{{.Service}}</strong>{{with .Preview}} <span class="badge">preview {{.}}</span>{{end}}{{with .DeployedAt}}<br><span class="small muted">live since {{ago .}}</span>{{end}}</td>
+      <td><code>{{.Image}}</code></td>
+      <td><span class="st st-{{dbStatus .Status}}">{{.Status}}</span></td>
+      <td class="num">{{with .CPUPct}}{{printf "%.0f" .}}% of {{end}}{{.CPUMillis}} m</td>
+      <td class="num">{{with .MemMB}}{{.}} / {{end}}{{.MemoryMB}} MB</td>
+      <td class="small">{{.NodeID}}</td>
+      <td class="small">{{if .WAF}}WAF {{end}}{{if .HasVolume}}persistent folder{{end}}</td>
+    </tr>{{end}}
+    </tbody>
+  </table></div>
+  {{else}}<p class="muted">No services.</p>{{end}}
+</div>
+
+<div class="cols">
+  <div class="section">
+    <h2>Databases</h2>
+    {{if .Databases}}<ul class="list">{{range .Databases}}<li><strong>{{.Project}}/{{.Name}}</strong> <span class="badge">{{.Engine}} {{.Version}}</span> <span class="st st-{{dbStatus .Status}}">{{.Status}}</span><br><span class="small muted">{{.CPUMillis}} m · {{.MemoryMB}} MB · created {{ago .Created}}</span></li>{{end}}</ul>
+    {{else}}<p class="muted">No databases.</p>{{end}}
+  </div>
+  <div class="section">
+    <h2>Custom domains</h2>
+    {{if .Domains}}<ul class="list">{{range .Domains}}<li><strong>{{.Hostname}}</strong> → {{.Service}} {{if .Verified}}<span class="st st-live">verified</span>{{else}}<span class="st st-pending">waiting for DNS</span>{{end}}</li>{{end}}</ul>
+    {{else}}<p class="muted">No custom domains.</p>{{end}}
+  </div>
+</div>
+
+<div class="section">
+  <h2>Incidents</h2>
+  {{if .Incidents}}<ul class="list">{{range .Incidents}}<li><span class="st st-{{.Status}}">{{.Status}}</span> <strong>{{.Title}}</strong>{{with .Service}} · {{.}}{{end}} <span class="small muted">{{ago .Started}}</span></li>{{end}}</ul>
+  {{else}}<p class="muted">No incidents.</p>{{end}}
+</div>
+{{end}}

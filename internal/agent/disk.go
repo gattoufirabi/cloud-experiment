@@ -66,6 +66,27 @@ func (a *Agent) measureDisk(ctx context.Context) {
 			used[org] += size
 		}
 	}
+	// Each node records what it holds; the primary adds the nodes up per organization.
+	_, _ = a.pool.Exec(ctx, `DELETE FROM node_disk WHERE node_id = $1`, a.selfID)
+	for org, bytes := range used {
+		_, _ = a.pool.Exec(ctx, `INSERT INTO node_disk (node_id, org_id, used_mb, measured_at) VALUES ($1, $2, $3, now())
+			ON CONFLICT (node_id, org_id) DO UPDATE SET used_mb = EXCLUDED.used_mb, measured_at = now()`,
+			a.selfID, org, int((bytes+(1<<20-1))>>20))
+	}
+	if !a.isPrimary() {
+		return
+	}
+	used = map[string]int64{}
+	if rows, err := a.pool.Query(ctx, `SELECT org_id::text, sum(used_mb)::bigint FROM node_disk WHERE measured_at > now() - interval '2 hours' GROUP BY org_id`); err == nil {
+		for rows.Next() {
+			var org string
+			var mb int64
+			if rows.Scan(&org, &mb) == nil {
+				used[org] = mb << 20
+			}
+		}
+		rows.Close()
+	}
 
 	orgRows, err := a.pool.Query(ctx, `
 		SELECT o.id, o.slug, p.max_disk_mb, o.disk_alert_level FROM orgs o JOIN plans p ON p.id = o.plan_id`)

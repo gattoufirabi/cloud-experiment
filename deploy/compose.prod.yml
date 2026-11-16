@@ -54,6 +54,8 @@ x-app: &app
 services:
   postgres:
     image: postgres:17-alpine
+    # Reachable by worker nodes over WireGuard only (127.0.0.1 = this server only).
+    ports: ["${CONTROL_PLANE_ADDRESS:-127.0.0.1}:5432:5432"]
     restart: unless-stopped
     logging: *logging
     environment:
@@ -112,6 +114,10 @@ services:
       RUNTIME: runsc
       AGENT_CONTAINER: platform-agent
       CADDY_CONTAINER: platform-caddy
+      NODE_ID: ${NODE_ID:-}
+      NODE_ROLE: primary
+      NODE_CLUSTER: ${NODE_CLUSTER:-default}
+      NODE_ADDRESS: ${CONTROL_PLANE_ADDRESS:-}
       TLS_MODE: acme
       SCANNER_ENABLED: "true"
       BACKUPS_ENABLED: "true"
@@ -177,6 +183,8 @@ services:
 
   trivy:
     image: aquasec/trivy:0.58.1
+    # Reachable by worker nodes over WireGuard only (127.0.0.1 = this server only).
+    ports: ["${CONTROL_PLANE_ADDRESS:-127.0.0.1}:4954:4954"]
     restart: unless-stopped
     logging: *logging
     command: ["server", "--listen", "0.0.0.0:4954", "--cache-dir", "/cache"]
@@ -187,6 +195,8 @@ services:
 
   victorialogs:
     image: victoriametrics/victoria-logs:v1.15.0-victorialogs
+    # Reachable by worker nodes over WireGuard only (127.0.0.1 = this server only).
+    ports: ["${CONTROL_PLANE_ADDRESS:-127.0.0.1}:9428:9428"]
     restart: unless-stopped
     logging: *logging
     command: ["-storageDataPath=/vlogs", "-retentionPeriod=14d"]
@@ -195,6 +205,8 @@ services:
 
   victoriametrics:
     image: victoriametrics/victoria-metrics:v1.110.0
+    # Reachable by worker nodes over WireGuard only (127.0.0.1 = this server only).
+    ports: ["${CONTROL_PLANE_ADDRESS:-127.0.0.1}:8428:8428"]
     restart: unless-stopped
     logging: *logging
     command: ["-storageDataPath=/vmdata", "-retentionPeriod=30d"]

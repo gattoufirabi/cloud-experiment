@@ -52,7 +52,7 @@ func (a *Agent) pokeBuilds() {
 }
 
 func (a *Agent) buildLoop(ctx context.Context) {
-	if !a.cfg.BuildsEnabled || a.cfg.RegistryHost == "" {
+	if !a.cfg.BuildsEnabled || a.cfg.RegistryHost == "" || !a.isPrimary() {
 		return
 	}
 	if _, err := a.pool.Exec(ctx, `

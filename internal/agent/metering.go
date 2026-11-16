@@ -23,12 +23,14 @@ func (a *Agent) meterLoop(ctx context.Context) {
 	defer tick.Stop()
 	invoicedMonth := ""
 	for {
-		a.meterMinute(ctx)
 		a.meterEgress(ctx, lastTx, abuse)
-		a.expireTrials(ctx)
-		a.remindTrials(ctx)
 		a.watchCPU(ctx, abuse)
-		if a.cfg.BillingEnabled {
+		if a.isPrimary() { // platform-wide bookkeeping runs once, on the primary
+			a.meterMinute(ctx)
+			a.expireTrials(ctx)
+			a.remindTrials(ctx)
+		}
+		if a.cfg.BillingEnabled && a.isPrimary() {
 			prev, _ := billing.MonthBounds(time.Now().UTC().AddDate(0, 0, -1))
 			if key := prev.Format("2006-01"); key != invoicedMonth && time.Now().UTC().Day() == 1 {
 				n, err := billing.Generate(ctx, a.pool, a.cfg, prev)
@@ -90,6 +92,18 @@ func (a *Agent) meterMinute(ctx context.Context) {
 
 func (a *Agent) meterEgress(ctx context.Context, last map[string]uint64, abuse *abuseState) {
 	seen := map[string]bool{}
+	cpuLimit := map[string]int{} // container ID -> allocated millicores
+	if rows, err := a.pool.Query(ctx, `SELECT container_id, (spec->>'cpu_millis')::int FROM deployments WHERE status = 'live' AND container_id IS NOT NULL`); err == nil {
+		for rows.Next() {
+			var id string
+			var m int
+			if rows.Scan(&id, &m) == nil {
+				cpuLimit[id] = m
+			}
+		}
+		rows.Close()
+	}
+	node, _ := a.nodeID(ctx)
 	for _, t := range a.currentTargets() {
 		seen[t.ContainerID] = true
 		st, err := a.dk.ContainerStats(ctx, t.ContainerID)
@@ -97,6 +111,22 @@ func (a *Agent) meterEgress(ctx context.Context, last map[string]uint64, abuse *
 			continue
 		}
 		abuse.sample(t.ContainerID, st.CPUStats.CPUUsage.TotalUsage)
+		if lim := cpuLimit[t.ContainerID]; lim > 0 {
+			pct := 0.0
+			if s, ok := abuse.cpu[t.ContainerID]; ok {
+				pct = s.util * 100 / (float64(lim) / 1000)
+			}
+			mem := st.MemoryStats.Usage
+			if inactive := st.MemoryStats.Stats["inactive_file"]; inactive < mem {
+				mem -= inactive
+			}
+			_, _ = a.pool.Exec(ctx, `
+				INSERT INTO service_stats (service_id, org_id, node_id, cpu_pct, mem_mb, updated_at)
+				VALUES ($1, $2, $3, $4, $5, now())
+				ON CONFLICT (service_id) DO UPDATE SET node_id = EXCLUDED.node_id, cpu_pct = EXCLUDED.cpu_pct,
+				    mem_mb = EXCLUDED.mem_mb, updated_at = now()`,
+				t.ServiceID, t.OrgID, node, min(pct, 99999), int(mem>>20))
+		}
 		var tx uint64
 		for _, n := range st.Networks {
 			tx += n.TxBytes

@@ -28,7 +28,7 @@ func (a *Agent) pokeRegistryClean() {
 }
 
 func (a *Agent) registryCleanLoop(ctx context.Context) {
-	if a.cfg.RegistryHost == "" || a.cfg.RegistryInternalSecret == "" {
+	if a.cfg.RegistryHost == "" || a.cfg.RegistryInternalSecret == "" || !a.isPrimary() {
 		return
 	}
 	timer := time.NewTimer(10 * time.Minute)

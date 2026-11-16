@@ -139,3 +139,18 @@ func streamError(resp *http.Response) error {
 		}
 	}
 }
+
+// Info is the subset of Docker's /info the platform uses.
+type Info struct {
+	Name          string `json:"Name"`
+	NCPU          int    `json:"NCPU"`
+	MemTotal      int64  `json:"MemTotal"`
+	Containers    int    `json:"Containers"`
+	ServerVersion string `json:"ServerVersion"`
+}
+
+func (c *Client) Info(ctx context.Context) (*Info, error) {
+	var i Info
+	err := c.call(ctx, http.MethodGet, "/info", nil, nil, &i)
+	return &i, err
+}

@@ -623,6 +623,51 @@ code_of ja -X POST "$BASE/operator/orgs/$B/suspend" -d csrf=$OPCSRF >/dev/null
 check "operator restores it" "$(owner_sql "SELECT suspended::text FROM orgs WHERE slug = '$B'")" false
 check "operator actions audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action IN ('operator.set_plan', 'operator.suspend', 'operator.restore') AND target = 'org:$B'")" 3
 admin set-plan --slug "$B" --plan starter >/dev/null
+NODE=$(owner_sql "SELECT id FROM nodes ORDER BY last_seen DESC LIMIT 1")
+check "the server reports itself as a node (heartbeat)" "$(owner_sql "SELECT (last_seen > now() - interval '2 minutes') AND cpus > 0 AND mem_mb > 0 FROM nodes WHERE id = '$NODE'")" t
+check "node health: API, database and proxy answer" "$(owner_sql "SELECT services->>'api' || services->>'database' || services->>'proxy' FROM nodes WHERE id = '$NODE'")" okokok
+OPPAGE=$(c ja "$BASE/operator")
+if echo "$OPPAGE" | grep -q "op-nodes" && echo "$OPPAGE" | grep -q "progress class=\"meter\""; then ok "operator Nodes tab shows capacity meters"; else bad "Nodes tab missing"; fi
+if echo "$OPPAGE" | grep -q "/operator/orgs/$A\">$A</a>"; then ok "operator Usage tab lists every organization"; else bad "Usage tab missing"; fi
+check "operator cordons a node" "$(code_of ja -X POST "$BASE/operator/nodes/$NODE" -d csrf=$OPCSRF -d cordoned=1 -d cluster=default)" 303
+check "node marked cordoned" "$(owner_sql "SELECT cordoned FROM nodes WHERE id = '$NODE'")" t
+code_of ja -X POST "$BASE/operator/nodes/$NODE" -d csrf=$OPCSRF -d cluster=default >/dev/null
+check "and uncordons it" "$(owner_sql "SELECT cordoned FROM nodes WHERE id = '$NODE'")" f
+ORGPAGE=$(c jb "$BASE/operator/orgs/$A")
+check "[B] cannot open the operator org page (404)" "$(code_of jb "$BASE/operator/orgs/$A")" 404
+ORGPAGE=$(c ja "$BASE/operator/orgs/$B")
+if echo "$ORGPAGE" | grep -q "shop/web" && echo "$ORGPAGE" | grep -q "Operator view"; then ok "operator sees an organization's services and usage"; else bad "operator org page incomplete"; fi
+APAGE=$(c ja "$BASE/operator/orgs/$A")
+if echo "$APAGE" | grep -q "tenant-a-secret\|GREETING=hello\|API_KEY"; then bad "operator page leaks secrets or environment"; else ok "operator page shows no secrets or environment values"; fi
+check "measured CPU and memory recorded per service" "$(owner_sql "SELECT count(*) > 0 FROM service_stats st JOIN orgs o ON o.id = st.org_id WHERE o.slug = '$A' AND st.mem_mb > 0")" t
+check "operator visits audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'operator.viewed_org'")" t
+
+echo "== Several servers (a second node on the same machine)"
+docker compose -f compose.dev.yml --profile multinode up -d agent2 >/dev/null 2>&1
+for _ in $(seq 1 40); do [ "$(owner_sql "SELECT count(*) FROM nodes WHERE id = 'node-2' AND last_seen > now() - interval '1 minute'")" = 1 ] && break; sleep 2; done
+check "a second node joins with its heartbeat" "$(owner_sql "SELECT role || ':' || (cpus > 0) FROM nodes WHERE id = 'node-2'")" "worker:true"
+PRIMARY=$(owner_sql "SELECT id FROM nodes WHERE role = 'primary' ORDER BY last_seen DESC LIMIT 1")
+code_of ja -X POST "$BASE/operator/nodes/$PRIMARY" -d csrf=$OPCSRF -d cordoned=1 -d cluster=default >/dev/null
+check "[A] project created while the primary is cordoned" "$(code_of ja -X POST "$BASE/o/$A/projects" -d csrf=$CSRF_A -d slug=edge -d name=Edge)" 303
+code_of ja -X POST "$BASE/o/$A/p/edge/services" -d csrf=$CSRF_A -d slug=web -d image=nginx:1.27-alpine >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/edge/s/web/settings" -d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=80 -d health_path=%2F \
+  -d cpu_millis=250 -d memory_mb=128 -d volume_path= -d env= -d deploy=1 >/dev/null
+check "deployment on the second node reaches live" "$(wait_status ja /o/$A/p/edge/s/web)" live
+check "project placed on the uncordoned node" "$(owner_sql "SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'edge'")" node-2
+EDGE_CID=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'edge' AND d.status = 'live'")
+check "the container is run by node-2" "$(docker inspect -f '{{index .Config.Labels "platform.node"}}' "$EDGE_CID")" node-2
+check "the primary's proxy routes to the other node" "$(owner_sql "SELECT upstream LIKE 'host.docker.internal:%' FROM deployments WHERE container_id = '$EDGE_CID'")" t
+EDGE_HOST=web-edge-$A.apps.localhost
+if curl -s --resolve "$EDGE_HOST:$PORT:127.0.0.1" "http://$EDGE_HOST:$PORT/" | grep -q "Welcome to nginx"; then ok "app on node-2 answers through the proxy"; else bad "app on node-2 not reachable"; fi
+code_of ja -X POST "$BASE/operator/nodes/$PRIMARY" -d csrf=$OPCSRF -d cluster=default >/dev/null
+check "operator drains node-2" "$(code_of ja -X POST "$BASE/operator/nodes/node-2/drain" -d csrf=$OPCSRF)" 303
+for _ in $(seq 1 45); do [ "$(owner_sql "SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'edge'")" = "$PRIMARY" ] && break; sleep 2; done
+check "the drained project moves to the primary" "$(owner_sql "SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'edge'")" "$PRIMARY"
+check "and keeps serving after the move" "$(for _ in $(seq 1 45); do x=$(curl -s --resolve "$EDGE_HOST:$PORT:127.0.0.1" "http://$EDGE_HOST:$PORT/" | grep -c 'Welcome to nginx'); [ "$x" = 1 ] && [ "$(owner_sql "SELECT upstream FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'edge' AND d.status = 'live'")" = "" ] && { echo yes; break; }; sleep 2; done)" yes
+check "node-2 removed its old container" "$(for _ in $(seq 1 20); do docker inspect "$EDGE_CID" >/dev/null 2>&1 || { echo gone; break; }; sleep 2; done)" gone
+check "drain audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'operator.node_drain' AND target = 'node:node-2'")" 1
+docker compose -f compose.dev.yml --profile multinode rm -sf agent2 >/dev/null 2>&1
+owner_sql "DELETE FROM nodes WHERE id = 'node-2'" >/dev/null
 
 echo "== Email alerts, trial reminder, build minutes"
 check "[A] email alert channel added" "$(code_of ja -X POST "$BASE/o/$A/alerts/channels" -d csrf=$CSRF_A -d name=Email -d kind=email --data-urlencode "email=ops@$A.test" -d events=service_down -d events=deploy_failed)" 303

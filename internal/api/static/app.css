@@ -389,3 +389,14 @@ ul.codes { list-style: none; padding: 0; margin: 0; display: grid; grid-template
 .stat b { font-size: 26px; font-weight: 750; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
 .stat.warn b { color: var(--warn-text); }
 .stat.bad b { color: var(--bad-text); }
+
+/* ---------- operator: node meters ---------- */
+.meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px 24px; margin: 8px 0 12px; }
+.meters > div { display: grid; gap: 6px; font-size: 13px; }
+.meters span { color: var(--text-3); font-weight: 600; }
+.meters b { font-size: 14px; font-variant-numeric: tabular-nums; }
+progress.meter { appearance: none; -webkit-appearance: none; width: 100%; height: 8px; border: 0; border-radius: 999px; background: var(--idle-soft); overflow: hidden; }
+progress.meter::-webkit-progress-bar { background: var(--idle-soft); border-radius: 999px; }
+progress.meter::-webkit-progress-value { background: var(--primary); border-radius: 999px; }
+progress.meter::-moz-progress-bar { background: var(--primary); border-radius: 999px; }
+.health { display: flex; flex-wrap: wrap; gap: 6px; }

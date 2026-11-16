@@ -57,6 +57,8 @@ type Agent struct {
 	attached    map[string]bool // project networks the proxy and agent are known to be on
 	restoringDB map[string]bool // databases held stopped by a restore
 
+	selfID string // this node (NODE_ID or the Docker host name)
+
 	mu        sync.Mutex
 	targets   []target // running live containers, refreshed each reconcile
 	caddyHash string
@@ -112,8 +114,14 @@ func Run(ctx context.Context, cfg config.Config) error {
 		restoringDB: map[string]bool{},
 	}
 
-	// A deploy interrupted by a restart is retried from the start.
-	if _, err := pool.Exec(ctx, `UPDATE deployments SET status = 'pending', message = 'retrying after agent restart', updated_at = now() WHERE status = 'deploying'`); err != nil {
+	a.resolveSelf(ctx)
+	a.heartbeat(ctx) // register the node before anything is placed on it
+
+	// A deploy interrupted by a restart is retried from the start (only this node's).
+	if _, err := pool.Exec(ctx, `
+		UPDATE deployments d SET status = 'pending', message = 'retrying after agent restart', updated_at = now()
+		FROM services s, projects p WHERE s.id = d.service_id AND p.id = s.project_id AND d.status = 'deploying' AND `+mineSQL,
+		a.mineArgs()...); err != nil {
 		return err
 	}
 
@@ -127,11 +135,13 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.buildLoop(ctx)
 	go a.registryCleanLoop(ctx)
 	go a.diskLoop(ctx)
+	go a.nodeLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)
 	defer tick.Stop()
 	for {
+		a.placeProjects(ctx)
 		a.processPending(ctx)
 		a.syncCaddy(ctx, false)
 		a.reconcileDatabases(ctx)
@@ -218,11 +228,12 @@ func (a *Agent) claim(ctx context.Context) (job, bool, error) {
 			SELECT d.id, d.org_id, d.service_id, s.project_id, d.revision, d.spec, o.suspended, o.slug, o.scan_policy
 			FROM deployments d
 			JOIN services s ON s.id = d.service_id
+			JOIN projects p ON p.id = s.project_id
 			JOIN orgs o ON o.id = d.org_id
-			WHERE d.status = 'pending'
+			WHERE d.status = 'pending' AND `+mineSQL+`
 			ORDER BY d.created_at
 			LIMIT 1
-			FOR UPDATE OF d SKIP LOCKED`).Scan(&j.ID, &j.OrgID, &j.ServiceID, &j.ProjectID, &j.Revision, &spec, &j.Suspended, &j.OrgSlug, &j.ScanPolicy)
+			FOR UPDATE OF d SKIP LOCKED`, a.mineArgs()...).Scan(&j.ID, &j.OrgID, &j.ServiceID, &j.ProjectID, &j.Revision, &spec, &j.Suspended, &j.OrgSlug, &j.ScanPolicy)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -314,13 +325,28 @@ func (a *Agent) deploy(ctx context.Context, j job) error {
 		cleanup()
 		return err
 	}
+	upstream := ""
+	if !a.isPrimary() {
+		info, err := a.dk.ContainerInspect(ctx, id)
+		port := strconv.Itoa(j.Spec.Port) + "/tcp"
+		if err != nil || len(info.NetworkSettings.Ports[port]) == 0 {
+			cleanup()
+			return errors.New("the app port was not published on this node")
+		}
+		upstream = a.cfg.NodeAddress + ":" + info.NetworkSettings.Ports[port][0].HostPort
+	}
 
-	old, err := a.promote(ctx, j, id, name)
+	old, err := a.promote(ctx, j, id, name, upstream)
 	if err != nil {
 		cleanup()
 		return err
 	}
 	a.syncCaddy(ctx, true) // traffic moves to the new container before the old one stops
+	if !a.isPrimary() {
+		// The proxy runs on the primary: wake it and give it time to switch routes.
+		_, _ = a.pool.Exec(ctx, `SELECT pg_notify('deployments', '')`)
+		time.Sleep(3 * time.Second)
+	}
 	for _, oid := range old {
 		if oid != "" {
 			_ = a.dk.ContainerStop(ctx, oid, 10)
@@ -364,9 +390,12 @@ func (a *Agent) ensureNetwork(ctx context.Context, j job) (string, error) {
 	case n.Labels["platform.org"] != j.OrgID || n.Labels["platform.project"] != j.ProjectID:
 		return "", fmt.Errorf("network %s belongs to another tenant", name)
 	}
-	// Caddy must reach the app; in development the agent container needs it for health checks.
-	if err := a.dk.NetworkConnect(ctx, name, a.cfg.CaddyContainer); err != nil {
-		return "", fmt.Errorf("connect proxy to network: %w", err)
+	// Caddy must reach the app (on the primary; workers publish the port instead);
+	// in development the agent container needs it for health checks.
+	if a.isPrimary() {
+		if err := a.dk.NetworkConnect(ctx, name, a.cfg.CaddyContainer); err != nil {
+			return "", fmt.Errorf("connect proxy to network: %w", err)
+		}
 	}
 	if a.cfg.AgentContainer != "" {
 		if err := a.dk.NetworkConnect(ctx, name, a.cfg.AgentContainer); err != nil {
@@ -431,7 +460,7 @@ func (a *Agent) containerConfig(j job, netName string, env, hosts []string) dock
 		hc.Mounts = []docker.Mount{{Type: "volume", Source: "pv-" + model.Compact(j.ServiceID), Target: j.Spec.VolumePath}}
 	}
 	a.tenantDNS(&hc)
-	return docker.ContainerConfig{
+	cfg := docker.ContainerConfig{
 		Image: j.Spec.Image,
 		Env:   env,
 		Labels: map[string]string{
@@ -440,9 +469,16 @@ func (a *Agent) containerConfig(j job, netName string, env, hosts []string) dock
 			"platform.project":    j.ProjectID,
 			"platform.service":    j.ServiceID,
 			"platform.deployment": j.ID,
+			"platform.node":       a.selfID,
 		},
 		HostConfig: hc,
 	}
+	if !a.isPrimary() { // reachable only on the private (WireGuard) address
+		port := strconv.Itoa(j.Spec.Port) + "/tcp"
+		cfg.ExposedPorts = map[string]struct{}{port: {}}
+		cfg.HostConfig.PortBindings = map[string][]docker.PortBinding{port: {{HostIP: a.cfg.NodeBind}}}
+	}
+	return cfg
 }
 
 func (a *Agent) waitHealthy(ctx context.Context, id, netName string, s model.Spec) error {
@@ -507,7 +543,7 @@ func (a *Agent) tail(ctx context.Context, id string) string {
 	return "\n--- last log lines ---\n" + strings.Join(lines, "\n")
 }
 
-func (a *Agent) promote(ctx context.Context, j job, id, name string) ([]string, error) {
+func (a *Agent) promote(ctx context.Context, j job, id, name, upstream string) ([]string, error) {
 	var old []string
 	err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
@@ -521,8 +557,8 @@ func (a *Agent) promote(ctx context.Context, j job, id, name string) ([]string, 
 			return err
 		}
 		_, err = tx.Exec(ctx, `
-			UPDATE deployments SET status = 'live', message = '', container_id = $2, container_name = $3, updated_at = now()
-			WHERE id = $1`, j.ID, id, name)
+			UPDATE deployments SET status = 'live', message = '', container_id = $2, container_name = $3, upstream = $4, updated_at = now()
+			WHERE id = $1`, j.ID, id, name, upstream)
 		return err
 	})
 	return old, err
@@ -538,7 +574,8 @@ func (a *Agent) reconcile(ctx context.Context) {
 	rows, err := a.pool.Query(ctx, `
 		SELECT d.id, coalesce(d.container_id, ''), d.org_id, s.project_id, d.service_id, o.suspended
 		FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id
-		WHERE d.status = 'live'`)
+		JOIN projects p ON p.id = s.project_id
+		WHERE d.status = 'live' AND `+mineSQL, a.mineArgs()...)
 	if err != nil {
 		a.log.Error("reconcile: load live deployments", "err", err)
 		return
@@ -552,7 +589,9 @@ func (a *Agent) reconcile(ctx context.Context) {
 		a.log.Error("reconcile: scan", "err", err)
 		return
 	}
-	rows, err = a.pool.Query(ctx, `SELECT id::text FROM deployments WHERE status IN ('live', 'deploying', 'pending')`)
+	rows, err = a.pool.Query(ctx, `
+		SELECT d.id::text FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id
+		WHERE d.status IN ('live', 'deploying', 'pending') AND `+mineSQL, a.mineArgs()...)
 	if err != nil {
 		a.log.Error("reconcile: load active ids", "err", err)
 		return
@@ -573,7 +612,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 	}
 	byDep := map[string]docker.ContainerSummary{}
 	for _, c := range containers {
-		if c.Labels["platform.database"] != "" {
+		if c.Labels["platform.database"] != "" || !a.owns(c.Labels) {
 			continue
 		}
 		dep := c.Labels["platform.deployment"]
@@ -595,7 +634,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 	// (on every upgrade, for instance). Re-attach both to every live project network,
 	// otherwise routes break and health probes report healthy apps as down.
 	for _, l := range lives {
-		if l.Suspended {
+		if l.Suspended || !a.isPrimary() && a.cfg.AgentContainer == "" {
 			continue
 		}
 		netName := model.NetworkName(l.ProjectID)
@@ -605,7 +644,10 @@ func (a *Agent) reconcile(ctx context.Context) {
 		if known && !force {
 			continue
 		}
-		err := a.dk.NetworkConnect(ctx, netName, a.cfg.CaddyContainer)
+		var err error
+		if a.isPrimary() {
+			err = a.dk.NetworkConnect(ctx, netName, a.cfg.CaddyContainer)
+		}
 		if err == nil && a.cfg.AgentContainer != "" {
 			err = a.dk.NetworkConnect(ctx, netName, a.cfg.AgentContainer)
 		}
@@ -694,7 +736,7 @@ func subnetCandidate(projectID string, attempt int) string {
 }
 
 func (a *Agent) createProjectNetwork(ctx context.Context, name string, j job) error {
-	labels := map[string]string{"platform.managed": "true", "platform.org": j.OrgID, "platform.project": j.ProjectID}
+	labels := map[string]string{"platform.managed": "true", "platform.org": j.OrgID, "platform.project": j.ProjectID, "platform.node": a.selfID}
 	var err error
 	for attempt := 0; attempt < 64; attempt++ {
 		err = a.dk.NetworkCreate(ctx, name, subnetCandidate(j.ProjectID, attempt), labels)
@@ -713,8 +755,10 @@ func (a *Agent) createProjectNetwork(ctx context.Context, name string, j job) er
 func (a *Agent) collectNetworks(ctx context.Context) {
 	rows, err := a.pool.Query(ctx, `
 		SELECT DISTINCT s.project_id::text FROM deployments d JOIN services s ON s.id = d.service_id
-		WHERE d.status IN ('live', 'deploying', 'pending')
-		UNION SELECT project_id::text FROM databases`)
+		JOIN projects p ON p.id = s.project_id
+		WHERE d.status IN ('live', 'deploying', 'pending') AND `+mineSQL+`
+		UNION SELECT db.project_id::text FROM databases db JOIN projects p ON p.id = db.project_id WHERE `+mineSQL,
+		a.mineArgs()...)
 	if err != nil {
 		return
 	}
@@ -731,7 +775,7 @@ func (a *Agent) collectNetworks(ctx context.Context) {
 		return
 	}
 	for _, n := range nets {
-		if needed[n.Labels["platform.project"]] {
+		if needed[n.Labels["platform.project"]] || !a.owns(n.Labels) {
 			continue
 		}
 		_ = a.dk.NetworkDisconnect(ctx, n.Name, a.cfg.CaddyContainer)
@@ -824,4 +868,14 @@ func (a *Agent) projectHosts(ctx context.Context, projectID, netName string) []s
 		}
 	}
 	return hosts
+}
+
+// owns tells whether a container or network belongs to this node: labelled with its
+// node ID, or unlabelled (created before multi-node support) and this is the primary.
+func (a *Agent) owns(labels map[string]string) bool {
+	n := labels["platform.node"]
+	if n == "" {
+		return a.isPrimary()
+	}
+	return n == a.selfID
 }

@@ -58,10 +58,14 @@ func (a *Agent) alertLoop(ctx context.Context) {
 			return
 		case <-tick.C:
 			a.checkHealth(ctx)
-			a.checkResources(ctx)
+			if a.isPrimary() {
+				a.checkResources(ctx)
+			}
 		case <-a.alertWake:
 		}
-		a.deliverAlerts(ctx)
+		if a.isPrimary() {
+			a.deliverAlerts(ctx)
+		}
 	}
 }
 

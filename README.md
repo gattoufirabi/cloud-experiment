@@ -37,6 +37,8 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Operator web console** (`/operator`): platform overview, organizations (plan, suspend/restore), invoices (paid/cancel), global audit log; `admin make-operator` | done, tested |
 | **Railpack builds** for repositories without a Dockerfile (Node, Python, Go, PHP, Ruby, Java...), same sandbox | done, tested |
 | **Email alert channel**, trial reminder email, build minutes on invoices, dark mode | done, tested |
+| **Several servers (Phase 4)**: worker nodes join over WireGuard (`node-bundle.sh` + `deploy.sh --worker`), projects placed by free memory and cluster, cordon/drain, apps routed by the primary's proxy | done, tested with two nodes on one machine; **not yet on two real servers** |
+| **Operator visibility**: live node health (CPU, memory, disk, platform services), per-organization usage and resources, never secrets, env values, logs or data | done, tested |
 | **Built-in docs** at `/docs/user` and `/docs/admin` (public, filled with this installation's addresses), linked from the header, the login page and a help link on every console tab | done |
 | Console design: sidebar pane + tabs, monochrome style | done |
 | **Alerts**: service down/recovered, CPU and memory thresholds, failed deploys and backups, critical CVEs in running images; ntfy push and signed webhooks per organization | done, tested |
@@ -45,7 +47,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 
 The end-to-end test (`scripts/e2e-dev.sh`) runs 264 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds and self-signup. Unit tests: `go test ./...` (outbound request guard).
 
-**Not built yet** (next phases in ARCHITECTURE.md): Phase 4 (multiple servers), hard filesystem disk quotas (XFS project quotas).
+**Not built yet** (next phases in ARCHITECTURE.md): multi-node: moving projects with persistent data automatically, control plane on two nodes (database replica); hard filesystem disk quotas (XFS project quotas).
 
 ---
 

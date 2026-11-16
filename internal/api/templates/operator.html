@@ -5,7 +5,9 @@
 
 <nav class="tabs" role="tablist" aria-label="Operator sections">
   <a role="tab" href="#op-overview">Overview</a>
+  <a role="tab" href="#op-nodes">Nodes <span class="count">{{len .Nodes}}</span></a>
   <a role="tab" href="#op-orgs">Organizations <span class="count">{{len .Orgs}}</span></a>
+  <a role="tab" href="#op-usage">Usage</a>
   <a role="tab" href="#op-invoices">Invoices{{with .Overview.OpenInvoices}} <span class="count">{{.}} open</span>{{end}}</a>
   <a role="tab" href="#op-audit">Audit log</a>
 </nav>
@@ -31,6 +33,54 @@
   </div>
 </section>
 
+<section class="pane" id="op-nodes" role="tabpanel" aria-label="Nodes">
+  {{range .Nodes}}
+  <div class="section">
+    <div class="head">
+      <h2>{{.Name}}</h2>
+      {{if .Online}}<span class="st st-live">online</span>{{else}}<span class="st st-failed">offline · last seen {{ago .LastSeen}}</span>{{end}}
+      {{if .Cordoned}}<span class="st st-pending">cordoned</span>{{end}}
+      <span class="badge">{{.Role}}</span><span class="badge">cluster {{.Cluster}}</span>
+    </div>
+    <div class="meters">
+      <div><span>CPU load</span><progress class="meter" max="100" value="{{.LoadPct}}" aria-label="CPU load {{.LoadPct}}%"></progress><b>{{printf "%.2f" .Load1}} / {{.CPUs}} cores</b></div>
+      <div><span>Memory</span><progress class="meter" max="100" value="{{.MemPct}}" aria-label="Memory {{.MemPct}}%"></progress><b>{{.MemPct}}% of {{.MemMB}} MB</b></div>
+      <div><span>Disk</span><progress class="meter" max="100" value="{{.DiskPct}}" aria-label="Disk {{.DiskPct}}%"></progress><b>{{.DiskFreeMB}} MB free of {{.DiskTotalMB}}</b></div>
+    </div>
+    <p class="small"><strong>{{.Projects}}</strong> project{{if ne .Projects 1}}s{{end}} placed here · allocated {{.CPUAlloc}} millicores and {{.MemAlloc}} MB ({{.AllocMemPct}}% of memory){{if .Stateful}} · {{.Stateful}} with persistent data{{end}}</p>
+    <p class="small muted">{{.Containers}} containers · Docker {{.DockerVersion}} · agent {{.AgentVersion}}{{with .Address}} · {{.}}{{end}} · joined {{ago .Created}}</p>
+    <p class="health">{{$n := .}}{{range .ServiceNames}}{{$v := index $n.Services .}}<span class="st {{if eq $v "ok"}}st-live{{else}}st-failed{{end}}">{{.}}{{if ne $v "ok"}}: {{$v}}{{end}}</span> {{end}}</p>
+    <form method="post" action="/operator/nodes/{{.ID}}" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <label>Cluster <input name="cluster" value="{{.Cluster}}" maxlength="31" pattern="[a-z0-9][a-z0-9-]{0,30}"></label>
+      {{if .Cordoned}}<button type="submit" class="secondary">Uncordon</button>
+      {{else}}<input type="hidden" name="cordoned" value="1"><button type="submit" class="secondary" data-confirm="Cordon {{.Name}}? New projects go to other nodes; running ones stay.">Cordon</button>{{end}}
+    </form>
+    {{if .Projects}}
+    <form method="post" action="/operator/nodes/{{.ID}}/drain" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <button type="submit" class="danger" data-confirm="Drain {{.Name}}? It is cordoned and its projects without persistent data move to other nodes (each app restarts once).">Drain</button>
+      <span class="small muted">Moves stateless projects to other nodes; projects with persistent data stay.</span>
+    </form>
+    {{end}}
+  </div>
+  {{else}}<div class="section"><p class="muted">No node has reported yet (the agent sends a heartbeat every 30 seconds).</p></div>{{end}}
+</section>
+
+<section class="pane" id="op-usage" role="tabpanel" aria-label="Usage">
+  <div class="section">
+    <p class="small muted">This month, per organization. Allocated = what running services and databases reserve; used = measured in the last 5 minutes. Measurements only: no logs, data or settings.</p>
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>Organization</th><th class="num">CPU allocated</th><th class="num">CPU used</th><th class="num">Memory allocated</th><th class="num">Memory used</th><th class="num">vCPU-h</th><th class="num">GB-h</th><th class="num">Network out</th><th class="num">Build min</th><th class="num">Disk</th></tr></thead>
+      <tbody>
+      {{range .Usage}}<tr><td><a href="/operator/orgs/{{.Slug}}">{{.Slug}}</a></td><td class="num">{{.CPUAlloc}} m</td><td class="num">{{printf "%.0f" .CPUUsedPct}}%</td><td class="num">{{.MemAlloc}} MB</td><td class="num">{{.MemUsedMB}} MB</td><td class="num">{{printf "%.1f" .VCPUHours}}</td><td class="num">{{printf "%.1f" .GBHours}}</td><td class="num">{{printf "%.2f" .GBOut}} GB</td><td class="num">{{printf "%.0f" .BuildMins}}</td><td class="num">{{.DiskUsedMB}} MB</td></tr>{{end}}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+
 <section class="pane" id="op-orgs" role="tabpanel" aria-label="Organizations">
   <div class="section">
     <div class="scroll-x">
@@ -39,7 +89,7 @@
       <tbody>
       {{range .Orgs}}
       <tr>
-        <td><strong>{{.Name}}</strong><br><span class="small muted">{{.Slug}} · created {{ago .Created}}</span></td>
+        <td><a href="/operator/orgs/{{.Slug}}"><strong>{{.Name}}</strong></a><br><span class="small muted">{{.Slug}} · created {{ago .Created}}</span></td>
         <td class="small">{{.Owner}}</td>
         <td>
           <form method="post" action="/operator/orgs/{{.Slug}}/plan" class="inline flush">

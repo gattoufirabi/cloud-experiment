@@ -65,6 +65,13 @@ type Config struct {
 	// alerts
 	AlertsEnabled bool
 
+	// This server, as shown to the operator (and, in stage 2, used for placement).
+	NodeID      string // default: the Docker host name
+	NodeRole    string // primary (runs the control plane) | worker
+	NodeCluster string
+	NodeAddress string // private address other nodes reach it on (WireGuard)
+	NodeBind    string // address worker apps are published on (default: NodeAddress)
+
 	// Builds from git (sandboxed BuildKit); needs the registry.
 	BuildsEnabled    bool
 	BuildkitImage    string
@@ -155,6 +162,11 @@ func Load() Config {
 		AlertAllowPrivate: envBool("ALERT_ALLOW_PRIVATE_TARGETS", false),
 
 		TenantResolvConf:   env("TENANT_RESOLV_CONF", ""),
+		NodeID:             env("NODE_ID", ""),
+		NodeRole:           env("NODE_ROLE", "primary"),
+		NodeCluster:        env("NODE_CLUSTER", "default"),
+		NodeAddress:        env("NODE_ADDRESS", ""),
+		NodeBind:           env("NODE_BIND", env("NODE_ADDRESS", "")),
 		BuildsEnabled:      envBool("BUILDS_ENABLED", false),
 		BuildkitImage:      env("BUILDKIT_IMAGE", "moby/buildkit:v0.34.1-rootless"),
 		GitImage:           env("GIT_IMAGE", "platform-builder:0.43.0"),

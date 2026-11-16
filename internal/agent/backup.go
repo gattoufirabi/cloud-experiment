@@ -62,11 +62,18 @@ func (a *Agent) backupLoop(ctx context.Context) {
 		a.log.Error("BACKUP_KEEP contains invalid characters; backups disabled")
 		return
 	}
-	_, _ = a.pool.Exec(ctx, `UPDATE backup_jobs SET status = 'error', message = 'interrupted by agent restart', finished_at = now() WHERE status = 'running'`)
+	_, _ = a.pool.Exec(ctx, `
+		UPDATE backup_jobs j SET status = 'error', message = 'interrupted by agent restart', finished_at = now()
+		FROM projects p
+		WHERE j.status = 'running' AND p.id = coalesce((SELECT project_id FROM services WHERE id = j.service_id),
+		                                               (SELECT project_id FROM databases WHERE id = j.database_id))
+		  AND `+mineSQL, a.mineArgs()...)
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	for {
-		a.scheduleBackups(ctx)
+		if a.isPrimary() {
+			a.scheduleBackups(ctx)
+		}
 		a.processBackups(ctx)
 		select {
 		case <-ctx.Done():
@@ -124,9 +131,11 @@ func (a *Agent) processBackups(ctx context.Context) {
 		found := false
 		err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 			err := tx.QueryRow(ctx, `
-				SELECT id, org_id, coalesce(service_id::text, ''), coalesce(database_id::text, ''), kind, snapshot_id
-				FROM backup_jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1
-				FOR UPDATE SKIP LOCKED`).Scan(&j.ID, &j.OrgID, &j.ServiceID, &j.DatabaseID, &j.Kind, &j.Snapshot)
+				SELECT j.id, j.org_id, coalesce(j.service_id::text, ''), coalesce(j.database_id::text, ''), j.kind, j.snapshot_id
+				FROM backup_jobs j JOIN projects p ON p.id = coalesce((SELECT project_id FROM services WHERE id = j.service_id),
+				                                                      (SELECT project_id FROM databases WHERE id = j.database_id))
+				WHERE j.status = 'queued' AND `+mineSQL+` ORDER BY j.created_at LIMIT 1
+				FOR UPDATE OF j SKIP LOCKED`, a.mineArgs()...).Scan(&j.ID, &j.OrgID, &j.ServiceID, &j.DatabaseID, &j.Kind, &j.Snapshot)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}

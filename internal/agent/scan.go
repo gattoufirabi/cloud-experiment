@@ -269,7 +269,7 @@ func (a *Agent) gate(ctx context.Context, j job) error {
 // ---------- background scans: pushes and daily rescans ----------
 
 func (a *Agent) scanLoop(ctx context.Context) {
-	if !a.cfg.ScannerEnabled {
+	if !a.cfg.ScannerEnabled || !a.isPrimary() {
 		return
 	}
 	_, _ = a.pool.Exec(ctx, `UPDATE image_scans SET status = 'queued' WHERE status = 'running' AND source <> 'deploy'`)

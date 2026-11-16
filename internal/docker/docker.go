@@ -216,32 +216,34 @@ type RestartPolicy struct {
 }
 
 type HostConfig struct {
-	Runtime        string            `json:"Runtime,omitempty"`
-	Memory         int64             `json:"Memory"`
-	MemorySwap     int64             `json:"MemorySwap"`
-	NanoCPUs       int64             `json:"NanoCpus"`
-	PidsLimit      int64             `json:"PidsLimit"`
-	CapDrop        []string          `json:"CapDrop"`
-	CapAdd         []string          `json:"CapAdd"`
-	SecurityOpt    []string          `json:"SecurityOpt"`
-	ReadonlyRootfs bool              `json:"ReadonlyRootfs"`
-	Privileged     bool              `json:"Privileged"`
-	NetworkMode    string            `json:"NetworkMode"`
-	RestartPolicy  RestartPolicy     `json:"RestartPolicy"`
-	LogConfig      LogConfig         `json:"LogConfig"`
-	Mounts         []Mount           `json:"Mounts,omitempty"`
-	Tmpfs          map[string]string `json:"Tmpfs,omitempty"`
-	ExtraHosts     []string          `json:"ExtraHosts,omitempty"` // "name:ip" lines added to /etc/hosts
+	Runtime        string                   `json:"Runtime,omitempty"`
+	Memory         int64                    `json:"Memory"`
+	MemorySwap     int64                    `json:"MemorySwap"`
+	NanoCPUs       int64                    `json:"NanoCpus"`
+	PidsLimit      int64                    `json:"PidsLimit"`
+	CapDrop        []string                 `json:"CapDrop"`
+	CapAdd         []string                 `json:"CapAdd"`
+	SecurityOpt    []string                 `json:"SecurityOpt"`
+	ReadonlyRootfs bool                     `json:"ReadonlyRootfs"`
+	Privileged     bool                     `json:"Privileged"`
+	NetworkMode    string                   `json:"NetworkMode"`
+	RestartPolicy  RestartPolicy            `json:"RestartPolicy"`
+	LogConfig      LogConfig                `json:"LogConfig"`
+	Mounts         []Mount                  `json:"Mounts,omitempty"`
+	Tmpfs          map[string]string        `json:"Tmpfs,omitempty"`
+	ExtraHosts     []string                 `json:"ExtraHosts,omitempty"` // "name:ip" lines added to /etc/hosts
+	PortBindings   map[string][]PortBinding `json:"PortBindings,omitempty"`
 }
 
 type ContainerConfig struct {
-	Image      string            `json:"Image"`
-	User       string            `json:"User,omitempty"`
-	Entrypoint []string          `json:"Entrypoint,omitempty"`
-	Cmd        []string          `json:"Cmd,omitempty"`
-	Env        []string          `json:"Env"`
-	Labels     map[string]string `json:"Labels"`
-	HostConfig HostConfig        `json:"HostConfig"`
+	Image        string              `json:"Image"`
+	User         string              `json:"User,omitempty"`
+	Entrypoint   []string            `json:"Entrypoint,omitempty"`
+	Cmd          []string            `json:"Cmd,omitempty"`
+	Env          []string            `json:"Env"`
+	Labels       map[string]string   `json:"Labels"`
+	HostConfig   HostConfig          `json:"HostConfig"`
+	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
 	// NetworkingConfig pins an address on HostConfig.NetworkMode (optional).
 	NetworkingConfig *NetworkingConfig `json:"NetworkingConfig,omitempty"`
 }
@@ -309,6 +311,7 @@ type ContainerInfo struct {
 		Networks map[string]struct {
 			IPAddress string `json:"IPAddress"`
 		} `json:"Networks"`
+		Ports map[string][]PortBinding `json:"Ports"`
 	} `json:"NetworkSettings"`
 }
 
@@ -532,4 +535,10 @@ func readMux(r io.Reader) ([]byte, []byte, error) {
 			return stdout.Bytes(), stderr.Bytes(), err
 		}
 	}
+}
+
+// PortBinding publishes a container port on the host (HostPort "" = any free port).
+type PortBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
 }

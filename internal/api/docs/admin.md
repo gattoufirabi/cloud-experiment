@@ -67,10 +67,27 @@ docker compose -f compose.prod.yml exec api /platform admin create-org --slug ac
 
 Plans live in the `plans` table. Move a client with `set-plan`; lowering a plan does not stop running services but blocks changes that would exceed it.
 
+## Several servers (nodes and clusters)
+
+One server runs everything (the **primary**). Add **worker nodes** for capacity: each runs only the agent and the projects placed on it. A project is placed on one node with all its services and databases, so a project's private network never spans servers.
+
+1. **Connect the servers with WireGuard** (a private network between them). Note each server's WireGuard address, for example 10.8.0.1 (primary) and 10.8.0.2 (new node).
+2. **On the primary**, add `CONTROL_PLANE_ADDRESS=10.8.0.1` to `deploy/.env` and run `docker compose -f compose.prod.yml up -d`: the database, logs, metrics and scanner then also listen on that private address (and only there).
+3. **On the primary**, create the join bundle: `sudo bash /opt/platform/host/node-bundle.sh --node-id node-2 --node-address 10.8.0.2 [--cluster eu-west]`. It contains secrets: copy it over SSH only.
+4. **On the new server** (a copy of the code in /opt/platform): `sudo bash host/deploy.sh --worker --bundle <bundle>`. It hardens the server, installs gVisor and the tenant firewall, runs the isolation gate, then starts the agent.
+5. The node appears in the operator console (**Nodes**) within a minute. New projects go to the online, uncordoned node with the most free memory.
+
+- **Clusters:** a cluster is a group of nodes (for example a region). Set a node's cluster in the Nodes tab; pin an organization to a cluster on its operator page so its new projects only go there.
+- **Cordon** a node to stop placing new projects on it (running ones stay). **Drain** it to also move its projects without persistent data to other nodes (each app restarts once). Projects with a persistent folder or a database stay: move them with a backup and restore.
+- Apps on workers are published only on the worker's WireGuard address; the proxy on the primary reaches them there. Builds, scans, billing and alert delivery run on the primary.
+
 ## Operator console
 
 Operators can manage the platform from the browser at `/operator`: a live overview (organizations, users, live services, trials, suspensions, open incidents and invoices, builds, storage), every organization with its owner, plan, services and disk use (change the plan, suspend or restore), all invoices (mark paid or cancel) and the global audit log.
 
+- **Nodes:** each server's CPU load, memory, disk, containers, versions, the health of every platform service, the projects and resources placed on it; cordon, drain, set its cluster.
+- **Usage:** every organization's allocated and measured CPU and memory, CPU- and memory-hours, network out, build minutes and disk this month. Each organization's page lists its services, databases, domains and incidents (titles) with the node they run on.
+- **No intrusion:** operator pages never show secrets, environment values, log lines or stored data, and operators cannot act inside a client's applications. Opening an organization's page is itself recorded in the audit log.
 - Give access with `make-operator --email person@example.com` (remove it with `--undo`). The person needs an account first and a full two-step login session; everyone else gets "not found".
 - Every change made here is audited under the operator's name. Rarer tasks (invites, prices, password and two-step resets, invoices by month) stay on the command line below.
 

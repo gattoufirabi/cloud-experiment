@@ -31,7 +31,7 @@ export DEBIAN_FRONTEND=noninteractive
 CONSOLE="" APPS="" REGISTRY="" BACKUP_URL=""
 REPO="https://github.com/gattoufirabi/cloud-experiment.git" BRANCH="main" DIR="/opt/platform"
 SSH_PORT="" WG_PORT="" ORG="" ORG_NAME="" OWNER_EMAIL="" PLAN="starter"
-SKIP_HARDEN=0 SKIP_GATE=0 ASSUME_YES=0
+SKIP_HARDEN=0 SKIP_GATE=0 ASSUME_YES=0 WORKER=0 BUNDLE=""
 
 usage() {
   sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
@@ -50,6 +50,9 @@ Options:
   --skip-harden         leave SSH and the host firewall as they are
   --skip-gate           continue even if the isolation test fails (NOT for production)
   --yes                 do not stop on DNS warnings
+  --worker --bundle B   join this server to an existing platform as a worker node
+                        (B comes from host/node-bundle.sh on the primary); runs steps 1-7,
+                        then only the agent
 EOF
   exit "${1:-0}"
 }
@@ -71,6 +74,8 @@ while [[ $# -gt 0 ]]; do
     --plan) PLAN=$2; shift 2 ;;
     --skip-harden) SKIP_HARDEN=1; shift ;;
     --skip-gate) SKIP_GATE=1; shift ;;
+    --worker) WORKER=1; shift ;;
+    --bundle) BUNDLE=$2; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) usage 0 ;;
     *) echo "Unknown option: $1" >&2; usage 2 ;;
@@ -95,6 +100,19 @@ setenv() { # setenv FILE KEY VALUE: replace or append KEY=VALUE without sed esca
 }
 getenv() { K="$2" awk 'index($0, ENVIRON["K"]"=")==1 && !f {print substr($0, length(ENVIRON["K"])+2); f=1}' "$1"; }
 secret() { openssl rand -hex 32; }
+# Sandboxed (gVisor) containers cannot use Docker's embedded DNS on project networks:
+# give them the host's upstream resolvers, public ones only (the tenant firewall blocks
+# private ranges), falling back to Quad9.
+write_tenant_resolv() {
+  mkdir -p /etc/platform
+  RESOLVERS=$(awk '/^nameserver/ {print $2}' /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null |
+    awk '!seen[$0]++' | awk '!/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|::1|fe80:|fc|fd)/')
+  [[ -n $RESOLVERS ]] || RESOLVERS="9.9.9.9 149.112.112.112"
+  # shellcheck disable=SC2086 # one resolver per word
+  { echo "# Resolvers for sandboxed tenant containers (written by host/deploy.sh)"; printf 'nameserver %s\n' $RESOLVERS; echo "options timeout:2 attempts:2"; } > /etc/platform/resolv.conf
+  chmod 644 /etc/platform/resolv.conf
+  info "tenant DNS: $(echo $RESOLVERS)"
+}
 
 # ---------- 1. checks ----------
 step "1/11 Checking the server and options"
@@ -105,11 +123,22 @@ step "1/11 Checking the server and options"
 [[ ${VERSION_ID} -eq 13 ]] || warn "tested on Debian 13; found $PRETTY_NAME"
 [[ $(dpkg --print-architecture) == amd64 ]] || warn "tested on amd64 only"
 
-ask CONSOLE "Console address (e.g. console.example.com)"
-ask APPS "Apps domain (e.g. apps.example-cloud.net)"
-ask REGISTRY "Registry address (e.g. registry.example-cloud.net)"
+if (( WORKER )); then
+  [[ -n $BUNDLE ]] || die "--worker needs --bundle (run host/node-bundle.sh on the primary)"
+  WENV=$(mktemp)
+  echo "$BUNDLE" | base64 -d 2>/dev/null | gunzip > "$WENV" 2>/dev/null || die "the bundle is not valid (copy it again, in one piece)"
+  for k in CONTROL_PLANE_ADDRESS AGENT_DB_PASSWORD CONSOLE_HOST APPS_DOMAIN NODE_ID NODE_ADDRESS MASTER_KEY_B64; do
+    [[ -n $(getenv "$WENV" "$k") ]] || die "the bundle has no $k"
+  done
+  CONSOLE=$(getenv "$WENV" CONSOLE_HOST) APPS=$(getenv "$WENV" APPS_DOMAIN) REGISTRY=$(getenv "$WENV" REGISTRY_HOST)
+  info "joining as worker node $(getenv "$WENV" NODE_ID) ($(getenv "$WENV" NODE_ADDRESS)), control plane at $(getenv "$WENV" CONTROL_PLANE_ADDRESS)"
+fi
+(( WORKER )) || ask CONSOLE "Console address (e.g. console.example.com)"
+(( WORKER )) || ask APPS "Apps domain (e.g. apps.example-cloud.net)"
+(( WORKER )) || ask REGISTRY "Registry address (e.g. registry.example-cloud.net)"
 CONSOLE=${CONSOLE,,} APPS=${APPS,,} REGISTRY=${REGISTRY,,}
-for h in "$CONSOLE" "$APPS" "$REGISTRY"; do valid_host "$h" || die "not a valid host name: '$h' (see --help)"; done
+for h in "$CONSOLE" "$APPS"; do valid_host "$h" || die "not a valid host name: '$h' (see --help)"; done
+[[ -z $REGISTRY ]] || valid_host "$REGISTRY" || die "not a valid host name: '$REGISTRY'"
 if [[ -n $ORG || -n $OWNER_EMAIL ]]; then
   [[ $ORG =~ ^[a-z0-9][a-z0-9-]{1,19}$ ]] || die "--org: 2-20 lowercase letters, digits, dashes"
   [[ $OWNER_EMAIL == *@*.* ]] || die "--owner-email is required with --org"
@@ -125,11 +154,12 @@ apt-get install -y -qq curl ca-certificates dnsutils openssl git >/dev/null
 PUBLIC_IP=$(curl -fsS4 --max-time 10 https://ifconfig.me 2>/dev/null || ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 info "public IPv4: $PUBLIC_IP"
 DNS_OK=1
-for h in "$CONSOLE" "$REGISTRY" "dnscheck-$RANDOM.$APPS"; do
+(( WORKER )) && DNS_OK=2 # a worker serves no public name: the console and apps point to the primary
+(( DNS_OK == 2 )) || for h in "$CONSOLE" "$REGISTRY" "dnscheck-$RANDOM.$APPS"; do
   got=$(dig +short A "$h" | awk 'END {print}')
   if [[ $got == "$PUBLIC_IP" ]]; then info "DNS ok: $h -> $got"; else warn "DNS: $h -> '${got:-nothing}', expected $PUBLIC_IP"; DNS_OK=0; fi
 done
-if (( ! DNS_OK )); then
+if (( DNS_OK == 0 )); then
   warn "HTTPS certificates need these records (the last one checks the *.$APPS wildcard)."
   (( ASSUME_YES )) || die "fix DNS and run again, or pass --yes to continue anyway"
 fi
@@ -245,6 +275,33 @@ else
   die "isolation gate failed: fix the failures above (or --skip-gate for a throwaway test server)"
 fi
 
+# ---------- worker node: only the agent ----------
+if (( WORKER )); then
+  step "8/8 Joining the platform as a worker node"
+  write_tenant_resolv
+  cd "$DIR/deploy"
+  mkdir -p secrets && chmod 700 secrets
+  getenv "$WENV" MASTER_KEY_B64 | base64 -d > secrets/master.key
+  chmod 444 secrets/master.key
+  grep -v '^MASTER_KEY_B64=' "$WENV" > worker.env
+  echo "TENANT_RESOLV_CONF=/etc/platform/resolv.conf" >> worker.env
+  chmod 600 worker.env
+  rm -f "$WENV"
+  if ! timeout 5 bash -c "</dev/tcp/$(getenv worker.env CONTROL_PLANE_ADDRESS)/5432" 2>/dev/null; then
+    die "cannot reach the primary's database at $(getenv worker.env CONTROL_PLANE_ADDRESS):5432 - check WireGuard and CONTROL_PLANE_ADDRESS on the primary"
+  fi
+  docker compose -f compose.worker.yml --env-file worker.env up -d --build
+  sleep 5
+  docker compose -f compose.worker.yml --env-file worker.env ps
+  cat <<EOF
+
+$(printf '\033[1m')Worker node $(getenv worker.env NODE_ID) started.$(printf '\033[0m')
+In the operator console (Nodes tab) it appears online within a minute; new projects are then
+placed on it automatically. Keep $DIR/deploy/secrets/master.key and worker.env private.
+EOF
+  exit 0
+fi
+
 # ---------- 8. configuration ----------
 step "8/11 Configuration (deploy/.env)"
 ENVF="$DIR/deploy/.env"
@@ -261,18 +318,8 @@ for k in OWNER_DB_PASSWORD API_DB_PASSWORD AGENT_DB_PASSWORD REGISTRY_INTERNAL_S
   [[ -n $(getenv "$ENVF" "$k") ]] || setenv "$ENVF" "$k" "$(secret)"
 done
 [[ -z $BACKUP_URL ]] || setenv "$ENVF" BACKUP_REST_URL "$BACKUP_URL"
-# Sandboxed (gVisor) containers cannot use Docker's embedded DNS on project networks:
-# give them the host's upstream resolvers, public ones only (the tenant firewall blocks
-# private ranges), falling back to Quad9.
-mkdir -p /etc/platform
-RESOLVERS=$(awk '/^nameserver/ {print $2}' /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null |
-  awk '!seen[$0]++' | awk '!/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|::1|fe80:|fc|fd)/')
-[[ -n $RESOLVERS ]] || RESOLVERS="9.9.9.9 149.112.112.112"
-# shellcheck disable=SC2086 # one resolver per word
-{ echo "# Resolvers for sandboxed tenant containers (written by host/deploy.sh)"; printf 'nameserver %s\n' $RESOLVERS; echo "options timeout:2 attempts:2"; } > /etc/platform/resolv.conf
-chmod 644 /etc/platform/resolv.conf
+write_tenant_resolv
 setenv "$ENVF" TENANT_RESOLV_CONF /etc/platform/resolv.conf
-info "tenant DNS: $(echo $RESOLVERS)"
 [[ -n $(getenv "$ENVF" BACKUP_REST_URL) ]] || warn "BACKUP_REST_URL is empty: client backups stay on this server (not off-site)"
 info "written with generated passwords (mode 600)"
 

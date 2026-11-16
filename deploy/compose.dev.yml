@@ -122,6 +122,38 @@ services:
       migrate: { condition: service_completed_successfully }
       caddy: { condition: service_started }
 
+  # A second node for testing several servers on one machine (profile "multinode").
+  # It acts as a worker: runs only the projects placed on it and publishes their ports;
+  # the primary's proxy reaches them through host.docker.internal (a WireGuard address
+  # in production).
+  agent2:
+    <<: *app
+    container_name: platform-agent-2
+    command: ["agent"]
+    user: "0:0"
+    profiles: ["multinode"]
+    environment:
+      <<: *env
+      DATABASE_URL: postgres://platform_agent:dev-agent-password@postgres:5432/platform
+      RUNTIME: runc
+      ALLOW_INSECURE_RUNTIME: "true"
+      AGENT_CONTAINER: platform-agent-2
+      NODE_ID: node-2
+      NODE_ROLE: worker
+      NODE_CLUSTER: default
+      NODE_ADDRESS: host.docker.internal
+      NODE_BIND: 0.0.0.0
+      TLS_MODE: "off"
+      ALERTS_ENABLED: "true"
+      ALERT_INTERVAL_SECONDS: "5"
+      BACKUPS_ENABLED: "true"
+      BACKUP_VOLUME: platform-backups
+    volumes:
+      - ./dev-secrets/master.key:/run/secrets/master.key:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
   # Builds from git: helper image (git + Railpack). Built and run once by "up"; the
   # agent starts it for each build. Keeping this stopped container also protects the
   # image from "docker image prune -a".

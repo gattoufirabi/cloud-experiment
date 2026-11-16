@@ -43,7 +43,8 @@ const dbColumns = `d.id, d.org_id, d.project_id, d.engine, d.version, d.cpu_mill
 	d.password_enc, d.status, coalesce(d.container_id, ''), o.suspended`
 
 func (a *Agent) reconcileDatabases(ctx context.Context) {
-	rows, err := a.pool.Query(ctx, `SELECT `+dbColumns+` FROM databases d JOIN orgs o ON o.id = d.org_id`)
+	rows, err := a.pool.Query(ctx, `SELECT `+dbColumns+` FROM databases d JOIN orgs o ON o.id = d.org_id
+		JOIN projects p ON p.id = d.project_id WHERE `+mineSQL, a.mineArgs()...)
 	if err != nil {
 		a.log.Error("load databases", "err", err)
 		return
@@ -64,6 +65,9 @@ func (a *Agent) reconcileDatabases(ctx context.Context) {
 	}
 	for _, c := range containers {
 		id := c.Labels["platform.database"]
+		if !a.owns(c.Labels) {
+			continue
+		}
 		if !wanted[id] {
 			a.log.Info("removing container of deleted database", "database", id)
 			_ = a.dk.ContainerStop(ctx, c.ID, 20)
@@ -183,7 +187,7 @@ func (a *Agent) startDatabase(ctx context.Context, d managedDB) error {
 		Cmd:   cmd,
 		Env:   env,
 		Labels: map[string]string{
-			"platform.database": d.ID, "platform.engine": d.Engine, "platform.org": d.OrgID,
+			"platform.database": d.ID, "platform.engine": d.Engine, "platform.org": d.OrgID, "platform.node": a.selfID,
 			"platform.project": d.ProjectID, "platform.spec": d.specHash(),
 		},
 		HostConfig:       hc,
