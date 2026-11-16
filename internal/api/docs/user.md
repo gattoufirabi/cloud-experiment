@@ -43,12 +43,25 @@ Organizations created with **Create an account** start on the **Trial** plan: 2 
 
 Your organization holds projects, projects hold services, and each service is one running container.
 
-- **Organization:** members and roles, plan limits, audit log, private registry space, alert channels.
+- **Organization:** members and roles (Access management), plan limits, audit log, private registry space, alert channels (Monitoring), buckets (Object storage).
 - **Project:** a group of related services, for example `shop`.
 - **Service:** one container (a website, an API or a worker) with its own address: `<service>-<project>-<organization>.{{apps}}`.
 - **For each service:** deployments (numbered revisions), settings and secrets, domains, backups, logs, metrics, health and alerts, and a vulnerability report.
 
-Everything inside your organization is private to its members: other clients cannot see or reach it, through the console, the network or the registry. The left pane of the console lists every project and service, with the status of its latest deployment: ● live, × failed, ◌ deploying, ○ not deployed.
+Everything inside your organization is private to its members: other clients cannot see or reach it, through the console, the network or the registry.
+
+### Getting around the console
+
+The console works like a cloud provider's console: each product has its own area.
+
+- **Services menu** (top left): every product, grouped (Compute, Data, Networking, Delivery, Operations, Management). Click the **star** next to a product to pin it: pinned products appear in the **favorites bar** under the top bar and on the **console home**. Pins are personal; the full catalog is under **All services**.
+- **Search** (top bar, or press `/`): finds projects, services, databases, buckets and domains by name, image or engine, and products by what they do.
+- **Project filter** (right of the favorites bar): narrows the lists of every area (Compute, Databases, Domains, jobs, previews) to one project; choose **All projects** to see everything again. The choice is remembered.
+- **Areas:** each product has its own menu on the left, for example Compute → Services, Scheduled jobs, Previews. Lists span all your projects, have a search box, and a **Create** button at the top right.
+- **Projects:** open a project to see all its resources together on its **Overview** tab (services, databases, domains and scheduled jobs with their status), with its shared variables and settings in the next tabs.
+- **Breadcrumbs** above each page show where you are (Console › Compute › Web shop › storefront).
+- The left pane on the console home and in Compute, Databases and Projects lists every project with its services and databases and the status of their latest deployment: ● live, × failed, ◌ deploying, ○ not deployed.
+- The **organization menu** (top right) switches between your organizations; the **account menu** holds your account, security settings and sign-out.
 
 ## Deploy your first application
 

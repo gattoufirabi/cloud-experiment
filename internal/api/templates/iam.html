@@ -1,0 +1,109 @@
+{{define "title"}}Access management · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Access management</h1></div>
+<p class="lede">Who can use {{.Org.Name}} and with which role, and the tokens your tools use.</p>
+<nav class="tabs" role="tablist" aria-label="Access sections" data-default="{{.Tab}}">
+  <a role="tab" href="#members">Members <span class="count">{{len .Members}}</span></a>
+  <a role="tab" href="#api">API tokens <span class="count">{{len .APITokens}}</span></a>
+</nav>
+<!-- ============ members ============ -->
+<section class="pane" id="members" role="tabpanel" aria-label="Members">
+  <p class="help"><a href="/docs/user#team-members-and-roles" target="_blank" rel="noopener">Guide: members and roles ↗</a></p>
+
+  {{with .InviteLink}}
+  <div class="panel strong">
+    <h2>Invitation link for {{$.InviteEmail}}</h2>
+    <p class="small">Send it privately. It works once, expires in 7 days and will not be shown again.</p>
+    <code class="select wrap">{{.}}</code>
+  </div>
+  {{end}}
+  <div class="section">
+    <h2>Members</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+      <tbody>
+      {{range .Members}}
+        <tr><td><strong>{{.Name}}</strong></td><td>{{.Email}}</td><td>{{.Role}}</td>
+          <td>{{if and (roleAtLeast $.Org.Role "admin") (ne .Email $.User.Email)}}
+            <form method="post" action="{{$.Org.Path}}/members/{{.ID}}/remove" data-confirm="Remove {{.Email}} from {{$.Org.Name}}?">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">remove</button>
+            </form>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{if roleAtLeast .Org.Role "admin"}}
+  <div class="section">
+    <h2>Invite someone</h2>
+    {{if .Invites}}
+    <p class="small">Pending:</p>
+    <ul class="brackets small">{{range .Invites}}<li>{{.Email}} <span class="badge">{{.Role}}</span> <span class="muted">expires {{datetime .Expires}}</span></li>{{end}}</ul>
+    {{end}}
+    <form method="post" action="{{.Org.Path}}/invites" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="email" name="email" placeholder="person@example.com" required aria-label="Email">
+      <select name="role" aria-label="Role">
+        <option value="viewer">viewer: read only</option>
+        <option value="developer" selected>developer: deploy and configure</option>
+        <option value="admin">admin: projects and members</option>
+        {{if eq .Org.Role "owner"}}<option value="owner">owner: everything</option>{{end}}
+      </select>
+      <button type="submit">Create invitation</button>
+    </form>
+  </div>
+  {{end}}
+</section>
+
+<!-- ============ API ============ -->
+<section class="pane" id="api" role="tabpanel" aria-label="API">
+  <p class="help"><a href="/docs/user#api-and-command-line-tool" target="_blank" rel="noopener">Guide: API and command-line tool ↗</a></p>
+  {{with .APIToken}}
+  <div class="panel strong">
+    <h2>API token "{{$.APITokenName}}"</h2>
+    <p class="small">Copy it now: it will not be shown again. Store it in your CI secrets.</p>
+    <code class="select wrap">{{.}}</code>
+  </div>
+  {{end}}
+  <div class="section">
+    <h2>Deploy from CI</h2>
+    <p class="small muted">Use the REST API or the platformctl tool with a token. A token acts within this organization only, with the role you give it.</p>
+    <div class="panel"><pre class="cmd">export PLATFORM_URL={{.BaseURL}}
+export PLATFORM_TOKEN=pla_…
+platformctl deploy &lt;project&gt;/&lt;service&gt; --image &lt;image&gt; --wait
+
+# or with curl
+curl -X POST -H "Authorization: Bearer $PLATFORM_TOKEN"   -d '{"image": "&lt;image&gt;"}' $PLATFORM_URL/api/v1/projects/&lt;project&gt;/services/&lt;service&gt;/deploy</pre></div>
+  </div>
+  <div class="section">
+    <h2>API tokens</h2>
+    {{if .APITokens}}
+    <table>
+      <thead><tr><th>Token</th><th>Role</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+      <tbody>
+      {{range .APITokens}}
+        <tr><td><strong>{{.Name}}</strong></td><td>{{.Role}}</td>
+          <td class="nowrap">{{with .LastUsed}}{{ago .}}{{else}}<span class="muted">never</span>{{end}}</td>
+          <td class="nowrap">{{with .Expires}}{{datetime .}}{{end}}</td>
+          <td>{{if roleAtLeast $.Org.Role "admin"}}<form method="post" action="{{$.Org.Path}}/api-tokens/{{.ID}}/delete" data-confirm="Revoke token {{.Name}}?">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">revoke</button></form>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="small muted">No API tokens yet.</p>{{end}}
+    {{if roleAtLeast .Org.Role "admin"}}
+    <form method="post" action="{{.Org.Path}}/api-tokens" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="name" placeholder="token name, e.g. github-actions" maxlength="60" required aria-label="Token name">
+      <select name="role" aria-label="Role">
+        <option value="viewer">viewer: read only</option>
+        <option value="developer" selected>developer: deploy and set secrets</option>
+        <option value="admin">admin</option>
+      </select>
+      <button type="submit">Create token</button>
+    </form>
+    {{end}}
+  </div>
+</section>
+
+{{if roleAtLeast .Org.Role "admin"}}<p class="small muted">Every change is recorded in the <a href="{{.Org.Path}}/audit">audit log</a>.{{if .StorageNav}} S3 access keys are managed in <a href="{{.Org.Path}}/storage#keys">Object storage</a>.{{end}}</p>{{end}}
+{{end}}

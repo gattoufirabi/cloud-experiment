@@ -311,3 +311,27 @@ document.addEventListener("click", function (e) {
     })();
   });
 })();
+
+// ---------- console shell ----------
+// Menus (services, organization, account) are <details>: close them on a click
+// outside or Escape. The project filter applies as soon as it changes. Tables with a
+// search box above them filter their rows as you type.
+document.addEventListener("click", (e) => {
+  document.querySelectorAll("details.menu[open]").forEach((d) => { if (!d.contains(e.target)) d.removeAttribute("open"); });
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") document.querySelectorAll("details.menu[open]").forEach((d) => d.removeAttribute("open"));
+  if (e.key === "/" && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "")) {
+    const q = document.querySelector(".search input");
+    if (q) { e.preventDefault(); q.focus(); }
+  }
+});
+document.querySelectorAll("select[data-autosubmit]").forEach((s) => s.addEventListener("change", () => s.form.submit()));
+document.querySelectorAll("input[data-filter]").forEach((input) => {
+  const table = document.getElementById(input.dataset.filter);
+  if (!table) return;
+  input.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    table.querySelectorAll("tbody tr").forEach((tr) => tr.classList.toggle("filtered-out", q !== "" && !tr.textContent.toLowerCase().includes(q)));
+  });
+});

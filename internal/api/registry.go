@@ -157,7 +157,7 @@ func (s *Server) createRegistryToken(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	push := r.PostFormValue("push") == "1"
 	if name == "" || len(name) > 60 {
-		back(w, r, o.Path()+"#registry", "", "Give the token a name of up to 60 characters (for example: ci-pipeline).")
+		back(w, r, o.Path()+"/registry#tokens", "", "Give the token a name of up to 60 characters (for example: ci-pipeline).")
 		return
 	}
 	token := registryTokenPrefix + secure.NewToken()
@@ -175,7 +175,7 @@ func (s *Server) createRegistryToken(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.renderOrg(w, r, o, http.StatusOK, data{"RegistryToken": token, "RegistryTokenName": name, "Tab": "registry"})
+	s.renderOrg(w, r, o, http.StatusOK, data{"RegistryToken": token, "RegistryTokenName": name, "Page": "registry"})
 }
 
 func (s *Server) deleteRegistryToken(w http.ResponseWriter, r *http.Request) {
@@ -195,7 +195,7 @@ func (s *Server) deleteRegistryToken(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, o.Path()+"#registry", "Token revoked. It stops working immediately.", "")
+	back(w, r, o.Path()+"/registry#tokens", "Token revoked. It stops working immediately.", "")
 }
 
 // ---------- scans ----------

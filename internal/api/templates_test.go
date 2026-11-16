@@ -139,7 +139,7 @@ func TestStoragePagesRender(t *testing.T) {
 	out.Reset()
 	if err := pages["bucket"].ExecuteTemplate(&out, "content", data{
 		"Org": org, "Bucket": b, "Prefix": "docs/", "Parent": "", "Path": "/o/acme/storage/b/uploads",
-		"Objects": []objectRow{{Key: "docs/sub/", Name: "sub/", Folder: true}, {Key: "docs/a b.txt", Name: "a b.txt", Size: 2048, Modified: now}},
+		"Objects":  []objectRow{{Key: "docs/sub/", Name: "sub/", Folder: true}, {Key: "docs/a b.txt", Name: "a b.txt", Size: 2048, Modified: now}},
 		"Services": []string{"shop/web"}, "S3URL": "https://s3.example.test", "Region": "us-east-1", "WebsiteURL": "https://acme-uploads.web.apps.test/",
 		"CanEdit": true, "CanDelete": true, "MaxUploadMB": 25,
 	}); err != nil {

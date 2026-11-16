@@ -403,7 +403,7 @@ check "service key recorded with its service" "$(owner_sql "SELECT count(*) FROM
 code_of ja -X POST "$BASE/o/$A/p/shop/s/files/deploy" -d csrf=$CSRF_A >/dev/null
 CID_S3=""; for _ in $(seq 1 60); do CID_S3=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'files' AND d.status = 'live' ORDER BY d.revision DESC LIMIT 1"); [ -n "$CID_S3" ] && [ "$CID_S3" != "$CID_F" ] && break; sleep 2; done
 check "redeployed service has the S3 variables" "$(dx exec "$CID_S3" printenv S3_BUCKET 2>&1 | tr -d '\r')" "$A-uploads"
-if dx exec "$CID_S3" sh -c 'wget -qO- "$AWS_ENDPOINT_URL/$S3_BUCKET/docs/hello.txt" 2>&1' | grep -q "403\|Forbidden"; then ok "service reaches the S3 endpoint through the proxy (unsigned request refused)"; else bad "service cannot reach the S3 endpoint"; fi
+if grep -q "403" <<<"$(dx exec "$CID_S3" sh -c 'wget -qO- "$AWS_ENDPOINT_URL/$S3_BUCKET/docs/hello.txt" 2>&1')"; then ok "service reaches the S3 endpoint through the proxy (unsigned request refused)"; else bad "service cannot reach the S3 endpoint"; fi
 CID_F=$CID_S3
 
 owner_sql "UPDATE orgs SET suspended = true WHERE slug = '$A'" >/dev/null; storage_poke
@@ -423,7 +423,7 @@ KC=$(sed -n 's/^AWS_ACCESS_KEY_ID=//p' <<<"$OUT"); SC=$(sed -n 's/^AWS_SECRET_AC
 check "[CLI] key created by platformctl writes to its bucket" "$(s3code "$KC" "$SC" -T "$TMP/s3obj.txt" "$S3/$A-api-bucket/f.txt")" 200
 check "[CLI] that key cannot reach other buckets (403)" "$(s3code "$KC" "$SC" "$S3/$A-uploads/docs/hello.txt")" 403
 check "[B->A API] B's token cannot list A's buckets" "$(api_get "$TOK_B" "$BASE/api/v1/buckets" | grep -c "$A-api-bucket")" 0
-if pctl bucket delete api-bucket | grep -q "403\|forbidden\|role"; then ok "[CLI] developer token cannot delete a bucket (admin only)"; else bad "[CLI] developer token deleted a bucket"; fi
+if grep -q "HTTP 403" <<<"$(pctl bucket delete api-bucket)"; then ok "[CLI] developer token cannot delete a bucket (admin only)"; else bad "[CLI] developer token deleted a bucket"; fi
 check "[A] bucket deleted by an admin in the console" "$(code_of ja -X POST "$BASE/o/$A/storage/b/api-bucket/delete" -d csrf=$CSRF_A -d confirm=api-bucket)" 303
 
 check "[A] non-empty bucket deleted" "$(code_of ja -X POST "$BASE/o/$A/storage/b/uploads/delete" -d csrf=$CSRF_A -d confirm=uploads)" 303
@@ -431,6 +431,41 @@ storage_poke
 check "deleted buckets emptied and removed from Garage" "$(for _ in $(seq 1 45); do [ "$(owner_sql "SELECT count(*) FROM storage_trash")" = 0 ] && { echo done; break; }; sleep 2; done)" done
 check "objects of the deleted bucket are gone" "$(s3code "$KW" "$SW" "$S3/$A-uploads/docs/hello.txt")" 404
 check "bucket deletion audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'bucket.deleted' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" 2
+
+echo "== Console: services, favorites, project filter, search"
+for page in services projects compute compute/jobs compute/previews databases domains monitoring iam registry; do
+  check "[A] console page $page opens" "$(code_of ja "$BASE/o/$A/$page")" 200
+done
+check "[B->A] B cannot open A's compute list (404)" "$(code_of jb "$BASE/o/$A/compute")" 404
+check "[B->A] B cannot search A (404)" "$(code_of jb "$BASE/o/$A/search?q=web")" 404
+HOME_PAGE=$(c ja "$BASE/o/$A")
+if grep -q 'class="favbar"' <<<"$HOME_PAGE" && grep -q ">Compute<" <<<"$HOME_PAGE"; then ok "favorites bar shows the default services"; else bad "favorites bar missing"; fi
+check "[A] pin Domains" "$(code_of ja -X POST "$BASE/o/$A/pins" -d csrf=$CSRF_A -d product=domains -d back=/o/$A)" 303
+if grep -q "/o/$A/domains\"" <<<"$(c ja "$BASE/o/$A/compute" | sed -n '/class="favbar"/,/<\/nav>/p')"; then ok "pinned service appears in the favorites bar"; else bad "pinned service missing from the favorites bar"; fi
+code_of ja -X POST "$BASE/o/$A/pins" -d csrf=$CSRF_A -d product=domains >/dev/null
+if grep -q "/o/$A/domains\"" <<<"$(c ja "$BASE/o/$A" | sed -n '/class="favbar"/,/<\/nav>/p')"; then bad "unpinned service still in the favorites bar"; else ok "unpinned service leaves the favorites bar"; fi
+check "pins are per user (B's bar unchanged)" "$(c jb "$BASE/o/$B" | sed -n '/class="favbar"/,/<\/nav>/p' | grep -c "/domains\"")" 0
+check "unknown product cannot be pinned (404)" "$(code_of ja -X POST "$BASE/o/$A/pins" -d csrf=$CSRF_A -d product=nope)" 404
+COMPUTE=$(c ja "$BASE/o/$A/compute")
+if grep -q "/o/$A/p/shop/s/web\"" <<<"$COMPUTE" && grep -q "/o/$A/p/shop/s/files\"" <<<"$COMPUTE"; then ok "compute lists the services of every project"; else bad "compute list incomplete"; fi
+code_of ja "$BASE/o/$A/scope?project=nope-project&back=/o/$A/compute" >/dev/null
+check "project filter narrows the compute list" "$(c ja "$BASE/o/$A/compute" | grep -c "/o/$A/p/shop/s/web\"")" 0
+code_of ja "$BASE/o/$A/scope?project=&back=/o/$A/compute" >/dev/null
+check "clearing the project filter shows everything again" "$(c ja "$BASE/o/$A/compute" | grep -c "/o/$A/p/shop/s/web\"")" 1
+check "filter redirect stays inside the organization" "$(c ja -o /dev/null -w '%{redirect_url}' "$BASE/o/$A/scope?project=shop&back=https://evil.example/")" "$BASE/o/$A"
+code_of ja "$BASE/o/$A/scope?project=&back=/o/$A" >/dev/null
+if grep -q "/o/$A/p/shop/s/web\"" <<<"$(c ja "$BASE/o/$A/search?q=web")"; then ok "search finds a service"; else bad "search misses the service"; fi
+if grep -q "/o/$A/storage\"" <<<"$(c ja "$BASE/o/$A/search?q=bucket")"; then ok "search finds products by description"; else bad "search misses products"; fi
+check "B's resources never appear in A's search" "$(c ja "$BASE/o/$A/search?q=$B" | grep -c "/o/$B/")" 0
+check "[A] database created from the Databases area" "$(code_of ja -X POST "$BASE/o/$A/databases" -d csrf=$CSRF_A -d project=shop -d slug=areadb -d engine=redis:7)" 303
+check "area database recorded in the chosen project" "$(owner_sql "SELECT p.slug FROM databases d JOIN projects p ON p.id = d.project_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'areadb'")" shop
+if grep -q "/o/$A/p/shop/d/areadb\"" <<<"$(c ja "$BASE/o/$A/databases")"; then ok "databases area lists it"; else bad "databases area misses it"; fi
+code_of ja -X POST "$BASE/o/$A/p/shop/d/areadb/delete" -d csrf=$CSRF_A -d confirm=areadb >/dev/null
+check "[B->A] B cannot create a database in A's project (404)" "$(code_of jb -X POST "$BASE/o/$A/databases" -d csrf=$CSRF_B -d project=shop -d slug=evil -d engine=redis:7)" 404
+check "[A] service created from the Compute area" "$(code_of ja -X POST "$BASE/o/$A/compute" -d csrf=$CSRF_A -d project=shop -d slug=area-svc -d image=nginx:1.27-alpine)" 303
+check "area service recorded in the chosen project" "$(owner_sql "SELECT count(*) FROM services s JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND p.slug = 'shop' AND s.slug = 'area-svc'")" 1
+code_of ja -X POST "$BASE/o/$A/p/shop/s/area-svc/delete" -d csrf=$CSRF_A -d confirm=area-svc >/dev/null
+if grep -q 'aria-label="Breadcrumb"' <<<"$(c ja "$BASE/o/$A/p/shop/s/web")"; then ok "resource pages show a breadcrumb"; else bad "breadcrumb missing"; fi
 
 TOK_ID=$(owner_sql "SELECT t.id FROM api_tokens t JOIN orgs o ON o.id = t.org_id WHERE o.slug = '$A' AND t.name = 'ci'")
 code_of ja -X POST "$BASE/o/$A/api-tokens/$TOK_ID/delete" -d csrf=$CSRF_A >/dev/null
@@ -865,7 +900,7 @@ owner_sql "UPDATE orgs SET disk_alert_level = 0, disk_measured_at = NULL WHERE s
 owner_sql "SELECT pg_notify('deployments', 'disk')" >/dev/null
 for _ in $(seq 1 30); do [ -n "$(owner_sql "SELECT disk_measured_at FROM orgs WHERE slug = '$A'")" ] && break; sleep 2; done
 check "disk use measured by the agent" "$(owner_sql "SELECT disk_measured_at IS NOT NULL AND disk_used_mb > 0 FROM orgs WHERE slug = '$A'")" t
-if c ja "$BASE/o/$A" | grep -q "disk [0-9]*/1 MB"; then ok "[A] organization page shows disk used / allowed"; else bad "disk usage not shown"; fi
+if grep -q "[0-9]* / 1 MB" <<<"$(c ja "$BASE/o/$A")"; then ok "[A] console home shows disk used / allowed"; else bad "disk usage not shown"; fi
 # 500% of the 1 MB test plan (per-node figure too, so a measurement pass in between keeps it)
 owner_sql "UPDATE node_disk SET used_mb = 5, measured_at = now() WHERE org_id = (SELECT id FROM orgs WHERE slug = '$A'); UPDATE orgs SET disk_used_mb = 5 WHERE slug = '$A'" >/dev/null
 check "owner alerted when over the disk limit" "$(owner_sql "SELECT count(*) FROM alert_incidents i JOIN orgs o ON o.id = i.org_id WHERE o.slug = '$A' AND i.kind = 'disk_quota'")" 1

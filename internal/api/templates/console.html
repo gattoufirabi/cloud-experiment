@@ -1,0 +1,63 @@
+{{define "title"}}Console · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>Console home</h1>
+  <span class="badge">{{.Org.Role}}</span>
+  {{if .Org.Suspended}}<span class="st st-failed">suspended</span>{{end}}
+</div>
+{{if .Org.Suspended}}<p class="flash err">{{.SuspendedMessage}}</p>
+{{else if .Org.TrialEnds}}<p class="notice">Trial: {{.Org.TrialDaysLeft}} day{{if ne .Org.TrialDaysLeft 1}}s{{end}} left. Custom domains and builds from git come with a paid plan; contact the platform operator to upgrade.</p>{{end}}
+<p class="lede">{{.Org.Name}} · plan {{.Plan.Name}}</p>
+
+<div class="widgets">
+  <section class="widget wide">
+    <div class="widget-head"><h2>Favorites</h2><a href="{{.Org.Path}}/services">All services</a></div>
+    {{if .Favorites}}
+    <div class="tiles">
+      {{range .Favorites}}<a class="tile" href="{{$.Org.Path}}{{.Path}}">{{icon .ID}}<span><strong>{{.Name}}</strong><small>{{.Description}}</small></span></a>{{end}}
+    </div>
+    {{else}}<p class="small muted">No favorites. Open <a href="{{.Org.Path}}/services">the catalog</a> and pin the services you use with the star.</p>{{end}}
+  </section>
+
+  <section class="widget">
+    <div class="widget-head"><h2>Projects</h2><a href="{{.Org.Path}}/projects">View all</a></div>
+    {{if .Projects}}
+    <table class="compact">
+      <thead><tr><th>Project</th><th class="num">Services</th></tr></thead>
+      <tbody>{{range .Projects}}<tr><td><a href="{{$.Org.Path}}/p/{{.Slug}}"><strong>{{.Name}}</strong></a></td><td class="num">{{.Services}}</td></tr>{{end}}</tbody>
+    </table>
+    {{else}}<p class="small muted">No projects yet. A project groups the services, databases and settings of one application.</p>
+    {{if roleAtLeast .Org.Role "admin"}}<a class="button-link" href="{{.Org.Path}}/projects#create">Create a project</a>{{end}}{{end}}
+  </section>
+
+  <section class="widget">
+    <div class="widget-head"><h2>Health</h2><a href="{{.Org.Path}}/monitoring">Monitoring</a></div>
+    {{$open := 0}}
+    <ul class="brackets small">
+    {{range .Incidents}}{{if eq .Status "firing"}}{{$open = 1}}<li>{{template "status" "failed"}} <strong>{{.Title}}</strong> {{.Service}} · {{ago .StartedAt}}</li>{{end}}{{end}}
+    </ul>
+    {{if eq $open 0}}<p class="small"><span class="st st-live">healthy</span> No open incidents. Every live application is checked continuously.</p>{{end}}
+  </section>
+
+  <section class="widget">
+    <div class="widget-head"><h2>Usage of your plan</h2>{{if roleAtLeast .Org.Role "admin"}}<a href="{{.Org.Path}}/billing">Billing</a>{{end}}</div>
+    <dl class="meters-list">
+      <dt>Services</dt><dd><progress class="meter" max="{{.Plan.MaxServices}}" value="{{.Usage.Services}}"></progress> {{.Usage.Services}} / {{.Plan.MaxServices}}</dd>
+      <dt>CPU</dt><dd><progress class="meter" max="{{.Plan.MaxCPU}}" value="{{.Usage.CPU}}"></progress> {{.Usage.CPU}} / {{.Plan.MaxCPU}} millicores</dd>
+      <dt>Memory</dt><dd><progress class="meter" max="{{.Plan.MaxMemory}}" value="{{.Usage.Memory}}"></progress> {{.Usage.Memory}} / {{.Plan.MaxMemory}} MB</dd>
+      <dt>Databases</dt><dd><progress class="meter" max="{{.Plan.MaxDatabases}}" value="{{.Usage.Databases}}"></progress> {{.Usage.Databases}} / {{.Plan.MaxDatabases}}</dd>
+      <dt>Disk</dt><dd><progress class="meter" max="{{.Plan.MaxDiskMB}}" value="{{.Plan.DiskUsedMB}}"></progress> {{.Plan.DiskUsedMB}} / {{.Plan.MaxDiskMB}} MB</dd>
+    </dl>
+  </section>
+
+  <section class="widget">
+    <div class="widget-head"><h2>Get started</h2><a href="/docs/user" target="_blank" rel="noopener">Guide ↗</a></div>
+    <ul class="links">
+      <li><a href="{{.Org.Path}}/compute#create">Deploy a container</a></li>
+      <li><a href="{{.Org.Path}}/databases#create">Create a database</a></li>
+      {{if .StorageNav}}<li><a href="{{.Org.Path}}/storage">Create an S3 bucket</a></li>{{end}}
+      <li><a href="{{.Org.Path}}/iam#api">Deploy from CI with an API token</a></li>
+    </ul>
+  </section>
+</div>
+{{end}}

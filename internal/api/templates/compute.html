@@ -1,0 +1,49 @@
+{{define "title"}}Compute · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>Services</h1>
+  {{if .CanEdit}}<a class="button-link right" href="#create">Create service</a>{{end}}
+</div>
+<p class="lede">Containers running as web services or workers{{if .Scope}} in project <strong>{{.Scope}}</strong>{{else}} across all projects{{end}}.</p>
+
+<div class="section">
+  <div class="table-tools">
+    <h2>Services <span class="count">{{len .Services}}</span></h2>
+    <input type="search" data-filter="services-table" placeholder="Find services by name, project or image" aria-label="Find services">
+  </div>
+  {{if .Services}}
+  <div class="scroll-x">
+  <table id="services-table" class="resources">
+    <thead><tr><th>Name</th><th>Project</th><th>Type</th><th>Status</th><th>Image</th><th class="num">Instances</th><th>Last deployment</th></tr></thead>
+    <tbody>
+    {{range .Services}}
+      <tr><td><a href="{{$.Org.Path}}/p/{{.Project}}/s/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
+        <td><a href="{{$.Org.Path}}/p/{{.Project}}">{{.ProjectName}}</a></td>
+        <td>{{if .Worker}}worker{{else}}web{{end}}</td>
+        <td>{{template "status" .Status}}</td>
+        <td><code class="trunc" title="{{.Image}}">{{.Image}}</code></td>
+        <td class="num">{{.Instances}}</td>
+        <td class="nowrap">{{with .Updated}}{{ago .}}{{else}}<span class="muted">never</span>{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">{{if .Scope}}No services in this project.{{else}}No services yet. A service runs a container image from any registry or from a git repository.{{end}}</p>{{end}}
+</div>
+
+{{if .CanEdit}}
+<div class="section" id="create">
+  <h2>Create service</h2>
+  {{if .Projects}}
+  <p class="small muted">Give it a name and an image; you set resources, variables, domains and instances on its page before or after the first deployment.</p>
+  <form method="post" action="{{.Org.Path}}/compute" class="form-grid">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Project<select name="project" required>{{range .Projects}}<option value="{{.Slug}}" {{if eq .Slug $.Scope}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
+    <label>Service name <span class="hint">2 to 20 lowercase letters, digits and dashes</span><input name="slug" placeholder="e.g. web" pattern="[a-z0-9][a-z0-9\-]{1,19}" required></label>
+    <label class="wide">Container image <span class="hint">public image or one of your registry; leave empty to build from git later</span><input name="image" placeholder="e.g. nginx:1.27-alpine"></label>
+    <div class="wide"><button type="submit" class="arrow">Create service</button></div>
+  </form>
+  {{else}}<p class="small muted">Create a <a href="{{.Org.Path}}/projects#create">project</a> first.</p>{{end}}
+</div>
+{{end}}
+{{end}}

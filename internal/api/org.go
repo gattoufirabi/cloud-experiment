@@ -146,8 +146,8 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 	d["SuspendedMessage"] = o.suspendedMessage()
 	d["EmailEnabled"] = platmail.Configured(s.cfg)
 	type project struct {
-		Slug, Name string
-		Services   int
+		Slug, Name          string
+		Services, Databases int
 	}
 	type usage struct{ Services, CPU, Memory, Databases int }
 	type regToken struct {
@@ -172,7 +172,8 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 	var apiTokens []apiToken
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(r.Context(), `
-			SELECT p.slug, p.name, (SELECT count(*) FROM services s WHERE s.project_id = p.id AND s.preview_of IS NULL)
+			SELECT p.slug, p.name, (SELECT count(*) FROM services s WHERE s.project_id = p.id AND s.preview_of IS NULL),
+			       (SELECT count(*) FROM databases d WHERE d.project_id = p.id)
 			FROM projects p ORDER BY p.name`)
 		if err != nil {
 			return err
@@ -257,7 +258,11 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 	d["RegistryHost"], d["RegistryTokens"], d["Scans"] = s.cfg.RegistryHost, tokens, scans
 	d["Channels"], d["Incidents"], d["AlertKinds"] = channels, incidents, alertKinds
 	d["APITokens"], d["BaseURL"] = apiTokens, s.cfg.BaseURL
-	s.render(w, r, "org", status, d)
+	page, _ := d["Page"].(string)
+	if page == "" {
+		page = "console"
+	}
+	s.render(w, r, page, status, d)
 }
 
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
@@ -271,7 +276,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		name = slug
 	}
 	if !model.ValidSlug(slug) || len(name) > 100 {
-		back(w, r, o.Path(), "", "Project ID: 2 to 20 characters, lowercase letters, digits and dashes, starting with a letter or digit.")
+		back(w, r, o.Path()+"/projects#create", "", "Project ID: 2 to 20 characters, lowercase letters, digits and dashes, starting with a letter or digit.")
 		return
 	}
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
@@ -282,7 +287,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if isUniqueViolation(err) {
-		back(w, r, o.Path(), "", "A project with this ID already exists.")
+		back(w, r, o.Path()+"/projects#create", "", "A project with this ID already exists.")
 		return
 	}
 	if err != nil {
@@ -300,11 +305,11 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(strings.TrimSpace(r.PostFormValue("email")))
 	role := r.PostFormValue("role")
 	if !strings.Contains(email, "@") || len(email) > 254 || !model.ValidRole(role) {
-		back(w, r, o.Path()+"#members", "", "Enter a valid email address and role.")
+		back(w, r, o.Path()+"/iam#members", "", "Enter a valid email address and role.")
 		return
 	}
 	if role == "owner" && o.Role != "owner" {
-		back(w, r, o.Path()+"#members", "", "Only owners can invite other owners.")
+		back(w, r, o.Path()+"/iam#members", "", "Only owners can invite other owners.")
 		return
 	}
 	token := secure.NewToken()
@@ -317,7 +322,7 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, s.pool, o.ID, "invite.created", "email:"+email, map[string]string{"role": role})
 	// Shown once, never stored in clear: the admin sends it to the person over a channel they trust.
-	s.renderOrg(w, r, o, http.StatusOK, data{"InviteLink": s.cfg.BaseURL + "/invite/" + token, "InviteEmail": email, "Tab": "members"})
+	s.renderOrg(w, r, o, http.StatusOK, data{"InviteLink": s.cfg.BaseURL + "/invite/" + token, "InviteEmail": email, "Tab": "members", "Page": "iam"})
 }
 
 func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {
@@ -328,14 +333,14 @@ func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("user")
 	var role string
 	if err := s.pool.QueryRow(r.Context(), `SELECT role FROM memberships WHERE org_id = $1 AND user_id = $2`, o.ID, userID).Scan(&role); err != nil {
-		back(w, r, o.Path()+"#members", "", "Member not found.")
+		back(w, r, o.Path()+"/iam#members", "", "Member not found.")
 		return
 	}
 	if role == "owner" {
 		var owners int
 		_ = s.pool.QueryRow(r.Context(), `SELECT count(*) FROM memberships WHERE org_id = $1 AND role = 'owner'`, o.ID).Scan(&owners)
 		if o.Role != "owner" || owners <= 1 {
-			back(w, r, o.Path()+"#members", "", "Only an owner can remove an owner, and the last owner cannot be removed.")
+			back(w, r, o.Path()+"/iam#members", "", "Only an owner can remove an owner, and the last owner cannot be removed.")
 			return
 		}
 	}
@@ -344,7 +349,7 @@ func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, s.pool, o.ID, "member.removed", "user:"+userID, nil)
-	back(w, r, o.Path()+"#members", "Member removed.", "")
+	back(w, r, o.Path()+"/iam#members", "Member removed.", "")
 }
 
 func (s *Server) auditPage(w http.ResponseWriter, r *http.Request) {
@@ -402,13 +407,29 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		Slug, Engine, Version, Status string
 		CPUMillis, MemoryMB           int
 	}
+	type resource struct{ Kind, Name, Status, Detail, Path string }
 	var p *projectInfo
 	var services []svc
 	var dbs []dbRow
 	var vars []projectVar
+	var others []resource // domains and scheduled jobs of the project
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		var err error
 		if p, err = s.loadProject(r, tx); err != nil {
+			return err
+		}
+		orows, err := tx.Query(r.Context(), `
+			SELECT 'Domain', dm.hostname, CASE WHEN dm.verified_at IS NULL THEN 'pending' ELSE 'verified' END, 'serves ' || s.slug, '/s/' || s.slug || '#domains'
+			FROM domains dm JOIN services s ON s.id = dm.service_id WHERE s.project_id = $1
+			UNION ALL
+			SELECT 'Scheduled job', j.slug, CASE WHEN j.enabled THEN coalesce((SELECT r.status FROM job_runs r WHERE r.job_id = j.id ORDER BY r.started_at DESC LIMIT 1), 'none') ELSE 'paused' END,
+			       s.slug || ' · ' || j.schedule, '/s/' || s.slug || '#jobs'
+			FROM jobs j JOIN services s ON s.id = j.service_id WHERE s.project_id = $1
+			ORDER BY 1, 2`, p.ID)
+		if err != nil {
+			return err
+		}
+		if others, err = pgx.CollectRows(orows, pgx.RowToStructByPos[resource]); err != nil {
 			return err
 		}
 		drows, err := tx.Query(r.Context(), `SELECT slug, engine, version, status, cpu_millis, memory_mb FROM databases WHERE project_id = $1 ORDER BY slug`, p.ID)
@@ -439,8 +460,14 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	live := 0
+	for _, sv := range services {
+		if sv.Status == "live" {
+			live++
+		}
+	}
 	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services, "Databases": dbs, "Variables": vars, "BaseURL": s.cfg.BaseURL,
-		"Engines": model.Engines})
+		"Engines": model.Engines, "Others": others, "LiveServices": live})
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
@@ -469,7 +496,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, o.Path(), "Project deleted. Its applications are being stopped.", "")
+	back(w, r, o.Path()+"/projects", "Project deleted. Its applications are being stopped.", "")
 }
 
 // checkQuota verifies the plan allows the change. excludeID skips the service being edited.

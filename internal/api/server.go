@@ -164,6 +164,21 @@ func (s *Server) routes() http.Handler {
 
 	m.HandleFunc("GET /{$}", s.auth(authFull, s.home))
 	m.HandleFunc("GET /o/{org}", s.auth(authFull, s.orgPage))
+	m.HandleFunc("GET /o/{org}/services", s.auth(authFull, s.servicesPage))
+	m.HandleFunc("POST /o/{org}/pins", s.auth(authFull, s.togglePin))
+	m.HandleFunc("GET /o/{org}/scope", s.auth(authFull, s.setScope))
+	m.HandleFunc("GET /o/{org}/search", s.auth(authFull, s.searchPage))
+	m.HandleFunc("GET /o/{org}/projects", s.auth(authFull, s.orgArea("projects", "viewer")))
+	m.HandleFunc("GET /o/{org}/iam", s.auth(authFull, s.orgArea("iam", "viewer")))
+	m.HandleFunc("GET /o/{org}/registry", s.auth(authFull, s.orgArea("registry", "viewer")))
+	m.HandleFunc("GET /o/{org}/monitoring", s.auth(authFull, s.orgArea("monitoring", "viewer")))
+	m.HandleFunc("GET /o/{org}/compute", s.auth(authFull, s.computePage))
+	m.HandleFunc("POST /o/{org}/compute", s.auth(authFull, s.createServiceIn))
+	m.HandleFunc("GET /o/{org}/compute/jobs", s.auth(authFull, s.computeJobsPage))
+	m.HandleFunc("GET /o/{org}/compute/previews", s.auth(authFull, s.computePreviewsPage))
+	m.HandleFunc("GET /o/{org}/databases", s.auth(authFull, s.databasesPage))
+	m.HandleFunc("POST /o/{org}/databases", s.auth(authFull, s.createDatabaseIn))
+	m.HandleFunc("GET /o/{org}/domains", s.auth(authFull, s.domainsPage))
 	m.HandleFunc("GET /o/{org}/audit", s.auth(authFull, s.auditPage))
 	m.HandleFunc("GET /operator", s.operatorOnly(s.operatorPage))
 	m.HandleFunc("POST /operator/orgs/{slug}/plan", s.operatorOnly(s.operatorSetPlan))
@@ -462,6 +477,7 @@ func parseTemplates() (map[string]*template.Template, error) {
 		"jobStatus":  func(s string) string { return s }, // succeeded, failed, timed_out, skipped, running
 		"engineName": engineName,
 		"bytes":      humanBytes,
+		"icon":       icon,
 		"dbStatus": func(s string) string {
 			if s == "running" {
 				return "live"

@@ -1,0 +1,25 @@
+{{define "title"}}Search · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Search</h1></div>
+<form method="get" action="{{.Org.Path}}/search" class="inline" role="search">
+  <input name="q" type="search" value="{{.Q}}" placeholder="Search services, projects, resources" aria-label="Search" autofocus>
+  <button type="submit">Search</button>
+</form>
+{{if .Q}}
+{{with .Products}}
+<div class="section">
+  <h2>Services</h2>
+  <div class="tiles">{{range .}}<a class="tile" href="{{$.Org.Path}}{{.Path}}">{{icon .ID}}<span><strong>{{.Name}}</strong><small>{{.Description}}</small></span></a>{{end}}</div>
+</div>
+{{end}}
+<div class="section">
+  <h2>Resources</h2>
+  {{if .Hits}}
+  <table class="resources">
+    <thead><tr><th>Name</th><th>Type</th><th>Where</th></tr></thead>
+    <tbody>{{range .Hits}}<tr><td><a href="{{$.Org.Path}}{{.Path}}"><strong>{{.Name}}</strong></a></td><td>{{.Kind}}</td><td class="muted">{{.Detail}}</td></tr>{{end}}</tbody>
+  </table>
+  {{else}}<p class="small muted">Nothing matches "{{.Q}}".</p>{{end}}
+</div>
+{{end}}
+{{end}}

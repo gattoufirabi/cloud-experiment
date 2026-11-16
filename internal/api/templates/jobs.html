@@ -1,0 +1,26 @@
+{{define "title"}}Scheduled jobs · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Scheduled jobs</h1></div>
+<p class="lede">Commands run on a schedule in a fresh container of their service{{if .Scope}}, in project <strong>{{.Scope}}</strong>{{end}}. Add or change a job on its service's <strong>Jobs</strong> tab.</p>
+<div class="section">
+  <div class="table-tools">
+    <h2>Jobs <span class="count">{{len .Jobs}}</span></h2>
+    <input type="search" data-filter="jobs-table" placeholder="Find jobs" aria-label="Find jobs">
+  </div>
+  {{if .Jobs}}
+  <div class="scroll-x">
+  <table id="jobs-table" class="resources">
+    <thead><tr><th>Job</th><th>Service</th><th>Schedule (UTC)</th><th>Last run</th><th>Next run</th></tr></thead>
+    <tbody>
+    {{range .Jobs}}
+      <tr><td><a href="{{$.Org.Path}}/p/{{.Project}}/s/{{.Service}}#jobs"><strong>{{.Slug}}</strong></a>{{if not .Enabled}} <span class="badge">paused</span>{{end}}<br><code class="trunc" title="{{.Command}}">{{.Command}}</code></td>
+        <td>{{.Project}}/{{.Service}}</td><td><code>{{.Schedule}}</code></td>
+        <td class="nowrap">{{if .LastStatus}}{{template "status" (jobStatus .LastStatus)}} {{with .LastRun}}{{ago .}}{{end}}{{else}}<span class="muted">never</span>{{end}}</td>
+        <td class="nowrap">{{if .Enabled}}{{with .NextRun}}{{datetime .}}{{end}}{{else}}<span class="muted">paused</span>{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">No scheduled jobs {{if .Scope}}in this project{{else}}yet{{end}}.</p>{{end}}
+</div>
+{{end}}

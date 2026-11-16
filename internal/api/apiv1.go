@@ -427,7 +427,7 @@ func (s *Server) createAPIToken(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	role := r.PostFormValue("role")
 	if name == "" || len(name) > 60 || (role != "viewer" && role != "developer" && role != "admin") {
-		back(w, r, o.Path()+"#api", "", "Give the token a name (up to 60 characters) and a role.")
+		back(w, r, o.Path()+"/iam#api", "", "Give the token a name (up to 60 characters) and a role.")
 		return
 	}
 	token := apiTokenPrefix + secure.NewToken()
@@ -445,7 +445,7 @@ func (s *Server) createAPIToken(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.renderOrg(w, r, o, http.StatusOK, data{"APIToken": token, "APITokenName": name, "Tab": "api"})
+	s.renderOrg(w, r, o, http.StatusOK, data{"APIToken": token, "APITokenName": name, "Tab": "api", "Page": "iam"})
 }
 
 func (s *Server) deleteAPIToken(w http.ResponseWriter, r *http.Request) {
@@ -465,5 +465,5 @@ func (s *Server) deleteAPIToken(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, o.Path()+"#api", "API token revoked. It stops working immediately.", "")
+	back(w, r, o.Path()+"/iam#api", "API token revoked. It stops working immediately.", "")
 }

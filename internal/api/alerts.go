@@ -87,7 +87,7 @@ func (s *Server) createChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		back(w, r, o.Path(), "", "Invalid form.")
+		back(w, r, o.Path()+"/monitoring#channels", "", "Invalid form.")
 		return
 	}
 	name := strings.TrimSpace(r.PostFormValue("name"))
@@ -104,7 +104,7 @@ func (s *Server) createChannel(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	fail := func(msg string) { back(w, r, o.Path()+"#alerts", "", msg) }
+	fail := func(msg string) { back(w, r, o.Path()+"/monitoring#channels", "", msg) }
 	switch {
 	case name == "" || len(name) > 60:
 		fail("Give the channel a name of up to 60 characters.")
@@ -160,7 +160,7 @@ func (s *Server) createChannel(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, o.Path()+"#alerts", "Channel added. Use \"Send test\" to check it.", "")
+	back(w, r, o.Path()+"/monitoring#channels", "Channel added. Use \"Send test\" to check it.", "")
 }
 
 func (s *Server) deleteChannel(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +184,7 @@ func (s *Server) deleteChannel(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, o.Path()+"#alerts", "Channel removed.", "")
+	back(w, r, o.Path()+"/monitoring#channels", "Channel removed.", "")
 }
 
 func (s *Server) testChannel(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +193,7 @@ func (s *Server) testChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.limiter.allow("alert-test:"+o.ID, 10, 10*time.Minute) {
-		back(w, r, o.Path()+"#alerts", "", "Too many test notifications. Wait a few minutes.")
+		back(w, r, o.Path()+"/monitoring#channels", "", "Too many test notifications. Wait a few minutes.")
 		return
 	}
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
@@ -224,7 +224,7 @@ func (s *Server) testChannel(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	back(w, r, o.Path()+"#alerts", "Test notification queued. The delivery status appears next to the channel.", "")
+	back(w, r, o.Path()+"/monitoring#channels", "Test notification queued. The delivery status appears next to the channel.", "")
 }
 
 func (s *Server) alertThresholds(w http.ResponseWriter, r *http.Request) {

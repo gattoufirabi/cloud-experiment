@@ -82,4 +82,6 @@ func (s *Server) addNav(r *http.Request, d data) {
 	d["CurDB"] = r.PathValue("db")
 	d["RegistryHostNav"] = s.cfg.RegistryHost != ""
 	d["StorageNav"] = s.cfg.StorageEnabled()
+	s.addConsole(r, d, o)
+	d["Crumbs"] = crumbsFor(d)
 }

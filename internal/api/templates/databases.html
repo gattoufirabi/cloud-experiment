@@ -1,0 +1,50 @@
+{{define "title"}}Databases · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>Databases</h1>
+  {{if .CanEdit}}<a class="button-link right" href="#create">Create database</a>{{end}}
+</div>
+<p class="lede">Managed databases on their project's private network, with nightly backups{{if .Scope}}, in project <strong>{{.Scope}}</strong>{{end}}.</p>
+
+<div class="section">
+  <div class="table-tools">
+    <h2>Databases <span class="count">{{len .Databases}}</span></h2>
+    <input type="search" data-filter="databases-table" placeholder="Find databases by name, project or engine" aria-label="Find databases">
+  </div>
+  {{if .Databases}}
+  <div class="scroll-x">
+  <table id="databases-table" class="resources">
+    <thead><tr><th>Name</th><th>Project</th><th>Engine</th><th>Status</th><th>Resources</th><th>Created</th></tr></thead>
+    <tbody>
+    {{range .Databases}}
+      <tr><td><a href="{{$.Org.Path}}/p/{{.Project}}/d/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
+        <td><a href="{{$.Org.Path}}/p/{{.Project}}">{{.ProjectName}}</a></td>
+        <td>{{engineName .Engine}} {{.Version}}</td>
+        <td>{{template "status" (dbStatus .Status)}}</td>
+        <td class="nowrap">{{.CPUMillis}} millicores · {{.MemoryMB}} MB</td>
+        <td class="nowrap">{{ago .Created}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">No databases {{if .Scope}}in this project{{else}}yet{{end}}.</p>{{end}}
+</div>
+
+{{if .CanEdit}}
+<div class="section" id="create">
+  <h2>Create database</h2>
+  {{if .Projects}}
+  <p class="small muted">Starts with 250 millicores and 256 MB, counted against your plan; change it later in its settings. Only services of the same project can reach it.</p>
+  <form method="post" action="{{.Org.Path}}/databases" class="form-grid">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Project<select name="project" required>{{range .Projects}}<option value="{{.Slug}}" {{if eq .Slug $.Scope}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
+    <label>Database ID <span class="hint">2 to 20 lowercase letters, digits and dashes</span><input name="slug" placeholder="e.g. main" pattern="[a-z0-9][a-z0-9\-]{1,19}" required></label>
+    <fieldset class="wide choice"><legend>Engine</legend>
+      {{range $i, $e := .Engines}}<label class="option"><input type="radio" name="engine" value="{{$e.Choice}}" {{if eq $i 0}}checked{{end}}> <strong>{{$e.Label}}</strong></label>{{end}}
+    </fieldset>
+    <div class="wide"><button type="submit" class="arrow">Create database</button></div>
+  </form>
+  {{else}}<p class="small muted">Create a <a href="{{.Org.Path}}/projects#create">project</a> first.</p>{{end}}
+</div>
+{{end}}
+{{end}}

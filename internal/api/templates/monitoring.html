@@ -1,0 +1,65 @@
+{{define "title"}}Monitoring · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Monitoring</h1></div>
+<p class="lede">Every live application is checked continuously; incidents open and resolve on their own and notify your channels.</p>
+<!-- ============ alerts ============ -->
+<div id="alerts">
+  <p class="help"><a href="/docs/user#alerts" target="_blank" rel="noopener">Guide: alerts ↗</a></p>
+
+  <div class="section">
+    <h2>Incidents</h2>
+    {{if .Incidents}}
+    <table>
+      <thead><tr><th>What</th><th>Service</th><th>When</th></tr></thead>
+      <tbody>
+      {{range .Incidents}}
+        <tr><td>{{template "status" .Status}} <strong>{{.Title}}</strong><br><span class="muted">{{.Summary}}</span></td>
+          <td>{{.Service}}</td>
+          <td class="nowrap">{{ago .StartedAt}}{{if eq .Status "resolved"}}{{with .ResolvedAt}}<br><span class="muted">resolved {{ago .}}</span>{{end}}{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="small muted">No incidents. Every live application is checked continuously.</p>{{end}}
+  </div>
+
+  <div class="section" id="channels">
+    <h2>Notification channels</h2>
+    {{if .Channels}}
+    <ul class="list">
+    {{range .Channels}}
+      <li>
+        <strong>{{.Name}}</strong> <span class="badge">{{.Kind}}</span>
+        <div class="small"><code>{{.URL}}{{if .Topic}}/{{.Topic}}{{end}}</code>{{if .HasSecret}} <span class="muted">{{if eq .Kind "webhook"}}signed{{else}}token{{end}}</span>{{end}}</div>
+        <div class="small muted">{{range $i, $e := .Events}}{{if $i}} · {{end}}{{$e}}{{end}}</div>
+        {{if .LastStatus}}<div class="small">last delivery: {{if eq .LastStatus "sent"}}<span class="st st-sent">sent</span>{{else}}<span class="st st-failed">failed</span> <span class="muted">{{.LastStatus}}</span>{{end}}{{with .LastDelivery}} <span class="muted">{{ago .}}</span>{{end}}</div>{{end}}
+        {{if roleAtLeast $.Org.Role "admin"}}
+        <div class="inline flush">
+          <form method="post" action="{{$.Org.Path}}/alerts/channels/{{.ID}}/test"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">send test</button></form>
+          <form method="post" action="{{$.Org.Path}}/alerts/channels/{{.ID}}/delete" data-confirm="Remove channel {{.Name}}?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">remove</button></form>
+        </div>
+        {{end}}
+      </li>
+    {{end}}
+    </ul>
+    {{else}}<p class="small muted">No channels yet: incidents are only visible here.</p>{{end}}
+  </div>
+
+  {{if roleAtLeast .Org.Role "admin"}}
+  <div class="section">
+    <h2>Add a channel</h2>
+    <form method="post" action="{{.Org.Path}}/alerts/channels" class="form-grid">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Name <input name="name" placeholder="on-call" maxlength="60" required></label>
+      <label>Type <select name="kind">{{if .EmailEnabled}}<option value="email">email</option>{{end}}<option value="ntfy">ntfy push</option><option value="webhook">webhook (JSON)</option></select></label>
+      {{if .EmailEnabled}}<label>Email address <span class="hint">email only</span><input type="email" name="email" maxlength="200" placeholder="ops@example.com"></label>{{end}}
+      <label class="wide">URL <span class="hint">ntfy server or webhook address</span><input name="url" placeholder="https://ntfy.example.com or https://hooks.example.com/platform"></label>
+      <label>ntfy topic <span class="hint">ntfy only</span><input name="topic" maxlength="64"></label>
+      <label>Secret <span class="hint">webhook signing secret or ntfy token</span><input type="password" name="secret" autocomplete="off"></label>
+      <div class="wide inline flush small">{{range .AlertKinds}}<label class="check"><input type="checkbox" name="events" value="{{.}}" checked> {{.}}</label>{{end}}</div>
+      <div class="wide"><button type="submit">Add channel</button></div>
+    </form>
+    <p class="small muted">Webhooks receive JSON with an <code>X-Platform-Signature: sha256=…</code> header (HMAC of the body with your secret). Private and internal addresses are refused.</p>
+  </div>
+  {{end}}
+</div>
+{{end}}

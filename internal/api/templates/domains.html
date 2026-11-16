@@ -1,0 +1,27 @@
+{{define "title"}}Domains · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Custom domains</h1></div>
+<p class="lede">Your own domain names, each pointing at a service, with automatic HTTPS. Add one from the service's <strong>Domains</strong> tab. Every web service also has an address under <code>{{.AppsDomain}}</code>.</p>
+<p class="help"><a href="/docs/user#custom-domains-and-https" target="_blank" rel="noopener">Guide: custom domains ↗</a></p>
+<div class="section">
+  <div class="table-tools">
+    <h2>Domains <span class="count">{{len .Domains}}</span> <span class="muted small">of {{.MaxDomains}} in your plan</span></h2>
+    <input type="search" data-filter="domains-table" placeholder="Find domains" aria-label="Find domains">
+  </div>
+  {{if .Domains}}
+  <div class="scroll-x">
+  <table id="domains-table" class="resources">
+    <thead><tr><th>Domain</th><th>Service</th><th>Status</th><th>Added</th></tr></thead>
+    <tbody>
+    {{range .Domains}}
+      <tr><td><strong>{{.Hostname}}</strong></td>
+        <td><a href="{{$.Org.Path}}/p/{{.Project}}/s/{{.Service}}#domains">{{.Project}}/{{.Service}}</a></td>
+        <td>{{if .Verified}}<span class="st st-live">verified</span>{{else}}<span class="st st-pending">waiting for DNS</span>{{end}}</td>
+        <td class="nowrap">{{ago .Created}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">No custom domains {{if .Scope}}in this project{{else}}yet{{end}}.</p>{{end}}
+</div>
+{{end}}

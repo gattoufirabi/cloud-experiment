@@ -1,0 +1,66 @@
+{{define "title"}}Container registry · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Container registry</h1></div>
+<p class="lede">Private images for {{.Org.Name}}, scanned for known vulnerabilities on every push.</p>
+<!-- ============ registry ============ -->
+<div id="registry">
+  <p class="help"><a href="/docs/user#private-image-registry" target="_blank" rel="noopener">Guide: private registry ↗</a></p>
+
+  {{with .RegistryToken}}
+  <div class="panel strong">
+    <h2>Registry token "{{$.RegistryTokenName}}"</h2>
+    <p class="small">Copy it now: it will not be shown again. Store it in your CI secrets.</p>
+    <code class="select wrap">{{.}}</code>
+  </div>
+  {{end}}
+  <div class="section">
+    <h2>Image registry</h2>
+    <p class="small">Private images for this organization live under <code>{{.RegistryHost}}/{{.Org.Slug}}/</code>. Every pushed image is scanned for known vulnerabilities.</p>
+    <div class="panel"><pre class="cmd">docker login {{.RegistryHost}} -u {{.Org.Slug}}
+docker tag myapp:1.0 {{.RegistryHost}}/{{.Org.Slug}}/myapp:1.0
+docker push {{.RegistryHost}}/{{.Org.Slug}}/myapp:1.0</pre></div>
+    <p class="small">Scan policy: <strong>{{if eq .Org.ScanPolicy "block-critical"}}deployments with critical vulnerabilities are refused{{else}}vulnerabilities are reported, deployments are not blocked{{end}}</strong></p>
+  </div>
+  <div class="section" id="tokens">
+    <h2>Tokens</h2>
+    {{if .RegistryTokens}}
+    <table>
+      <thead><tr><th>Token</th><th>Access</th><th>Last used</th><th></th></tr></thead>
+      <tbody>
+      {{range .RegistryTokens}}
+        <tr><td><strong>{{.Name}}</strong></td><td>{{if .CanPush}}push + pull{{else}}pull{{end}}</td>
+          <td class="nowrap">{{with .LastUsed}}{{ago .}}{{else}}<span class="muted">never</span>{{end}}</td>
+          <td>{{if roleAtLeast $.Org.Role "admin"}}<form method="post" action="{{$.Org.Path}}/registry-tokens/{{.ID}}/delete" data-confirm="Revoke token {{.Name}}?">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">revoke</button></form>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="small muted">No tokens yet.</p>{{end}}
+    {{if roleAtLeast .Org.Role "admin"}}
+    <form method="post" action="{{.Org.Path}}/registry-tokens" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="name" placeholder="token name, e.g. ci" maxlength="60" required aria-label="Token name">
+      <label class="check"><input type="checkbox" name="push" value="1" checked> can push</label>
+      <button type="submit">Create token</button>
+    </form>
+    {{end}}
+  </div>
+  <div class="section" id="scans">
+    <h2>Recent image scans</h2>
+    {{if .Scans}}
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>Image</th><th>Findings</th><th>When</th></tr></thead>
+      <tbody>
+      {{range .Scans}}
+        <tr><td><code>{{.Image}}</code> <span class="muted">{{.Source}}</span></td>
+          <td>{{if eq .Status "done"}}{{template "sevcounts" .}}{{else if eq .Status "error"}}<span title="{{.Error}}">{{template "status" "error"}}</span>{{else}}{{template "status" .Status}}{{end}}</td>
+          <td class="nowrap">{{ago .CreatedAt}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}<p class="small muted">No images scanned yet. Pushes and deployments are scanned automatically.</p>{{end}}
+  </div>
+</div>
+{{end}}

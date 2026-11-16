@@ -1,14 +1,40 @@
 {{define "title"}}{{.Project.Name}}{{end}}
 {{define "content"}}
 <div class="head"><h1>{{.Project.Name}}</h1><code>{{.Project.Slug}}</code></div>
-<p class="lede">A project groups related services. Each service is one container with its own address.</p>
+<p class="lede">Everything that makes up this application: its services, databases, domains, jobs and shared configuration.</p>
 
 <nav class="tabs" role="tablist" aria-label="Project sections">
+  <a role="tab" href="#overview">Overview</a>
   <a role="tab" href="#services">Services <span class="count">{{len .Services}}</span></a>
   <a role="tab" href="#databases">Databases <span class="count">{{len .Databases}}</span></a>
   <a role="tab" href="#variables">Variables <span class="count">{{len .Variables}}</span></a>
   {{if roleAtLeast .Org.Role "admin"}}<a role="tab" href="#project-settings">Settings</a>{{end}}
 </nav>
+
+<section class="pane" id="overview" role="tabpanel" aria-label="Overview">
+  <div class="stats">
+    <a class="stat" href="#services"><span>Services</span><b>{{or .LiveServices 0}} / {{len .Services}}</b><small>live</small></a>
+    <a class="stat" href="#databases"><span>Databases</span><b>{{len .Databases}}</b></a>
+    <a class="stat" href="#variables"><span>Shared variables</span><b>{{len .Variables}}</b></a>
+    <a class="stat" href="#resources"><span>Domains and jobs</span><b>{{with .Others}}{{len .}}{{else}}0{{end}}</b></a>
+  </div>
+  <div class="section" id="resources">
+    <div class="table-tools"><h2>All resources</h2>
+      <input type="search" data-filter="project-resources" placeholder="Find resources" aria-label="Find resources"></div>
+    {{if or .Services .Databases .Others}}
+    <div class="scroll-x">
+    <table id="project-resources" class="resources">
+      <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Details</th></tr></thead>
+      <tbody>
+      {{range .Services}}<tr><td><a href="{{$.Org.Path}}/p/{{$.Project.Slug}}/s/{{.Slug}}"><strong>{{.Slug}}</strong></a></td><td>Service</td><td>{{template "status" .Status}}</td><td><code class="trunc">{{if .Image}}{{.Image}}{{else}}no image yet{{end}}</code></td></tr>{{end}}
+      {{range .Databases}}<tr><td><a href="{{$.Org.Path}}/p/{{$.Project.Slug}}/d/{{.Slug}}"><strong>{{.Slug}}</strong></a></td><td>Database</td><td>{{template "status" (dbStatus .Status)}}</td><td>{{engineName .Engine}} {{.Version}} · {{.CPUMillis}} millicores · {{.MemoryMB}} MB</td></tr>{{end}}
+      {{range .Others}}<tr><td><a href="{{$.Org.Path}}/p/{{$.Project.Slug}}{{.Path}}"><strong>{{.Name}}</strong></a></td><td>{{.Kind}}</td><td>{{template "status" (jobStatus .Status)}}</td><td>{{.Detail}}</td></tr>{{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}<p class="small muted">This project is empty. Add a <a href="#services">service</a> or a <a href="#databases">database</a>.</p>{{end}}
+  </div>
+</section>
 
 <section class="pane" id="services" role="tabpanel" aria-label="Services">
   <p class="help"><a href="/docs/user#deploy-your-first-application" target="_blank" rel="noopener">Guide: deploy your first application ↗</a></p>

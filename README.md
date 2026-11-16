@@ -22,6 +22,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Vulnerability scanning** (Trivy): every push, every deploy (cached 24 h per image), nightly rescan of running images; report per service | done, tested |
 | Scan policy per organization: `warn` (default) or `block-critical` | done, tested |
 | **Per-client backups** (restic) of each service's persistent folder: nightly + on demand, retention, self-service restore with a safety snapshot | done, tested |
+| **Cloud-style console**: Services menu with pinned favorites, global search, per-product areas (Compute, Databases, Storage, Domains, Registry, Monitoring, IAM, Billing) with lists across projects, a remembered project filter, breadcrumbs, project overview of all resources | done, tested |
 | **Object storage (S3-compatible, Garage)**: per-organization buckets with quotas, access keys scoped per bucket (read / read-write), console object browser, presigned downloads, public website buckets with HTTPS, one-click `AWS_*` secrets for a service, usage billed per GB-month, REST API and CLI | done, tested |
 | **Managed PostgreSQL** (16 or 17), **MySQL 8.4, MariaDB 11.4 and Redis 7**: per-project private database, resources counted against the plan, one-click `DATABASE_URL` secret, consistent backups (`pg_dump` / `mysqldump` / Redis snapshot) with self-service restore | done, tested |
 | **API tokens, REST API v1 and `platformctl`** (deploy from CI, status, logs, secrets), org- and role-scoped, audited | done, tested |

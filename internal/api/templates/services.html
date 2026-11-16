@@ -1,0 +1,21 @@
+{{define "title"}}All services · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>All services</h1></div>
+<p class="lede">Choose the services you use: pinned services appear in the favorites bar and on the console home.</p>
+{{range .Catalog}}
+<section class="section">
+  <h2>{{.Name}}</h2>
+  <div class="tiles">
+    {{range .Products}}
+    <div class="tile with-pin">
+      <a href="{{$.Org.Path}}{{.Path}}">{{icon .ID}}<span><strong>{{.Name}}</strong><small>{{.Description}}</small></span></a>
+      <form method="post" action="{{$.Org.Path}}/pins" class="pin-form">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="product" value="{{.ID}}"><input type="hidden" name="back" value="{{$.Org.Path}}/services">
+        <button type="submit" class="pin {{if .Pinned}}on{{end}}" aria-pressed="{{if .Pinned}}true{{else}}false{{end}}" aria-label="{{if .Pinned}}Unpin{{else}}Pin{{end}} {{.Name}}">{{icon "star"}}<span>{{if .Pinned}}Pinned{{else}}Pin{{end}}</span></button>
+      </form>
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}
+{{end}}

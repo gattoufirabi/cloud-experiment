@@ -4,12 +4,40 @@
 
 {{define "flash"}}{{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}{{with .Err}}<p class="flash err" role="alert">{{.}}</p>{{end}}{{end}}
 
+{{/* Project filter used by the lists of every area. */}}
+{{define "scope"}}
+<form method="get" action="{{.Org.Path}}/scope" class="scope">
+  <input type="hidden" name="back" value="{{.Org.Path}}{{.CurPath}}">
+  <label><span class="scope-l">Project</span>
+    <select name="project" data-autosubmit aria-label="Show resources of project">
+      <option value="">All projects</option>
+      {{range .Nav}}<option value="{{.Slug}}" {{if eq .Slug $.ScopeProject}}selected{{end}}>{{.Name}}</option>{{end}}
+    </select></label>
+  <noscript><button class="secondary small" type="submit">Apply</button></noscript>
+</form>
+{{end}}
+
+{{/* Left menu: the current product's pages, or the resources of each project on the console home. */}}
 {{define "sidebar"}}
-<div class="side-org">
-  <a href="{{.Org.Path}}" class="{{if not .CurProject}}cur{{end}}">{{.Org.Name}}</a>
-  <div class="meta">{{.Org.Role}}{{if .Org.Suspended}} · suspended{{end}}</div>
+{{with .AreaProduct}}
+<div class="side-area">
+  <a href="{{$.Org.Path}}{{.Path}}" class="side-title">{{icon .ID}}<span>{{.Name}}</span></a>
 </div>
-<div class="side-h">Projects</div>
+<nav aria-label="{{.Name}}">
+  {{range $.AreaNav}}<a href="{{$.Org.Path}}{{.Path}}" class="{{if eq .Path $.CurPath}}cur{{end}}">{{.Label}}</a>{{end}}
+</nav>
+{{if eq .ID "projects" "compute" "databases"}}
+<div class="side-h">Resources by project</div>
+{{template "tree" $}}
+{{end}}
+{{else}}
+<div class="side-area"><a href="{{.Org.Path}}" class="side-title">{{icon "home"}}<span>Console home</span></a></div>
+<div class="side-h">Resources by project</div>
+{{template "tree" .}}
+{{end}}
+{{end}}
+
+{{define "tree"}}
 {{range $p := .Nav}}
 <div class="side-proj">
   <a href="{{$.Org.Path}}/p/{{$p.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (not $.CurService) (not $.CurDB)}}cur{{end}}">{{$p.Name}}</a>
@@ -19,15 +47,8 @@
   </ul>{{end}}
 </div>
 {{else}}
-<p class="empty">No projects yet</p>
+<p class="empty">No projects yet. <a href="{{.Org.Path}}/projects">Create one</a></p>
 {{end}}
-<div class="side-links">
-  {{if .StorageNav}}<a href="{{.Org.Path}}/storage" class="{{if .StoragePage}}cur{{end}}">Storage</a>{{end}}
-  <a href="{{.Org.Path}}#members">Members</a>
-  {{if .RegistryHostNav}}<a href="{{.Org.Path}}#registry">Registry</a>{{end}}
-  <a href="{{.Org.Path}}#alerts">Alerts</a>
-  {{if roleAtLeast .Org.Role "admin"}}<a href="{{.Org.Path}}/audit" class="{{if .AuditPage}}cur{{end}}">Audit log</a>{{end}}
-</div>
 {{end}}
 
 {{define "layout"}}<!doctype html>
@@ -43,23 +64,73 @@
 <body>
 <div class="frame">
   <header class="top">
-    <a class="brand" href="/" aria-label="platform home"><span class="brand-mark">plat</span>form</a>
-    {{with .Org}}<nav class="crumbs" aria-label="Breadcrumb"><a href="{{.Path}}">{{.Name}}</a>{{if $.Project}}<span class="sep">/</span><a href="{{.Path}}/p/{{$.Project.Slug}}">{{$.Project.Name}}</a>{{end}}{{if $.Service}}<span class="sep">/</span><span>{{$.Service.Slug}}</span>{{end}}</nav>{{end}}
-    <a class="navlink" href="/docs/user">Docs</a>
-    {{if .User}}{{if .User.IsOperator}}<a class="navlink" href="/operator">Operator</a>{{end}}<a class="navlink" href="/account">Account</a>{{end}}
-    {{with .User}}
-    <form method="post" action="/logout" class="logout">
-      <input type="hidden" name="csrf" value="{{$.CSRF}}">
-      <span class="muted">{{.Email}}</span>
-      <button class="secondary small" type="submit">Log out</button>
+    <a class="brand" href="{{with .Org}}{{.Path}}{{else}}/{{end}}" aria-label="Console home"><span class="brand-mark">plat</span>form</a>
+    {{if .HasNav}}
+    <details class="menu services-menu">
+      <summary>{{icon "grid"}}<span>Services</span></summary>
+      <div class="menu-panel catalog-panel">
+        <div class="catalog-head"><strong>All services</strong> <a href="{{.Org.Path}}/services">Open the catalog</a></div>
+        <div class="catalog-grid">
+          {{range .Catalog}}
+          <div class="catalog-group">
+            <div class="catalog-gname">{{.Name}}</div>
+            {{range .Products}}
+            <div class="catalog-item">
+              <a href="{{$.Org.Path}}{{.Path}}">{{icon .ID}}<span><strong>{{.Name}}</strong><small>{{.Description}}</small></span></a>
+              <form method="post" action="{{$.Org.Path}}/pins" class="pin-form">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="product" value="{{.ID}}"><input type="hidden" name="back" value="{{$.Org.Path}}{{$.CurPath}}">
+                <button type="submit" class="pin {{if .Pinned}}on{{end}}" title="{{if .Pinned}}Remove from{{else}}Add to{{end}} favorites" aria-label="{{if .Pinned}}Unpin{{else}}Pin{{end}} {{.Name}}" aria-pressed="{{if .Pinned}}true{{else}}false{{end}}">{{icon "star"}}</button>
+              </form>
+            </div>
+            {{end}}
+          </div>
+          {{end}}
+        </div>
+      </div>
+    </details>
+    <form class="search" method="get" action="{{.Org.Path}}/search" role="search">
+      {{icon "search"}}<input name="q" type="search" placeholder="Search services, projects, resources" value="{{.Q}}" aria-label="Search" autocomplete="off">
     </form>
-    {{else}}<a class="pill-link" href="/login">Log in</a>
     {{end}}
+    <div class="top-right">
+      {{if .HasNav}}
+      <details class="menu org-menu">
+        <summary><span class="org-name">{{.Org.Name}}</span></summary>
+        <div class="menu-panel right">
+          <div class="menu-label">Organizations</div>
+          {{range .MyOrgs}}<a href="/o/{{.Slug}}" class="{{if eq .Slug $.Org.Slug}}cur{{end}}">{{.Name}}</a>{{end}}
+          <div class="menu-sep"></div>
+          <span class="menu-meta">Your role: {{.Org.Role}}{{if .Org.Suspended}} · suspended{{end}}</span>
+        </div>
+      </details>
+      {{end}}
+      <a class="navlink" href="/docs/user">Docs</a>
+      {{with .User}}
+      <details class="menu user-menu">
+        <summary><span class="avatar" aria-hidden="true">{{slice .Email 0 1}}</span><span class="sr-only">Account menu</span></summary>
+        <div class="menu-panel right">
+          <span class="menu-meta">{{.Email}}</span>
+          <a href="/account">Account and security</a>
+          {{if .IsOperator}}<a href="/operator">Operator console</a>{{end}}
+          <div class="menu-sep"></div>
+          <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">Log out</button></form>
+        </div>
+      </details>
+      {{else}}<a class="pill-link" href="/login">Log in</a>
+      {{end}}
+    </div>
   </header>
   {{if .HasNav}}
+  <nav class="favbar" aria-label="Favorites">
+    {{range .Favorites}}<a href="{{$.Org.Path}}{{.Path}}" class="{{if eq .ID $.Area}}cur{{end}}">{{icon .ID}}{{.Short}}</a>{{else}}<span class="muted small">Pin services from the Services menu to keep them here.</span>{{end}}
+    <span class="favbar-r">{{template "scope" .}}</span>
+  </nav>
   <div class="workspace">
-    <aside class="side" aria-label="Projects and services">{{template "sidebar" .}}</aside>
-    <main class="main">{{template "flash" .}}{{template "content" .}}</main>
+    <aside class="side" aria-label="Navigation">{{template "sidebar" .}}</aside>
+    <main class="main">
+      {{if .Crumbs}}<nav class="crumbs" aria-label="Breadcrumb"><a href="{{.Org.Path}}">Console</a>{{range .Crumbs}}<span class="sep">›</span>{{if .Path}}<a href="{{$.Org.Path}}{{.Path}}">{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}{{end}}</nav>{{end}}
+      {{template "flash" .}}{{template "content" .}}
+    </main>
   </div>
   {{else}}
   <main class="main single">{{template "flash" .}}{{template "content" .}}</main>

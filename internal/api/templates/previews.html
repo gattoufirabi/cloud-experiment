@@ -1,0 +1,24 @@
+{{define "title"}}Previews · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Preview environments</h1></div>
+<p class="lede">Temporary copies of a service, for example one per pull request{{if .Scope}}, in project <strong>{{.Scope}}</strong>{{end}}. Create them from a service's <strong>Previews</strong> tab, the API or pull request webhooks.</p>
+<div class="section">
+  <div class="table-tools">
+    <h2>Previews <span class="count">{{len .Previews}}</span></h2>
+    <input type="search" data-filter="previews-table" placeholder="Find previews" aria-label="Find previews">
+  </div>
+  {{if .Previews}}
+  <div class="scroll-x">
+  <table id="previews-table" class="resources">
+    <thead><tr><th>Preview</th><th>Service</th><th>Status</th><th>Expires</th></tr></thead>
+    <tbody>
+    {{range .Previews}}
+      <tr><td><a href="{{$.Org.Path}}/p/{{.Project}}/s/{{.Service}}#previews"><strong>{{.Name}}</strong></a></td><td>{{.Project}}/{{.Service}}</td>
+        <td>{{template "status" .Status}}</td><td class="nowrap">{{with .Expires}}{{datetime .}}{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">No previews {{if .Scope}}in this project{{else}}right now{{end}}.</p>{{end}}
+</div>
+{{end}}

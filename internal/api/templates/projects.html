@@ -1,0 +1,37 @@
+{{define "title"}}Projects · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>Projects</h1>
+  {{if roleAtLeast .Org.Role "admin"}}<a class="button-link right" href="#create">Create project</a>{{end}}
+</div>
+<p class="lede">A project groups the services, databases, variables and settings of one application. Open a project to see all its resources together.</p>
+<p class="help"><a href="/docs/user#how-things-are-organized" target="_blank" rel="noopener">Guide: how things are organized ↗</a></p>
+
+<div class="section">
+  <div class="table-tools"><h2>Projects <span class="count">{{len .Projects}}</span></h2>
+    <input type="search" data-filter="projects-table" placeholder="Find projects" aria-label="Find projects"></div>
+  {{if .Projects}}
+  <div class="scroll-x">
+  <table id="projects-table">
+    <thead><tr><th>Project</th><th>ID</th><th class="num">Services</th><th class="num">Databases</th></tr></thead>
+    <tbody>
+    {{range .Projects}}<tr><td><a href="{{$.Org.Path}}/p/{{.Slug}}"><strong>{{.Name}}</strong></a></td><td><code>{{.Slug}}</code></td><td class="num">{{.Services}}</td><td class="num">{{.Databases}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">No projects yet.</p>{{end}}
+</div>
+
+{{if roleAtLeast .Org.Role "admin"}}
+<div class="section" id="create">
+  <h2>Create project</h2>
+  <form method="post" action="{{.Org.Path}}/projects" class="form-grid">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Project ID <span class="hint">2 to 20 lowercase letters, digits and dashes; used in addresses</span>
+      <input name="slug" placeholder="e.g. shop" pattern="[a-z0-9][a-z0-9\-]{1,19}" required></label>
+    <label>Display name <span class="hint">optional</span><input name="name" placeholder="e.g. Online shop" maxlength="100"></label>
+    <div class="wide"><button type="submit">Create project</button></div>
+  </form>
+</div>
+{{end}}
+{{end}}
