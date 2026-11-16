@@ -274,8 +274,9 @@ curl -X POST -H "Authorization: Bearer $PLATFORM_TOKEN"   -d '{"image": "&lt;ima
     <form method="post" action="{{.Org.Path}}/alerts/channels" class="form-grid">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <label>Name <input name="name" placeholder="on-call" maxlength="60" required></label>
-      <label>Type <select name="kind"><option value="ntfy">ntfy push</option><option value="webhook">webhook (JSON)</option></select></label>
-      <label class="wide">URL <input name="url" placeholder="https://ntfy.example.com or https://hooks.example.com/platform" required></label>
+      <label>Type <select name="kind">{{if .EmailEnabled}}<option value="email">email</option>{{end}}<option value="ntfy">ntfy push</option><option value="webhook">webhook (JSON)</option></select></label>
+      {{if .EmailEnabled}}<label>Email address <span class="hint">email only</span><input type="email" name="email" maxlength="200" placeholder="ops@example.com"></label>{{end}}
+      <label class="wide">URL <span class="hint">ntfy server or webhook address</span><input name="url" placeholder="https://ntfy.example.com or https://hooks.example.com/platform"></label>
       <label>ntfy topic <span class="hint">ntfy only</span><input name="topic" maxlength="64"></label>
       <label>Secret <span class="hint">webhook signing secret or ntfy token</span><input type="password" name="secret" autocomplete="off"></label>
       <div class="wide inline flush small">{{range .AlertKinds}}<label class="check"><input type="checkbox" name="events" value="{{.}}" checked> {{.}}</label>{{end}}</div>

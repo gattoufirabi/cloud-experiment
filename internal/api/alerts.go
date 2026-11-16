@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	netmail "net/mail"
 	"regexp"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"platform/internal/db"
+	platmail "platform/internal/mail"
 	"platform/internal/netguard"
 )
 
@@ -91,6 +93,7 @@ func (s *Server) createChannel(w http.ResponseWriter, r *http.Request) {
 	rawURL := strings.TrimSpace(r.PostFormValue("url"))
 	topic := strings.TrimSpace(r.PostFormValue("topic"))
 	secret := r.PostFormValue("secret")
+	email := strings.ToLower(strings.TrimSpace(r.PostFormValue("email")))
 	var events []string
 	for _, k := range alertKinds {
 		for _, v := range r.PostForm["events"] {
@@ -104,8 +107,14 @@ func (s *Server) createChannel(w http.ResponseWriter, r *http.Request) {
 	case name == "" || len(name) > 60:
 		fail("Give the channel a name of up to 60 characters.")
 		return
-	case kind != "webhook" && kind != "ntfy":
-		fail("Choose webhook or ntfy.")
+	case kind != "webhook" && kind != "ntfy" && kind != "email":
+		fail("Choose email, ntfy or webhook.")
+		return
+	case kind == "email" && !platmail.Configured(s.cfg):
+		fail("This platform does not send email yet (no SMTP server configured). Use ntfy or a webhook.")
+		return
+	case kind == "email" && !validEmail(email):
+		fail("Enter a valid email address for the email channel.")
 		return
 	case kind == "ntfy" && !topicRe.MatchString(topic):
 		fail("ntfy needs a topic: letters, digits, - and _ (up to 64).")
@@ -117,10 +126,12 @@ func (s *Server) createChannel(w http.ResponseWriter, r *http.Request) {
 		fail("The secret is too long.")
 		return
 	}
-	if kind == "webhook" {
+	if kind != "ntfy" {
 		topic = ""
 	}
-	if err := netguard.ValidateURL(rawURL, s.cfg.CookieSecure, s.cfg.AlertAllowPrivate); err != nil {
+	if kind == "email" {
+		rawURL, secret = "mailto:"+email, ""
+	} else if err := netguard.ValidateURL(rawURL, s.cfg.CookieSecure, s.cfg.AlertAllowPrivate); err != nil {
 		fail(err.Error())
 		return
 	}
@@ -238,4 +249,9 @@ func (s *Server) alertThresholds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	back(w, r, svcPath(o, p, sv)+"#alerts", "Alert thresholds saved.", "")
+}
+
+func validEmail(addr string) bool {
+	a, err := netmail.ParseAddress(addr)
+	return err == nil && a.Address == addr && len(addr) <= 200 && strings.Contains(addr[strings.LastIndex(addr, "@")+1:], ".")
 }

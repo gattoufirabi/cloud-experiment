@@ -132,6 +132,15 @@ services:
       caddy: { condition: service_started }
     deploy: { resources: { limits: { memory: 256M } } }
 
+  # Builds from git: helper image (git + Railpack). Built and run once by "up"; the
+  # agent starts it for each build. Keeping this stopped container also protects the
+  # image from "docker image prune -a".
+  builder-image:
+    image: platform-builder:0.43.0
+    build: ./builder
+    command: ["true"]
+    restart: "no"
+
   caddy:
     image: platform-caddy:2.11.9
     build: ./caddy   # Caddy + Coraza WAF + rate limit (see caddy/Dockerfile)

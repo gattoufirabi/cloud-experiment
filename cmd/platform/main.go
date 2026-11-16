@@ -108,11 +108,12 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
                                              refuse (or only report) images with critical vulnerabilities
   init-registry-key --file KEY --cert CERT   create the registry token signing key and certificate
   backup-key --slug S                        print an organization's backup repository and password (audited)
-  set-prices --plan P [--monthly CENTS] [--vcpu-hour CENTS] [--gb-hour CENTS] [--gb-out CENTS]
+  set-prices --plan P [--monthly CENTS] [--vcpu-hour CENTS] [--gb-hour CENTS] [--gb-out CENTS] [--build-minute CENTS]
                                              set a plan's prices (cents of BILLING_CURRENCY; decimals allowed)
   generate-invoices [--month YYYY-MM]        issue invoices for a finished month (default: last month; safe to rerun)
   invoice-paid --number N | invoice-void --number N
                                              record a payment, or cancel an invoice
+  make-operator --email E [--undo]           give (or remove) access to the operator web console (/operator)
   reset-password --email E                   print a one-time password reset link (valid 1 hour)
   reset-totp --email E                       turn off a user's two-step login (lost phone, no recovery codes);
                                              they set it up again at their next login
@@ -138,6 +139,7 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
 	vcpuHour := fs.Float64("vcpu-hour", -1, "")
 	gbHour := fs.Float64("gb-hour", -1, "")
 	gbOut := fs.Float64("gb-out", -1, "")
+	buildMin := fs.Float64("build-minute", -1, "")
 	_ = fs.Parse(args[1:])
 
 	switch args[0] {
@@ -280,6 +282,21 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
 		_, _ = pool.Exec(ctx, `SELECT pg_notify('deployments', '')`)
 		_ = db.Audit(ctx, pool, "", "", "org.plan_changed", "org:"+*slug, map[string]string{"plan": *plan}, "")
 		fmt.Println("plan of", *slug, "set to", *plan)
+	case "make-operator":
+		addr := strings.ToLower(strings.TrimSpace(*inviteEmail))
+		tag, err := pool.Exec(ctx, `UPDATE users SET is_operator = $2 WHERE email = $1`, addr, !*undo)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("no user with email %q (they must accept an invite first)", addr)
+		}
+		action := "operator.granted"
+		if *undo {
+			action = "operator.revoked"
+		}
+		_ = db.Audit(ctx, pool, "", "", action, "user:"+addr, nil, "")
+		fmt.Println(action, addr, "- the Operator link appears at their next page load")
 	case "reset-password", "reset-totp":
 		addr := strings.ToLower(strings.TrimSpace(*inviteEmail))
 		var userID string
@@ -360,7 +377,7 @@ func admin(ctx context.Context, cfg config.Config, args []string) error {
 			return err
 		}
 		for col, v := range map[string]float64{"price_monthly_cents": math.Round(*monthly), "price_vcpu_hour_cents": *vcpuHour,
-			"price_gb_hour_cents": *gbHour, "price_gb_out_cents": *gbOut} {
+			"price_gb_hour_cents": *gbHour, "price_gb_out_cents": *gbOut, "price_build_minute_cents": *buildMin} {
 			if err := set(col, v); err != nil {
 				return err
 			}

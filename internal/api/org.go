@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"platform/internal/db"
+	platmail "platform/internal/mail"
 	"platform/internal/model"
 	"platform/internal/secure"
 )
@@ -142,6 +143,7 @@ func (s *Server) orgPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, status int, d data) {
 	d["SuspendedMessage"] = o.suspendedMessage()
+	d["EmailEnabled"] = platmail.Configured(s.cfg)
 	type project struct {
 		Slug, Name string
 		Services   int

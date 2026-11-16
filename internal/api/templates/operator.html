@@ -1,0 +1,113 @@
+{{define "title"}}Operator{{end}}
+{{define "content"}}
+<div class="head"><h1>Operator console</h1><span class="badge">operator</span></div>
+<p class="lede">The whole platform. Every change here is recorded in the audit log under your name.</p>
+
+<nav class="tabs" role="tablist" aria-label="Operator sections">
+  <a role="tab" href="#op-overview">Overview</a>
+  <a role="tab" href="#op-orgs">Organizations <span class="count">{{len .Orgs}}</span></a>
+  <a role="tab" href="#op-invoices">Invoices{{with .Overview.OpenInvoices}} <span class="count">{{.}} open</span>{{end}}</a>
+  <a role="tab" href="#op-audit">Audit log</a>
+</nav>
+
+<section class="pane" id="op-overview" role="tabpanel" aria-label="Overview">
+  {{with .Overview}}
+  <div class="stats">
+    <div class="stat"><span>Organizations</span><b>{{.Orgs}}</b></div>
+    <div class="stat"><span>Users</span><b>{{.Users}}</b></div>
+    <div class="stat"><span>Live services</span><b>{{.LiveServices}}</b></div>
+    <div class="stat"><span>Trials</span><b>{{.Trials}}</b></div>
+    <div class="stat{{if .Suspended}} warn{{end}}"><span>Suspended</span><b>{{.Suspended}}</b></div>
+    <div class="stat{{if .OpenIncidents}} bad{{end}}"><span>Open incidents</span><b>{{.OpenIncidents}}</b></div>
+    <div class="stat"><span>Open invoices</span><b>{{.OpenInvoices}}</b></div>
+    <div class="stat"><span>Builds, last 24 h</span><b>{{.BuildsToday}}</b></div>
+    <div class="stat"><span>Client storage</span><b>{{.DiskUsedMB}} MB</b></div>
+  </div>
+  {{end}}
+  <div class="section">
+    <h2>Command line</h2>
+    <p class="small muted">Everything here also works over SSH, plus the rarer tasks (invites, prices, password and two-step resets):</p>
+    <pre class="cmd">cd /opt/platform/deploy && docker compose -f compose.prod.yml exec api /platform admin help</pre>
+  </div>
+</section>
+
+<section class="pane" id="op-orgs" role="tabpanel" aria-label="Organizations">
+  <div class="section">
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>Organization</th><th>Owner</th><th>Plan</th><th class="num">Services</th><th class="num">Disk</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+      {{range .Orgs}}
+      <tr>
+        <td><strong>{{.Name}}</strong><br><span class="small muted">{{.Slug}} · created {{ago .Created}}</span></td>
+        <td class="small">{{.Owner}}</td>
+        <td>
+          <form method="post" action="/operator/orgs/{{.Slug}}/plan" class="inline flush">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <select name="plan" aria-label="Plan of {{.Slug}}">{{$cur := .PlanID}}{{range $.Plans}}<option value="{{.}}"{{if eq . $cur}} selected{{end}}>{{.}}</option>{{end}}</select>
+            <button type="submit" class="secondary small">Set</button>
+          </form>
+          {{with .TrialEnds}}<span class="small muted">trial ends {{datetime .}}</span>{{end}}
+        </td>
+        <td class="num">{{.Services}}{{if .Databases}} <span class="muted small">+{{.Databases}} db</span>{{end}}</td>
+        <td class="num">{{.DiskUsedMB}} / {{.MaxDiskMB}} MB</td>
+        <td>{{if .Suspended}}<span class="st st-failed">suspended</span><br><span class="small muted">{{.SuspendReason}}</span>{{else}}<span class="st st-live">active</span>{{end}}</td>
+        <td>
+          <form method="post" action="/operator/orgs/{{.Slug}}/suspend" class="inline flush">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            {{if .Suspended}}<button type="submit" class="secondary small">Restore</button>
+            {{else}}<input type="hidden" name="on" value="1"><button type="submit" class="danger small" data-confirm="Suspend {{.Slug}}? Its applications stop within seconds.">Suspend</button>{{end}}
+          </form>
+        </td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+
+<section class="pane" id="op-invoices" role="tabpanel" aria-label="Invoices">
+  <div class="section">
+    {{if .Invoices}}
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>Invoice</th><th>Organization</th><th>Period</th><th class="num">Total</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+      {{range .Invoices}}
+      <tr>
+        <td><strong>{{.Number}}</strong><br><span class="small muted">issued {{day .Issued}}</span></td>
+        <td>{{.OrgSlug}}</td>
+        <td>{{month .PeriodStart}}</td>
+        <td class="num">{{money .Total .Currency}}</td>
+        <td>{{if eq .Status "paid"}}<span class="st st-live">paid</span>{{else if eq .Status "void"}}<span class="st st-none">cancelled</span>{{else}}<span class="st st-pending">to pay</span>{{end}}</td>
+        <td>{{if eq .Status "open"}}
+          <form method="post" action="/operator/invoices/{{.Number}}" class="inline flush">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <button type="submit" name="status" value="paid" class="small">Mark paid</button>
+            <button type="submit" name="status" value="void" class="secondary small" data-confirm="Cancel invoice {{.Number}}?">Cancel</button>
+          </form>{{end}}
+        </td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}<p class="muted">No invoices yet.</p>{{end}}
+  </div>
+</section>
+
+<section class="pane" id="op-audit" role="tabpanel" aria-label="Audit log">
+  <div class="section">
+    <p class="small muted">Latest 300 events across all organizations, newest first. Entries are hash-chained.</p>
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>When (UTC)</th><th>Organization</th><th>Who</th><th>Action</th><th>Target</th></tr></thead>
+      <tbody>
+      {{range .Events}}<tr><td class="nowrap small">{{datetime .At}}</td><td>{{.OrgSlug}}</td><td class="small">{{.Who}}</td><td><code>{{.Action}}</code></td><td class="small">{{.Target}}</td></tr>{{end}}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+{{end}}

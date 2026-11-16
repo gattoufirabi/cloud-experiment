@@ -34,6 +34,9 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Account recovery**: 10 one-time recovery codes for two-step login, password reset by email or operator link, `admin reset-totp` | done, tested |
 | **Registry clean-up** (daily, unused tags older than 30 days) and weekly garbage collection; **nightly platform DB backup** timer | done, tested |
 | **Disk limits per plan**: storage measured every 15 min, alerts at 90/100%, new deploys refused above 110% | done, tested |
+| **Operator web console** (`/operator`): platform overview, organizations (plan, suspend/restore), invoices (paid/cancel), global audit log; `admin make-operator` | done, tested |
+| **Railpack builds** for repositories without a Dockerfile (Node, Python, Go, PHP, Ruby, Java...), same sandbox | done, tested |
+| **Email alert channel**, trial reminder email, build minutes on invoices, dark mode | done, tested |
 | **Built-in docs** at `/docs/user` and `/docs/admin` (public, filled with this installation's addresses), linked from the header, the login page and a help link on every console tab | done |
 | Console design: sidebar pane + tabs, monochrome style | done |
 | **Alerts**: service down/recovered, CPU and memory thresholds, failed deploys and backups, critical CVEs in running images; ntfy push and signed webhooks per organization | done, tested |
@@ -42,7 +45,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 
 The end-to-end test (`scripts/e2e-dev.sh`) runs 216 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds and self-signup. Unit tests: `go test ./...` (outbound request guard).
 
-**Not built yet** (next phases in ARCHITECTURE.md): Phase 4 (multiple servers), buildpacks/Railpack builds without a Dockerfile, email alerts (needs an SMTP server), operator web console (CLI only today).
+**Not built yet** (next phases in ARCHITECTURE.md): Phase 4 (multiple servers), hard filesystem disk quotas (XFS project quotas).
 
 ---
 

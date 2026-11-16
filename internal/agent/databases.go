@@ -200,6 +200,7 @@ func (a *Agent) startDatabase(ctx context.Context, d managedDB) error {
 		return err
 	}
 	a.setDBStatus(ctx, d.ID, "running", "", id)
+	a.refreshDBHosts(ctx, d, netName, ip)
 	a.log.Info("database running", "database", d.ID, "engine", d.Engine, "container", name)
 	return nil
 }
@@ -320,4 +321,57 @@ func (a *Agent) restoreDatabase(ctx context.Context, j backupJob) (string, error
 		return "", fmt.Errorf("pg_restore failed (code %d): %s", code, truncate(strings.TrimSpace(string(stderr)), 400))
 	}
 	return done, nil
+}
+
+// refreshDBHosts redeploys the project's live services whose hosts entry for this
+// database points at an old address (a database recreated before fixed addresses
+// existed, or moved after an address collision). Deploys switch with no downtime.
+func (a *Agent) refreshDBHosts(ctx context.Context, d managedDB, netName, ip string) {
+	want := dbContainerName(d.ID) + ":" + ip
+	prefix := dbContainerName(d.ID) + ":"
+	rows, err := a.pool.Query(ctx, `
+		SELECT dp.service_id, dp.container_id, dp.spec FROM deployments dp JOIN services s ON s.id = dp.service_id
+		WHERE dp.status = 'live' AND s.project_id = $1 AND dp.container_id IS NOT NULL`, d.ProjectID)
+	if err != nil {
+		return
+	}
+	type live struct {
+		serviceID, containerID string
+		spec                   []byte
+	}
+	var stale []live
+	var all []live
+	for rows.Next() {
+		var l live
+		if rows.Scan(&l.serviceID, &l.containerID, &l.spec) == nil {
+			all = append(all, l)
+		}
+	}
+	rows.Close()
+	for _, l := range all {
+		info, err := a.dk.ContainerInspect(ctx, l.containerID)
+		if err != nil {
+			continue
+		}
+		for _, h := range info.HostConfig.ExtraHosts {
+			if strings.HasPrefix(h, prefix) && h != want {
+				stale = append(stale, l)
+				break
+			}
+		}
+	}
+	for _, l := range stale {
+		if _, err := a.pool.Exec(ctx, `
+			INSERT INTO deployments (org_id, service_id, revision, spec)
+			VALUES ($1, $2, (SELECT coalesce(max(revision), 0) + 1 FROM deployments WHERE service_id = $2), $3)`,
+			d.OrgID, l.serviceID, l.spec); err != nil {
+			a.log.Warn("redeploy after database move", "service", l.serviceID, "err", err)
+			continue
+		}
+		_ = auditAgent(ctx, a, d.OrgID, "deployment.redeployed", "service:"+l.serviceID, map[string]string{"reason": "database address changed"})
+		a.log.Info("redeploying after database address change", "service", l.serviceID, "database", d.ID)
+	}
+	if len(stale) > 0 {
+		a.poke()
+	}
 }

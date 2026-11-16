@@ -26,6 +26,7 @@ func (a *Agent) meterLoop(ctx context.Context) {
 		a.meterMinute(ctx)
 		a.meterEgress(ctx, lastTx, abuse)
 		a.expireTrials(ctx)
+		a.remindTrials(ctx)
 		a.watchCPU(ctx, abuse)
 		if a.cfg.BillingEnabled {
 			prev, _ := billing.MonthBounds(time.Now().UTC().AddDate(0, 0, -1))

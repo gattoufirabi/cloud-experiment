@@ -7,11 +7,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"platform/internal/mail"
 	"strconv"
 	"strings"
 	"sync"
@@ -417,6 +419,19 @@ func (a *Agent) send(ctx context.Context, d delivery) error {
 		link += "/p/" + d.Project + "/s/" + d.Service
 	}
 
+	if d.ChannelKind == "email" {
+		if !mail.Configured(a.cfg) {
+			return errors.New("no SMTP server configured")
+		}
+		state := "Problem"
+		if d.Transition == "resolved" {
+			state = "Back to normal"
+		}
+		body := state + ": " + title + "\n\n" + d.Summary + "\n\nWhere: " + where +
+			"\nStarted: " + d.StartedAt.UTC().Format("2006-01-02 15:04 UTC") + "\nOpen in the console: " + link +
+			"\n\nYou receive this because this address is an alert channel of " + d.OrgSlug + ".\n"
+		return mail.Send(a.cfg, strings.TrimPrefix(d.URL, "mailto:"), "[platform] "+title+" · "+where, body)
+	}
 	var req *http.Request
 	var err error
 	switch d.ChannelKind {

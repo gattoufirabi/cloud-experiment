@@ -30,17 +30,20 @@ type Prices struct {
 	VCPUHour float64 // cents per vCPU-hour
 	GBHour   float64 // cents per GB-hour of memory
 	GBOut    float64 // cents per GB of network out
+	BuildMin float64 // cents per build minute
 }
 
 type Usage struct {
 	CPUMilliMinutes int64
 	MemMBMinutes    int64
 	EgressBytes     int64
+	BuildSeconds    int64
 }
 
-func (u Usage) VCPUHours() float64 { return float64(u.CPUMilliMinutes) / 1000 / 60 }
-func (u Usage) GBHours() float64   { return float64(u.MemMBMinutes) / 1024 / 60 }
-func (u Usage) GBOut() float64     { return float64(u.EgressBytes) / 1e9 }
+func (u Usage) VCPUHours() float64    { return float64(u.CPUMilliMinutes) / 1000 / 60 }
+func (u Usage) GBHours() float64      { return float64(u.MemMBMinutes) / 1024 / 60 }
+func (u Usage) GBOut() float64        { return float64(u.EgressBytes) / 1e9 }
+func (u Usage) BuildMinutes() float64 { return float64(u.BuildSeconds) / 60 }
 
 type Line struct {
 	Description string
@@ -69,6 +72,7 @@ func Lines(planName string, p Prices, u Usage, fraction float64) []Line {
 	add("CPU allocated to services and databases", "vCPU-hour", u.VCPUHours(), p.VCPUHour)
 	add("Memory allocated to services and databases", "GB-hour", u.GBHours(), p.GBHour)
 	add("Network out", "GB", u.GBOut(), p.GBOut)
+	add("Builds from git", "build minute", u.BuildMinutes(), p.BuildMin)
 	return out
 }
 
@@ -130,7 +134,8 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, month 
 	}
 	rows, err := pool.Query(ctx, `
 		SELECT o.id, o.name, o.billing_name, o.billing_address, o.billing_tax_id, p.name, o.created_at,
-		       p.price_monthly_cents, p.price_vcpu_hour_cents::float8, p.price_gb_hour_cents::float8, p.price_gb_out_cents::float8
+		       p.price_monthly_cents, p.price_vcpu_hour_cents::float8, p.price_gb_hour_cents::float8, p.price_gb_out_cents::float8,
+		       p.price_build_minute_cents::float8
 		FROM orgs o JOIN plans p ON p.id = o.plan_id
 		WHERE o.created_at < $2
 		  AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.org_id = o.id AND i.period_start = $1::date)
@@ -141,7 +146,7 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, month 
 	orgs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (orgRow, error) {
 		var o orgRow
 		err := r.Scan(&o.ID, &o.Name, &o.BillName, &o.BillAddr, &o.BillTax, &o.Plan, &o.Created,
-			&o.P.Monthly, &o.P.VCPUHour, &o.P.GBHour, &o.P.GBOut)
+			&o.P.Monthly, &o.P.VCPUHour, &o.P.GBHour, &o.P.GBOut, &o.P.BuildMin)
 		return o, err
 	})
 	if err != nil {
@@ -154,6 +159,9 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, month 
 			SELECT coalesce(sum(cpu_milli_minutes), 0)::bigint, coalesce(sum(mem_mb_minutes), 0)::bigint, coalesce(sum(egress_bytes), 0)::bigint
 			FROM usage_hourly WHERE org_id = $1 AND hour >= $2 AND hour < $3`, o.ID, start, end).
 			Scan(&u.CPUMilliMinutes, &u.MemMBMinutes, &u.EgressBytes); err != nil {
+			return created, err
+		}
+		if u.BuildSeconds, err = BuildSeconds(ctx, pool, o.ID, start, end); err != nil {
 			return created, err
 		}
 		lines := Lines(o.Plan, o.P, u, Fraction(start, end, o.Created, end))
@@ -221,4 +229,18 @@ func insertInvoice(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, o
 		return false, err
 	}
 	return true, tx.Commit(ctx)
+}
+
+// Querier is satisfied by a pool and a transaction.
+type Querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// BuildSeconds is the time an organization's builds ran in [start, end).
+func BuildSeconds(ctx context.Context, q Querier, orgID string, start, end time.Time) (int64, error) {
+	var s int64
+	err := q.QueryRow(ctx, `
+		SELECT coalesce(sum(extract(epoch FROM finished_at - started_at)), 0)::bigint FROM builds
+		WHERE org_id = $1 AND started_at IS NOT NULL AND finished_at >= $2 AND finished_at < $3`, orgID, start, end).Scan(&s)
+	return s, err
 }

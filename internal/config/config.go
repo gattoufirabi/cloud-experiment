@@ -66,15 +66,16 @@ type Config struct {
 	AlertsEnabled bool
 
 	// Builds from git (sandboxed BuildKit); needs the registry.
-	BuildsEnabled   bool
-	BuildkitImage   string
-	GitImage        string
-	BuildRuntime    string // container runtime for build containers ("" = Docker default)
-	BuildTimeout    time.Duration
-	BuildMemoryMB   int
-	BuildCPUMillis  int
-	BuildSubnet     string
-	BuildMaxImageMB int
+	BuildsEnabled    bool
+	BuildkitImage    string
+	GitImage         string // git + Railpack helper image (deploy/builder)
+	RailpackFrontend string // BuildKit frontend for repositories without a Dockerfile
+	BuildRuntime     string // container runtime for build containers ("" = Docker default)
+	BuildTimeout     time.Duration
+	BuildMemoryMB    int
+	BuildCPUMillis   int
+	BuildSubnet      string
+	BuildMaxImageMB  int
 	// BuildAllowInsecure (development only): allow http:// and private-address repositories.
 	BuildAllowInsecure bool
 	// RegistryKeepDays: unused tags younger than this are kept by the daily cleanup.
@@ -156,7 +157,8 @@ func Load() Config {
 		TenantResolvConf:   env("TENANT_RESOLV_CONF", ""),
 		BuildsEnabled:      envBool("BUILDS_ENABLED", false),
 		BuildkitImage:      env("BUILDKIT_IMAGE", "moby/buildkit:v0.34.1-rootless"),
-		GitImage:           env("GIT_IMAGE", "alpine/git:v2.52.0"),
+		GitImage:           env("GIT_IMAGE", "platform-builder:0.43.0"),
+		RailpackFrontend:   env("RAILPACK_FRONTEND", "ghcr.io/railwayapp/railpack-frontend:v0.43.0"),
 		BuildRuntime:       env("BUILD_RUNTIME", ""),
 		BuildTimeout:       time.Duration(envInt("BUILD_TIMEOUT_MINUTES", 15)) * time.Minute,
 		BuildMemoryMB:      envInt("BUILD_MEMORY_MB", 2048),

@@ -15,7 +15,7 @@
     {{if .Tax}}<tr><td colspan="3">Tax {{.TaxPercent}}%</td><td class="num">{{money .Tax .Currency}}</td></tr>{{end}}
     </tbody>
   </table>
-  <p class="small muted">Prices of plan {{.PlanName}}: {{money .Prices.Monthly .Currency}} per month, {{unitprice .Prices.VCPUHour}} {{.Currency}} per vCPU-hour, {{unitprice .Prices.GBHour}} {{.Currency}} per GB-hour of memory, {{unitprice .Prices.GBOut}} {{.Currency}} per GB of network out. Resources are billed while they run, at the size you allocated, not the share they used.</p>
+  <p class="small muted">Prices of plan {{.PlanName}}: {{money .Prices.Monthly .Currency}} per month, {{unitprice .Prices.VCPUHour}} {{.Currency}} per vCPU-hour, {{unitprice .Prices.GBHour}} {{.Currency}} per GB-hour of memory, {{unitprice .Prices.GBOut}} {{.Currency}} per GB of network out, {{unitprice .Prices.BuildMin}} {{.Currency}} per build minute. Resources are billed while they run, at the size you allocated, not the share they used.</p>
 </div>
 
 <div class="section">

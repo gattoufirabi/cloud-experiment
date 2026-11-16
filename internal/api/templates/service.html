@@ -347,7 +347,7 @@
   <p class="help"><a href="/docs/user#builds-from-git" target="_blank" rel="noopener">Guide: builds from git ↗</a></p>
   <div class="section">
     <h2>Build from git</h2>
-    <p class="small muted">The platform clones the branch, builds its Dockerfile in an isolated sandbox, stores the image in your registry space, scans it and, if you choose, deploys it with this service's settings.</p>
+    <p class="small muted">The platform clones the branch and builds it in an isolated sandbox: with its Dockerfile if there is one, otherwise with Railpack, which detects Node, Python, Go, PHP, Ruby, Java, Rust, Elixir and static sites. The image is stored in your registry space, scanned and, if you choose, deployed with this service's settings.</p>
     {{if .Source.Repo}}
     <p><code>{{.Source.Repo}}</code> · branch <code>{{.Source.Branch}}</code>{{with .Source.Dir}} · folder <code>{{.}}</code>{{end}}{{if .Source.HasToken}} · token saved{{end}}</p>
     {{if .CanEdit}}
@@ -377,7 +377,7 @@
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <label>Repository <span class="hint">https address; empty turns builds off</span><input name="repo" value="{{.Source.Repo}}" placeholder="https://github.com/acme/web.git" maxlength="300"></label>
       <label>Branch <input name="branch" value="{{.Source.Branch}}" maxlength="100" required></label>
-      <label>Folder <span class="hint">where the Dockerfile is; empty = repository root</span><input name="dir" value="{{.Source.Dir}}" placeholder="services/web" maxlength="200"></label>
+      <label>Folder <span class="hint">the app's folder in the repository; empty = repository root</span><input name="dir" value="{{.Source.Dir}}" placeholder="services/web" maxlength="200"></label>
       <label>Access token <span class="hint">private repositories only: a read-only token; stored encrypted, never shown again</span><input name="token" type="password" autocomplete="off" placeholder="{{if .Source.HasToken}}saved (leave empty to keep){{end}}"></label>
       {{if .Source.HasToken}}<label class="check"><input type="checkbox" name="clear_token" value="1"> remove the saved token</label>{{end}}
       <div><button type="submit" class="secondary">Save source</button></div>

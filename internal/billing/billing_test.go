@@ -52,3 +52,10 @@ func TestNoUsageNoFeeNoLines(t *testing.T) {
 		t.Errorf("want no lines, got %+v", l)
 	}
 }
+
+func TestBuildMinutesLine(t *testing.T) {
+	lines := Lines("Starter", Prices{BuildMin: 0.5}, Usage{BuildSeconds: 600}, 0)
+	if len(lines) != 1 || lines[0].Unit != "build minute" || lines[0].Quantity != 10 || lines[0].Amount != 5 {
+		t.Fatalf("want 10 build minutes for 5 cents, got %+v", lines)
+	}
+}

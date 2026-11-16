@@ -45,7 +45,7 @@
     <a class="brand" href="/" aria-label="platform home"><span class="brand-mark">plat</span>form</a>
     {{with .Org}}<nav class="crumbs" aria-label="Breadcrumb"><a href="{{.Path}}">{{.Name}}</a>{{if $.Project}}<span class="sep">/</span><a href="{{.Path}}/p/{{$.Project.Slug}}">{{$.Project.Name}}</a>{{end}}{{if $.Service}}<span class="sep">/</span><span>{{$.Service.Slug}}</span>{{end}}</nav>{{end}}
     <a class="navlink" href="/docs/user">Docs</a>
-    {{if .User}}<a class="navlink" href="/account">Account</a>{{end}}
+    {{if .User}}{{if .User.IsOperator}}<a class="navlink" href="/operator">Operator</a>{{end}}<a class="navlink" href="/account">Account</a>{{end}}
     {{with .User}}
     <form method="post" action="/logout" class="logout">
       <input type="hidden" name="csrf" value="{{$.CSRF}}">

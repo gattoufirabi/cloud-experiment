@@ -424,6 +424,10 @@ COPY index.html /usr/share/nginx/html/index.html
 DOCKERFILE
 echo "built-from-git-$RUN" > "$GITD/src/index.html"
 (cd "$GITD/src" && git init -q -b main && git config core.autocrlf false && git add . && git -c user.email=e2e@example.test -c user.name=e2e commit -qm "e2e app") >/dev/null
+(cd "$GITD/src" && git checkout -q -b node && git rm -q Dockerfile index.html \
+  && printf '%s\n' '{ "name": "e2e-node", "version": "1.0.0", "scripts": { "start": "node server.js" } }' > package.json \
+  && printf '%s\n' "require('http').createServer((q, s) => s.end('built-with-railpack-$RUN')).listen(process.env.PORT || 3000);" > server.js \
+  && git add . && git -c user.email=e2e@example.test -c user.name=e2e commit -qm "node app, no Dockerfile" && git checkout -q main) >/dev/null
 git clone -q --bare "$GITD/src" "$GITD/srv/app.git" && (cd "$GITD/srv/app.git" && git update-server-info)
 docker rm -f e2e-git >/dev/null 2>&1
 MSYS_NO_PATHCONV=1 docker run -d --name e2e-git -p 8099:80 -v "$(cygpath -w "$GITD/srv"):/usr/share/nginx/html:ro" nginx:1.27-alpine >/dev/null
@@ -449,7 +453,11 @@ for _ in $(seq 1 90); do st=$(owner_sql "SELECT b.status FROM builds b JOIN serv
 check "webhook build finished" "$st" done
 code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$REPO" -d branch=main -d dir=nope >/dev/null
 OUT=$(pctl build shop/web --no-deploy --wait)
-if echo "$OUT" | grep -q "no Dockerfile found in nope"; then ok "missing Dockerfile reported clearly"; else bad "missing Dockerfile: $(echo "$OUT" | tail -2)"; fi
+if echo "$OUT" | grep -q "folder nope not found"; then ok "missing folder reported clearly"; else bad "missing folder: $(echo "$OUT" | tail -2)"; fi
+code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$REPO" -d branch=node -d dir= >/dev/null
+OUT=$(pctl build shop/web --wait)
+if echo "$OUT" | grep -q "with Railpack (no Dockerfile)" && echo "$OUT" | grep -q "done: "; then ok "repository without a Dockerfile built with Railpack"; else bad "Railpack build failed: $(echo "$OUT" | tail -3)"; fi
+check "Railpack-built app deployed and serving" "$(for _ in $(seq 1 45); do b=$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/"); echo "$b" | grep -q "built-with-railpack-$RUN" && { echo yes; break; }; sleep 2; done)" yes
 code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A -d repo= -d branch=main >/dev/null
 check "builds audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'build.done' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 docker rm -f e2e-git >/dev/null 2>&1
@@ -599,6 +607,34 @@ check "[API] deploy refused above 110% of the disk limit (507)" "$(api_code "$TO
 if c ja -L "$BASE$SVC_A/deploy" -d csrf=$CSRF_A | grep -q "Disk limit exceeded"; then ok "[A] console explains why the deploy is refused"; else bad "console disk message missing"; fi
 admin set-plan --slug "$A" --plan pro >/dev/null
 check "[API] deploys work again within the limit" "$(api_code "$TOK_DEV" -X POST "$BASE/api/v1/projects/shop/services/web/deploy")" 202
+
+echo "== Operator console"
+check "the console is hidden from non-operators (404)" "$(code_of ja "$BASE/operator")" 404
+admin make-operator --email "owner@$A.test" >/dev/null
+check "[A] operator console opens for an operator" "$(code_of ja "$BASE/operator")" 200
+if c ja "$BASE/o/$A" | grep -q 'href="/operator"'; then ok "operator link shown in the header"; else bad "operator link missing"; fi
+check "[B] still no access for other users (404)" "$(code_of jb "$BASE/operator")" 404
+OPCSRF=$(c ja "$BASE/operator" | csrf_of)
+check "operator changes an organization's plan" "$(code_of ja -X POST "$BASE/operator/orgs/$B/plan" -d csrf=$OPCSRF -d plan=pro)" 303
+check "plan changed in the database" "$(owner_sql "SELECT plan_id FROM orgs WHERE slug = '$B'")" pro
+code_of ja -X POST "$BASE/operator/orgs/$B/suspend" -d csrf=$OPCSRF -d on=1 >/dev/null
+check "operator suspends an organization" "$(owner_sql "SELECT suspended::text || ':' || suspend_reason FROM orgs WHERE slug = '$B'")" "true:operator"
+code_of ja -X POST "$BASE/operator/orgs/$B/suspend" -d csrf=$OPCSRF >/dev/null
+check "operator restores it" "$(owner_sql "SELECT suspended::text FROM orgs WHERE slug = '$B'")" false
+check "operator actions audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action IN ('operator.set_plan', 'operator.suspend', 'operator.restore') AND target = 'org:$B'")" 3
+admin set-plan --slug "$B" --plan starter >/dev/null
+
+echo "== Email alerts, trial reminder, build minutes"
+check "[A] email alert channel added" "$(code_of ja -X POST "$BASE/o/$A/alerts/channels" -d csrf=$CSRF_A -d name=Email -d kind=email --data-urlencode "email=ops@$A.test" -d events=service_down -d events=deploy_failed)" 303
+EMAIL_CH=$(owner_sql "SELECT c.id FROM alert_channels c JOIN orgs o ON o.id = c.org_id WHERE o.slug = '$A' AND c.kind = 'email'")
+code_of ja -X POST "$BASE/o/$A/alerts/channels/$EMAIL_CH/test" -d csrf=$CSRF_A >/dev/null
+if mail_body "ops@$A.test" "Test notification" | grep -q "alert channel of $A"; then ok "email alert delivered"; else bad "no alert email"; fi
+owner_sql "UPDATE orgs SET plan_id = 'trial', trial_ends_at = now() + interval '2 days', trial_reminded_at = NULL, suspended = false, suspend_reason = '' WHERE slug = '$T'" >/dev/null
+for _ in $(seq 1 40); do [ -n "$(owner_sql "SELECT trial_reminded_at FROM orgs WHERE slug = '$T'")" ] && break; sleep 3; done
+if mail_body "$TEMAIL" "Your trial ends soon" | grep -q "ends in 2 day"; then ok "trial reminder emailed 3 days before the end"; else bad "no trial reminder"; fi
+check "reminder sent only once" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'trial.reminded' AND org_id = (SELECT id FROM orgs WHERE slug = '$T')")" 1
+admin set-plan --slug "$T" --plan starter >/dev/null
+if c ja "$BASE/o/$A/billing" | grep -q "Builds from git"; then ok "build minutes appear on the bill"; else bad "build minutes missing from the bill"; fi
 
 echo "== Account recovery"
 check "[A] 10 recovery codes issued at setup" "$(wc -l < "$TMP/rc-$A" | tr -d ' ')" 10

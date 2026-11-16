@@ -67,6 +67,13 @@ docker compose -f compose.prod.yml exec api /platform admin create-org --slug ac
 
 Plans live in the `plans` table. Move a client with `set-plan`; lowering a plan does not stop running services but blocks changes that would exceed it.
 
+## Operator console
+
+Operators can manage the platform from the browser at `/operator`: a live overview (organizations, users, live services, trials, suspensions, open incidents and invoices, builds, storage), every organization with its owner, plan, services and disk use (change the plan, suspend or restore), all invoices (mark paid or cancel) and the global audit log.
+
+- Give access with `make-operator --email person@example.com` (remove it with `--undo`). The person needs an account first and a full two-step login session; everyone else gets "not found".
+- Every change made here is audited under the operator's name. Rarer tasks (invites, prices, password and two-step resets, invoices by month) stay on the command line below.
+
 ## Operator commands
 
 Run each as `docker compose -f compose.prod.yml exec api /platform admin <command>`.
@@ -131,6 +138,7 @@ To restore the platform on a new server:
 
 Usage is metered by the agent every minute (allocated CPU and memory of live services and running databases, network out of services) into `usage_hourly`. With `BILLING_ENABLED=true`, the agent issues the previous month's invoices on the 1st (UTC). Invoices are documents only: there is no payment provider.
 
+- **Build minutes** are billed at each plan's `price_build_minute_cents` (`set-prices --build-minute`), measured from each build's start to its end.
 - **Prices** live on each plan, in cents (decimals allowed): `platform admin set-prices --plan starter --monthly 500 --vcpu-hour 1 --gb-hour 0.5 --gb-out 2`. New prices apply to invoices issued afterwards.
 - **Seller block, currency and tax:** `BILLING_SELLER` (lines separated by `|`), `BILLING_CURRENCY` (default EUR) and `BILLING_TAX_PERCENT` in `.env`.
 - **Issue invoices by hand** (catch-up after downtime, safe to rerun): `platform admin generate-invoices --month 2026-10`.

@@ -195,8 +195,21 @@ fi
 echo "COMMIT=$(git -C repo rev-parse HEAD)"
 rm -rf repo/.git
 D="repo/${DIR:-.}"
-if [ ! -f "$D/Dockerfile" ]; then echo "No Dockerfile found in ${DIR:-the repository root}." >&2; exit 2; fi
-mkdir -p out && chmod 777 out && chmod -R a+rX repo
+if [ ! -d "$D" ]; then echo "Folder ${DIR} not found in the repository." >&2; exit 2; fi
+mkdir -p out plan && chmod 777 out
+if [ -f "$D/Dockerfile" ]; then
+  echo "MODE=dockerfile"
+else
+  # No Dockerfile: Railpack detects the language and writes a build plan.
+  cp -a /opt/railpack-tmp/. /tmp/ 2>/dev/null || true
+  if ! railpack prepare "$D" --plan-out plan/railpack-plan.json --info-out plan/info.json >/tmp/prepare.out 2>&1; then
+    cat /tmp/prepare.out >&2
+    exit 3
+  fi
+  tail -n 30 /tmp/prepare.out
+  echo "MODE=railpack"
+fi
+chmod -R a+rX repo plan
 chown 1000:1000 /cache`
 	cloneID, code, out, err := a.runOnce(ctx, "build-clone-"+short, docker.ContainerConfig{
 		Image:      a.cfg.GitImage,
@@ -209,7 +222,7 @@ chown 1000:1000 /cache`
 			Runtime: a.cfg.BuildRuntime, NetworkMode: buildNetwork,
 			Memory: 512 << 20, MemorySwap: 512 << 20, NanoCPUs: 1_000_000_000, PidsLimit: 256,
 			CapDrop: []string{"ALL"}, CapAdd: []string{"CHOWN"}, SecurityOpt: []string{"no-new-privileges:true"},
-			ReadonlyRootfs: true, Tmpfs: map[string]string{"/tmp": "rw,size=64m"},
+			ReadonlyRootfs: true, Tmpfs: map[string]string{"/tmp": "rw,exec,size=1g"}, // Railpack runs its helper from /tmp
 			Mounts:    []docker.Mount{{Type: "volume", Source: vol, Target: "/src"}, {Type: "volume", Source: cache, Target: "/cache"}},
 			LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "4m"}},
 		}),
@@ -217,18 +230,23 @@ chown 1000:1000 /cache`
 	if cloneID != "" {
 		defer a.dk.ContainerRemove(context.Background(), cloneID)
 	}
-	commit := ""
+	commit, mode := "", ""
 	for _, line := range strings.Split(out, "\n") {
 		if c, ok := strings.CutPrefix(strings.TrimSpace(line), "COMMIT="); ok {
 			commit = c
+		} else if m, ok := strings.CutPrefix(strings.TrimSpace(line), "MODE="); ok {
+			mode = m
 		} else if line != "" {
 			log.WriteString(line + "\n")
 		}
 	}
 	if err != nil || code != 0 || len(commit) < 12 {
 		msg := "could not clone the repository (check the address, branch and token)"
-		if code == 2 {
-			msg = "no Dockerfile found in " + map[bool]string{true: "the repository root", false: b.Dir}[b.Dir == ""]
+		switch code {
+		case 2:
+			msg = "folder " + b.Dir + " not found in the repository"
+		case 3:
+			msg = "no Dockerfile, and Railpack could not detect how to build this project (see the log above); add a Dockerfile"
 		}
 		if err != nil {
 			msg += ": " + err.Error()
@@ -244,15 +262,22 @@ chown 1000:1000 /cache`
 	if b.Dir != "" {
 		ctxDir += "/" + b.Dir
 	}
-	log.step("building %s", image)
+	args := []string{"build", "--progress", "plain", "--local", "context=" + ctxDir,
+		"--output", "type=docker,name=" + image + ",dest=/src/out/image.tar,compression=uncompressed"}
+	if mode == "railpack" {
+		log.step("building %s with Railpack (no Dockerfile)", image)
+		args = append(args, "--frontend", "gateway.v0", "--opt", "source="+a.cfg.RailpackFrontend,
+			"--local", "dockerfile=/src/plan", "--opt", "build-arg:cache-key="+model.Compact(b.ServiceID))
+	} else {
+		log.step("building %s from the Dockerfile", image)
+		args = append(args, "--frontend", "dockerfile.v0", "--local", "dockerfile="+ctxDir)
+	}
 	buildID, code, out, err := a.runOnce(ctx, "build-kit-"+short, docker.ContainerConfig{
 		Image:      a.cfg.BuildkitImage,
 		Entrypoint: []string{"buildctl-daemonless.sh"},
-		Cmd: []string{"build", "--progress", "plain", "--frontend", "dockerfile.v0",
-			"--local", "context=" + ctxDir, "--local", "dockerfile=" + ctxDir,
-			"--output", "type=docker,name=" + image + ",dest=/src/out/image.tar,compression=uncompressed"},
-		Env:    []string{"BUILDKITD_FLAGS=--oci-worker-no-process-sandbox"},
-		Labels: labels,
+		Cmd:        args,
+		Env:        []string{"BUILDKITD_FLAGS=--oci-worker-no-process-sandbox"},
+		Labels:     labels,
 		HostConfig: a.withDNS(docker.HostConfig{
 			Runtime: a.cfg.BuildRuntime, NetworkMode: buildNetwork,
 			Memory: int64(a.cfg.BuildMemoryMB) << 20, MemorySwap: int64(a.cfg.BuildMemoryMB) << 20,
@@ -276,7 +301,7 @@ chown 1000:1000 /cache`
 		return
 	}
 	if code != 0 {
-		fail("the Dockerfile build failed (see the log above)")
+		fail("the build failed (see the log above)")
 		return
 	}
 

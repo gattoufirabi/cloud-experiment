@@ -165,6 +165,10 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /{$}", s.auth(authFull, s.home))
 	m.HandleFunc("GET /o/{org}", s.auth(authFull, s.orgPage))
 	m.HandleFunc("GET /o/{org}/audit", s.auth(authFull, s.auditPage))
+	m.HandleFunc("GET /operator", s.operatorOnly(s.operatorPage))
+	m.HandleFunc("POST /operator/orgs/{slug}/plan", s.operatorOnly(s.operatorSetPlan))
+	m.HandleFunc("POST /operator/orgs/{slug}/suspend", s.operatorOnly(s.operatorSuspend))
+	m.HandleFunc("POST /operator/invoices/{number}", s.operatorOnly(s.operatorInvoice))
 	m.HandleFunc("GET /o/{org}/billing", s.auth(authFull, s.billingPage))
 	m.HandleFunc("POST /o/{org}/billing/details", s.auth(authFull, s.billingDetails))
 	m.HandleFunc("GET /o/{org}/invoices/{number}", s.auth(authFull, s.invoicePage))
@@ -275,6 +279,7 @@ type session struct {
 	CSRF        string
 	TOTPOK      bool
 	TOTPEnabled bool
+	IsOperator  bool
 }
 
 type ctxKey int
@@ -305,8 +310,8 @@ func (s *Server) loadSession(r *http.Request) *session {
 		FROM users u
 		WHERE se.token_hash = $1 AND u.id = se.user_id
 		  AND se.expires_at > now() AND se.last_seen > now() - interval '2 hours'
-		RETURNING se.user_id, u.email, u.name, se.csrf, se.totp_ok, u.totp_enabled`, sess.TokenHash).
-		Scan(&sess.UserID, &sess.Email, &sess.Name, &sess.CSRF, &sess.TOTPOK, &sess.TOTPEnabled)
+		RETURNING se.user_id, u.email, u.name, se.csrf, se.totp_ok, u.totp_enabled, u.is_operator`, sess.TokenHash).
+		Scan(&sess.UserID, &sess.Email, &sess.Name, &sess.CSRF, &sess.TOTPOK, &sess.TOTPEnabled, &sess.IsOperator)
 	if err != nil {
 		return nil
 	}

@@ -45,9 +45,13 @@ func (s *Server) billingPage(w http.ResponseWriter, r *http.Request) {
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(r.Context(), `
 			SELECT p.name, p.price_monthly_cents, p.price_vcpu_hour_cents::float8, p.price_gb_hour_cents::float8, p.price_gb_out_cents::float8,
-			       o.created_at, o.billing_name, o.billing_address, o.billing_tax_id
+			       p.price_build_minute_cents::float8, o.created_at, o.billing_name, o.billing_address, o.billing_tax_id
 			FROM orgs o JOIN plans p ON p.id = o.plan_id WHERE o.id = $1`, o.ID).
-			Scan(&planName, &prices.Monthly, &prices.VCPUHour, &prices.GBHour, &prices.GBOut, &created, &billName, &billAddr, &billTax); err != nil {
+			Scan(&planName, &prices.Monthly, &prices.VCPUHour, &prices.GBHour, &prices.GBOut, &prices.BuildMin, &created, &billName, &billAddr, &billTax); err != nil {
+			return err
+		}
+		var err error
+		if total.BuildSeconds, err = billing.BuildSeconds(r.Context(), tx, o.ID, start, end); err != nil {
 			return err
 		}
 		q, err := tx.Query(r.Context(), `

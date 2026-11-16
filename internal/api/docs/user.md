@@ -35,6 +35,7 @@ A passkey lets you sign in with your fingerprint, face or device PIN instead of 
 Organizations created with **Create an account** start on the **Trial** plan: 2 services, half a CPU, 512 MB of memory and one database, free for 14 days. The organization page shows the days left.
 
 - Not included in the trial: custom domains and builds from git (push an image instead).
+- You get an email 3 days before the trial ends (when the platform sends email).
 - When the trial ends, your applications stop and changes are blocked; your data is kept. Contact the platform operator to choose a plan and everything starts again.
 - Applications that use all their CPU for a long time (typical of crypto-mining) get a trial organization suspended automatically. The organization page says why; contact the operator if it was legitimate work.
 
@@ -96,7 +97,7 @@ Every deployment is a numbered revision. The new version starts next to the old 
 
 ## Builds from git
 
-Instead of pushing images yourself, the platform can build your repository's **Dockerfile** for you.
+Instead of pushing images yourself, the platform can build your repository for you: with its **Dockerfile** if it has one, otherwise with **Railpack**, which detects the language (Node, Python, Go, PHP, Ruby, Java, Rust, Elixir, static sites) and builds it without any configuration.
 
 1. In the service's **Builds** tab, enter the repository's https address, the branch and, if the Dockerfile is not at the root, its folder. For a private repository add a read-only access token (GitHub fine-grained token, GitLab/Gitea deploy token); it is stored encrypted and never shown again.
 2. Click **Build now**, or run `platformctl build shop/web --wait` from CI. With **deploy when built** (the default) the service is redeployed with the new image and its current settings.
@@ -105,7 +106,7 @@ Instead of pushing images yourself, the platform can build your repository's **D
 - Each build gets a page with its full log; images are stored in your registry space as `…/<organization>/<service>:git-<commit>` and scanned like any pushed image.
 - Builds run in an isolated sandbox: no access to the platform's internal network, other customers or the server; the internet is reachable for base images and packages. Limits per build: 2 CPU, 2 GB memory, 15 minutes, 8 GB image (uncompressed).
 - One build at a time per service: starting a build while one is waiting reuses the waiting one. At most 5 builds waiting or running per organization.
-- Only Dockerfile builds are supported for now; the build fails clearly if there is no Dockerfile.
+- Without a Dockerfile, make your app listen on the `PORT` environment variable (the platform sets it to the service's port). If Railpack cannot detect the project, the build fails with its explanation: add a Dockerfile.
 
 ## Preview environments
 
@@ -254,6 +255,7 @@ valid = hmac.compare_digest(expected, request.headers["X-Platform-Signature"])
 ```
 
 Channel URLs must be public HTTPS addresses; private and internal addresses are refused.
+- **Email channel:** when the platform sends email, choose **email** as the channel type and enter an address; it receives the same notifications as a push channel, with a link to the service.
 
 ## API and command-line tool
 
@@ -309,6 +311,7 @@ Admins and owners find **Billing** in the organization's tabs.
 - **This month so far:** the page shows the estimated amount up to now and the usage of each service and database. It updates every minute.
 - **Invoices** cover one calendar month (UTC) and appear on the 1st of the next month. Open one to print it or save it as PDF from your browser. The plan fee of your first month is counted from the day the organization was created.
 - **Billing details:** the company name, address and tax ID printed on your invoices. Changes apply to the next invoices, not to ones already issued.
+- **Builds from git** are billed per build minute (shown on the Billing page with your plan's price).
 - **Paying:** follow the payment instructions you received from the platform operator; an invoice shows **paid** once the operator has recorded your payment.
 
 ## Team members and roles
