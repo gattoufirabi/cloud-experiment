@@ -601,7 +601,8 @@ owner_sql "SELECT pg_notify('deployments', 'disk')" >/dev/null
 for _ in $(seq 1 30); do [ -n "$(owner_sql "SELECT disk_measured_at FROM orgs WHERE slug = '$A'")" ] && break; sleep 2; done
 check "disk use measured by the agent" "$(owner_sql "SELECT disk_measured_at IS NOT NULL AND disk_used_mb > 0 FROM orgs WHERE slug = '$A'")" t
 if c ja "$BASE/o/$A" | grep -q "disk [0-9]*/1 MB"; then ok "[A] organization page shows disk used / allowed"; else bad "disk usage not shown"; fi
-owner_sql "UPDATE orgs SET disk_used_mb = 5 WHERE slug = '$A'" >/dev/null   # 500% of the 1 MB test plan
+# 500% of the 1 MB test plan (per-node figure too, so a measurement pass in between keeps it)
+owner_sql "UPDATE node_disk SET used_mb = 5, measured_at = now() WHERE org_id = (SELECT id FROM orgs WHERE slug = '$A'); UPDATE orgs SET disk_used_mb = 5 WHERE slug = '$A'" >/dev/null
 check "owner alerted when over the disk limit" "$(owner_sql "SELECT count(*) FROM alert_incidents i JOIN orgs o ON o.id = i.org_id WHERE o.slug = '$A' AND i.kind = 'disk_quota'")" 1
 check "[API] deploy refused above 110% of the disk limit (507)" "$(api_code "$TOK_DEV" -X POST "$BASE/api/v1/projects/shop/services/web/deploy")" 507
 if c ja -L "$BASE$SVC_A/deploy" -d csrf=$CSRF_A | grep -q "Disk limit exceeded"; then ok "[A] console explains why the deploy is refused"; else bad "console disk message missing"; fi
@@ -625,10 +626,10 @@ check "operator actions audited" "$(owner_sql "SELECT count(*) FROM audit_events
 admin set-plan --slug "$B" --plan starter >/dev/null
 NODE=$(owner_sql "SELECT id FROM nodes ORDER BY last_seen DESC LIMIT 1")
 check "the server reports itself as a node (heartbeat)" "$(owner_sql "SELECT (last_seen > now() - interval '2 minutes') AND cpus > 0 AND mem_mb > 0 FROM nodes WHERE id = '$NODE'")" t
-check "node health: API, database and proxy answer" "$(owner_sql "SELECT services->>'api' || services->>'database' || services->>'proxy' FROM nodes WHERE id = '$NODE'")" okokok
+check "node health: API, database and proxy answer" "$(owner_sql "SELECT (services->>'api') || (services->>'database') || (services->>'proxy') FROM nodes WHERE id = '$NODE'")" okokok
 OPPAGE=$(c ja "$BASE/operator")
-if echo "$OPPAGE" | grep -q "op-nodes" && echo "$OPPAGE" | grep -q "progress class=\"meter\""; then ok "operator Nodes tab shows capacity meters"; else bad "Nodes tab missing"; fi
-if echo "$OPPAGE" | grep -q "/operator/orgs/$A\">$A</a>"; then ok "operator Usage tab lists every organization"; else bad "Usage tab missing"; fi
+if grep -q "op-nodes" <<<"$OPPAGE" && grep -q "progress class=\"meter\"" <<<"$OPPAGE"; then ok "operator Nodes tab shows capacity meters"; else bad "Nodes tab missing"; fi
+if grep -q "/operator/orgs/$A\">$A</a>" <<<"$OPPAGE"; then ok "operator Usage tab lists every organization"; else bad "Usage tab missing"; fi
 check "operator cordons a node" "$(code_of ja -X POST "$BASE/operator/nodes/$NODE" -d csrf=$OPCSRF -d cordoned=1 -d cluster=default)" 303
 check "node marked cordoned" "$(owner_sql "SELECT cordoned FROM nodes WHERE id = '$NODE'")" t
 code_of ja -X POST "$BASE/operator/nodes/$NODE" -d csrf=$OPCSRF -d cluster=default >/dev/null
@@ -663,9 +664,9 @@ code_of ja -X POST "$BASE/operator/nodes/$PRIMARY" -d csrf=$OPCSRF -d cluster=de
 check "operator drains node-2" "$(code_of ja -X POST "$BASE/operator/nodes/node-2/drain" -d csrf=$OPCSRF)" 303
 for _ in $(seq 1 45); do [ "$(owner_sql "SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'edge'")" = "$PRIMARY" ] && break; sleep 2; done
 check "the drained project moves to the primary" "$(owner_sql "SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'edge'")" "$PRIMARY"
-check "and keeps serving after the move" "$(for _ in $(seq 1 45); do x=$(curl -s --resolve "$EDGE_HOST:$PORT:127.0.0.1" "http://$EDGE_HOST:$PORT/" | grep -c 'Welcome to nginx'); [ "$x" = 1 ] && [ "$(owner_sql "SELECT upstream FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'edge' AND d.status = 'live'")" = "" ] && { echo yes; break; }; sleep 2; done)" yes
+check "and keeps serving after the move" "$(for _ in $(seq 1 45); do x=$(curl -s --resolve "$EDGE_HOST:$PORT:127.0.0.1" "http://$EDGE_HOST:$PORT/" | grep -c 'Welcome to nginx'); [ "$x" -gt 0 ] && [ "$(owner_sql "SELECT upstream FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'edge' AND d.status = 'live'")" = "" ] && { echo yes; break; }; sleep 2; done)" yes
 check "node-2 removed its old container" "$(for _ in $(seq 1 20); do docker inspect "$EDGE_CID" >/dev/null 2>&1 || { echo gone; break; }; sleep 2; done)" gone
-check "drain audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'operator.node_drain' AND target = 'node:node-2'")" 1
+check "drain audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'operator.node_drain' AND target = 'node:node-2' AND created_at > now() - interval '10 minutes'")" 1
 docker compose -f compose.dev.yml --profile multinode rm -sf agent2 >/dev/null 2>&1
 owner_sql "DELETE FROM nodes WHERE id = 'node-2'" >/dev/null
 

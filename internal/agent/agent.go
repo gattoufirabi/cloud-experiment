@@ -568,11 +568,11 @@ func (a *Agent) promote(ctx context.Context, j job, id, name, upstream string) (
 
 func (a *Agent) reconcile(ctx context.Context) {
 	type live struct {
-		DepID, ContainerID, OrgID, ProjectID, ServiceID string
-		Suspended                                       bool
+		DepID, ContainerID, OrgID, ProjectID, ServiceID, Upstream string
+		Suspended                                                 bool
 	}
 	rows, err := a.pool.Query(ctx, `
-		SELECT d.id, coalesce(d.container_id, ''), d.org_id, s.project_id, d.service_id, o.suspended
+		SELECT d.id, coalesce(d.container_id, ''), d.org_id, s.project_id, d.service_id, d.upstream, o.suspended
 		FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id
 		JOIN projects p ON p.id = s.project_id
 		WHERE d.status = 'live' AND `+mineSQL, a.mineArgs()...)
@@ -582,7 +582,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 	}
 	lives, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (live, error) {
 		var l live
-		err := r.Scan(&l.DepID, &l.ContainerID, &l.OrgID, &l.ProjectID, &l.ServiceID, &l.Suspended)
+		err := r.Scan(&l.DepID, &l.ContainerID, &l.OrgID, &l.ProjectID, &l.ServiceID, &l.Upstream, &l.Suspended)
 		return l, err
 	})
 	if err != nil {
@@ -609,6 +609,23 @@ func (a *Agent) reconcile(ctx context.Context) {
 	if err != nil {
 		a.log.Error("reconcile: list containers", "err", err)
 		return
+	}
+	// A project moved to another node: its old container keeps serving until the new
+	// node's deployment is live (that supersedes this one), then it is removed here.
+	var mine []string
+	for _, c := range containers {
+		if c.Labels["platform.database"] == "" && a.owns(c.Labels) && !keep[c.Labels["platform.deployment"]] {
+			mine = append(mine, c.ID)
+		}
+	}
+	if len(mine) > 0 {
+		if rows, err := a.pool.Query(ctx, `SELECT id::text FROM deployments WHERE status = 'live' AND container_id = ANY($1)`, mine); err == nil {
+			if ids, err := pgx.CollectRows(rows, pgx.RowTo[string]); err == nil {
+				for _, id := range ids {
+					keep[id] = true
+				}
+			}
+		}
 	}
 	byDep := map[string]docker.ContainerSummary{}
 	for _, c := range containers {
@@ -666,6 +683,22 @@ func (a *Agent) reconcile(ctx context.Context) {
 			if ok && c.State == "running" {
 				a.log.Info("stopping container of suspended organization", "org", l.OrgID)
 				_ = a.dk.ContainerStop(ctx, c.ID, 10)
+			}
+			continue
+		}
+		if !ok && a.ranElsewhere(l.Upstream) {
+			// The project was moved here (drain, placement): start a new revision on this
+			// node; the old container keeps serving until it is live.
+			tag, err := a.pool.Exec(ctx, `
+				INSERT INTO deployments (org_id, service_id, revision, spec)
+				SELECT d.org_id, d.service_id, (SELECT max(revision) + 1 FROM deployments WHERE service_id = d.service_id), d.spec
+				FROM deployments d WHERE d.id = $1
+				  AND NOT EXISTS (SELECT 1 FROM deployments x WHERE x.service_id = d.service_id AND (x.status IN ('pending', 'deploying')
+				      OR (x.status = 'failed' AND x.revision > d.revision AND x.updated_at > now() - interval '5 minutes')))`, l.DepID)
+			if err == nil && tag.RowsAffected() > 0 {
+				_ = auditAgent(ctx, a, l.OrgID, "deployment.redeployed", "service:"+l.ServiceID, map[string]string{"reason": "project moved to node " + a.selfID})
+				a.log.Info("project moved here, redeploying", "service", l.ServiceID, "node", a.selfID)
+				a.poke()
 			}
 			continue
 		}
@@ -778,6 +811,12 @@ func (a *Agent) collectNetworks(ctx context.Context) {
 		if needed[n.Labels["platform.project"]] || !a.owns(n.Labels) {
 			continue
 		}
+		// Leave it alone while a tenant container still uses it (for instance a project
+		// that moved to another node sharing this Docker host): detaching the proxy
+		// first would cut that app off until the next attachment check.
+		if full, err := a.dk.NetworkInspect(ctx, n.Name); err != nil || a.hasTenantEndpoints(full) {
+			continue
+		}
 		_ = a.dk.NetworkDisconnect(ctx, n.Name, a.cfg.CaddyContainer)
 		if a.cfg.AgentContainer != "" {
 			_ = a.dk.NetworkDisconnect(ctx, n.Name, a.cfg.AgentContainer)
@@ -872,6 +911,28 @@ func (a *Agent) projectHosts(ctx context.Context, projectID, netName string) []s
 
 // owns tells whether a container or network belongs to this node: labelled with its
 // node ID, or unlabelled (created before multi-node support) and this is the primary.
+// ranElsewhere reports whether a live deployment with this upstream was started by
+// another node: the primary never records an upstream, a worker records its own address.
+func (a *Agent) ranElsewhere(upstream string) bool {
+	if upstream == "" {
+		return !a.isPrimary()
+	}
+	return a.cfg.NodeAddress == "" || !strings.HasPrefix(upstream, a.cfg.NodeAddress+":")
+}
+
+// hasTenantEndpoints reports whether a container other than the proxy or an agent is
+// attached to the network.
+func (a *Agent) hasTenantEndpoints(n *docker.Network) bool {
+	for _, c := range n.Containers {
+		switch {
+		case c.Name == a.cfg.CaddyContainer, c.Name == a.cfg.AgentContainer, strings.HasPrefix(c.Name, "platform-agent"):
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Agent) owns(labels map[string]string) bool {
 	n := labels["platform.node"]
 	if n == "" {

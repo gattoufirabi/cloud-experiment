@@ -55,7 +55,8 @@ func (a *Agent) watchCPU(ctx context.Context, st *abuseState) {
 	rows, err := a.pool.Query(ctx, `
 		SELECT d.container_id, (d.spec->>'cpu_millis')::int, o.id, o.slug, o.plan_id = 'trial'
 		FROM deployments d JOIN orgs o ON o.id = d.org_id
-		WHERE d.status = 'live' AND d.container_id IS NOT NULL AND NOT o.suspended`)
+		JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id
+		WHERE d.status = 'live' AND d.container_id IS NOT NULL AND NOT o.suspended AND `+mineSQL, a.mineArgs()...)
 	if err != nil {
 		return
 	}

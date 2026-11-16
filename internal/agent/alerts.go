@@ -141,23 +141,31 @@ func (a *Agent) alertEvent(ctx context.Context, orgID, serviceID, kind, summary 
 type probeTarget struct {
 	OrgID, ServiceID, ContainerID, ProjectID, Service, Project string
 	Port                                                       int
-	HealthPath                                                 string
+	HealthPath, Upstream                                       string
 }
 
 func (a *Agent) checkHealth(ctx context.Context) {
 	rows, err := a.pool.Query(ctx, `
 		SELECT d.org_id, d.service_id, coalesce(d.container_id, ''), s.project_id, s.slug, p.slug,
-		       (d.spec->>'port')::int, d.spec->>'health_path'
+		       (d.spec->>'port')::int, d.spec->>'health_path', d.upstream
 		FROM deployments d JOIN services s ON s.id = d.service_id
 		JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = d.org_id
-		WHERE d.status = 'live' AND NOT o.suspended`)
+		WHERE d.status = 'live' AND NOT o.suspended AND `+mineSQL, a.mineArgs()...) // each node probes only its own apps (it cannot reach the others' networks)
 	if err != nil {
 		a.log.Error("load probe targets", "err", err)
 		return
 	}
-	targets, err := pgx.CollectRows(rows, pgx.RowToStructByPos[probeTarget])
+	all, err := pgx.CollectRows(rows, pgx.RowToStructByPos[probeTarget])
 	if err != nil {
 		return
+	}
+	// A project moving here is still served by its old node until the new revision is
+	// live: nothing to probe locally yet.
+	targets := all[:0]
+	for _, t := range all {
+		if !a.ranElsewhere(t.Upstream) {
+			targets = append(targets, t)
+		}
 	}
 	client := &http.Client{
 		Timeout:       3 * time.Second,
@@ -371,7 +379,9 @@ func (a *Agent) deliverAlerts(ctx context.Context) {
 		LEFT JOIN services s ON s.id = i.service_id
 		LEFT JOIN projects p ON p.id = s.project_id
 		WHERE n.status = 'pending' AND n.next_attempt_at <= now()
-		ORDER BY n.created_at LIMIT 50`)
+		-- First attempts go before retries, so a receiver that keeps failing (or a
+		-- backlog) never delays fresh alerts for other channels.
+		ORDER BY n.attempts, n.next_attempt_at LIMIT 50`)
 	if err != nil {
 		a.log.Error("load notifications", "err", err)
 		return
