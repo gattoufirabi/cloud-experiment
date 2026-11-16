@@ -102,6 +102,10 @@ func main() {
 		err = c.preview(args)
 	case "build":
 		err = c.build(args)
+	case "bucket":
+		err = c.buckets(args)
+	case "key":
+		err = c.storageKeys(args)
 	default:
 		usage(2)
 	}
@@ -136,6 +140,12 @@ func usage(code int) {
   preview delete <project>/<service> NAME  delete a preview
   build <project>/<service> [--no-deploy] [--wait]
                                            build the service's git branch (and deploy it unless --no-deploy)
+  bucket list                              S3 buckets with usage, endpoint and region
+  bucket create NAME [--quota MB]          create bucket <org>-NAME (default quota 1024 MB)
+  bucket delete NAME                       delete a bucket and all its objects
+  key list                                 S3 access keys and the buckets they reach
+  key create NAME BUCKET=read|write...     create an access key; prints its secret once
+  key delete ID|ACCESS_KEY_ID              delete an access key
 
 environment: PLATFORM_URL (console address), PLATFORM_TOKEN (API token "pla_...")`)
 	os.Exit(code)
@@ -697,4 +707,124 @@ func (c *client) build(args []string) error {
 		}
 	}
 	return errors.New("timed out waiting for the build")
+}
+
+func (c *client) buckets(args []string) error {
+	if len(args) < 1 {
+		usage(2)
+	}
+	switch args[0] {
+	case "list":
+		var bs []struct {
+			Name, Endpoint, Region string
+			S3Name                 string `json:"s3_name"`
+			QuotaMB                int    `json:"quota_mb"`
+			Objects, Bytes         int64
+			Website                string `json:"website_url"`
+		}
+		if err := c.do("GET", "/api/v1/buckets", nil, &bs); err != nil {
+			return err
+		}
+		var rows [][]string
+		for _, b := range bs {
+			rows = append(rows, []string{b.Name, b.S3Name, fmt.Sprint(b.Objects), fmt.Sprintf("%.1f/%d MB", float64(b.Bytes)/(1<<20), b.QuotaMB), b.Website})
+		}
+		table("NAME\tS3 NAME\tOBJECTS\tUSED\tWEBSITE", rows)
+		if len(bs) > 0 {
+			fmt.Printf("\nendpoint %s  region %s\n", bs[0].Endpoint, bs[0].Region)
+		}
+		return nil
+	case "create":
+		if len(args) != 2 && !(len(args) == 4 && args[2] == "--quota") {
+			usage(2)
+		}
+		body := map[string]any{"name": args[1]}
+		if len(args) == 4 {
+			var q int
+			if _, err := fmt.Sscan(args[3], &q); err != nil {
+				return errors.New("--quota takes a number of MB")
+			}
+			body["quota_mb"] = q
+		}
+		var b struct {
+			S3Name   string `json:"s3_name"`
+			QuotaMB  int    `json:"quota_mb"`
+			Endpoint string
+		}
+		if err := c.do("POST", "/api/v1/buckets", body, &b); err != nil {
+			return err
+		}
+		fmt.Printf("bucket %s created (%d MB) at %s\n", b.S3Name, b.QuotaMB, b.Endpoint)
+		return nil
+	case "delete":
+		if len(args) != 2 {
+			usage(2)
+		}
+		if err := c.do("DELETE", "/api/v1/buckets/"+url.PathEscape(args[1]), nil, nil); err != nil {
+			return err
+		}
+		fmt.Printf("bucket %s deleted; its objects are being removed\n", args[1])
+		return nil
+	}
+	usage(2)
+	return nil
+}
+
+func (c *client) storageKeys(args []string) error {
+	if len(args) < 1 {
+		usage(2)
+	}
+	switch args[0] {
+	case "list":
+		var ks []struct {
+			ID, Name, Service string
+			AccessKeyID       string            `json:"access_key_id"`
+			Buckets           map[string]string `json:"buckets"`
+		}
+		if err := c.do("GET", "/api/v1/storage-keys", nil, &ks); err != nil {
+			return err
+		}
+		var rows [][]string
+		for _, k := range ks {
+			var parts []string
+			for b, p := range k.Buckets {
+				parts = append(parts, b+"="+p)
+			}
+			rows = append(rows, []string{k.AccessKeyID, k.Name, strings.Join(parts, " "), k.Service})
+		}
+		table("ACCESS KEY ID\tNAME\tBUCKETS\tSERVICE", rows)
+		return nil
+	case "create":
+		if len(args) < 3 {
+			usage(2)
+		}
+		perms := map[string]string{}
+		for _, a := range args[2:] {
+			b, p, ok := strings.Cut(a, "=")
+			if !ok || (p != "read" && p != "write") {
+				return fmt.Errorf("%q: give BUCKET=read or BUCKET=write", a)
+			}
+			perms[b] = p
+		}
+		var k struct {
+			AccessKeyID string `json:"access_key_id"`
+			Secret      string `json:"secret_access_key"`
+		}
+		if err := c.do("POST", "/api/v1/storage-keys", map[string]any{"name": args[1], "buckets": perms}, &k); err != nil {
+			return err
+		}
+		fmt.Printf("AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\n# the secret is not shown again\n", k.AccessKeyID, k.Secret)
+		return nil
+	case "delete":
+		if len(args) != 2 {
+			usage(2)
+		}
+		if err := c.do("DELETE", "/api/v1/storage-keys/"+url.PathEscape(args[1]), nil, nil); err != nil {
+			return err
+		}
+		fmt.Println("access key deleted")
+		return nil
+	}
+	usage(2)
+	return nil
 }

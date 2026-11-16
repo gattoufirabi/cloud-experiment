@@ -81,4 +81,5 @@ func (s *Server) addNav(r *http.Request, d data) {
 	d["CurService"] = r.PathValue("service")
 	d["CurDB"] = r.PathValue("db")
 	d["RegistryHostNav"] = s.cfg.RegistryHost != ""
+	d["StorageNav"] = s.cfg.StorageEnabled()
 }

@@ -314,6 +314,10 @@ chmod 600 "$ENVF"
 setenv "$ENVF" CONSOLE_HOST "$CONSOLE"
 setenv "$ENVF" APPS_DOMAIN "$APPS"
 setenv "$ENVF" REGISTRY_HOST "$REGISTRY"
+[[ -n $(getenv "$ENVF" S3_HOST) ]] || setenv "$ENVF" S3_HOST "s3.$APPS"
+for k in GARAGE_RPC_SECRET GARAGE_ADMIN_TOKEN; do
+  [[ -n $(getenv "$ENVF" "$k") ]] || setenv "$ENVF" "$k" "$(openssl rand -hex 32)"
+done
 for k in OWNER_DB_PASSWORD API_DB_PASSWORD AGENT_DB_PASSWORD REGISTRY_INTERNAL_SECRET REGISTRY_EVENTS_SECRET TRIVY_TOKEN; do
   [[ -n $(getenv "$ENVF" "$k") ]] || setenv "$ENVF" "$k" "$(secret)"
 done
@@ -326,7 +330,7 @@ info "written with generated passwords (mode 600)"
 # ---------- 9. keys ----------
 step "9/11 Building images and creating the keys"
 cd "$DIR/deploy"
-mkdir -p /srv/platform/{postgres,caddy,vlogs,vmdata,registry,trivy} secrets
+mkdir -p /srv/platform/{postgres,caddy,vlogs,vmdata,registry,trivy,garage} secrets
 docker compose -f compose.prod.yml build
 IMAGE="platform:$(getenv "$ENVF" PLATFORM_VERSION)"; [[ $IMAGE != "platform:" ]] || IMAGE=platform:local
 if [[ ! -s secrets/master.key ]]; then

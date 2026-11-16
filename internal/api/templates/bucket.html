@@ -1,0 +1,119 @@
+{{define "title"}}{{.Bucket.Name}} · Storage · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>{{.Bucket.Name}}</h1></div>
+<p class="lede"><code>{{.Bucket.FullName}}</code> · {{.Bucket.Objects}} objects · {{printf "%.1f" .Bucket.UsedMB}} of {{.Bucket.QuotaMB}} MB · {{if .Bucket.Website}}public website{{else}}private{{end}}</p>
+
+<nav class="tabs" role="tablist" aria-label="Bucket sections">
+  <a role="tab" href="#objects">Objects</a>
+  <a role="tab" href="#connect">Connect</a>
+  <a role="tab" href="#settings">Settings</a>
+</nav>
+
+<section class="pane" id="objects" role="tabpanel" aria-label="Objects">
+  <p class="help"><a href="/docs/user#object-storage" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
+  <div class="section">
+    <h2>{{if .Prefix}}<a href="{{.Path}}#objects">{{.Bucket.Name}}</a> / {{.Prefix}}{{else}}Objects{{end}}</h2>
+    {{with .ListError}}<p class="error">{{.}}</p>{{end}}
+    {{if .Objects}}
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>Name</th><th class="num">Size</th><th>Modified (UTC)</th><th></th></tr></thead>
+      <tbody>
+      {{if .Prefix}}<tr><td colspan="4"><a href="{{.Path}}?prefix={{.Parent}}#objects">↑ up</a></td></tr>{{end}}
+      {{range .Objects}}
+        {{if .Folder}}
+        <tr><td><a href="{{$.Path}}?prefix={{.Key}}#objects"><strong>{{.Name}}</strong></a></td><td class="num muted">folder</td><td></td><td></td></tr>
+        {{else}}
+        <tr><td><a href="{{$.Path}}/objects/download?key={{.Key}}" rel="noopener">{{.Name}}</a></td>
+          <td class="num nowrap">{{bytes .Size}}</td><td class="nowrap">{{datetime .Modified}}</td>
+          <td>{{if $.CanEdit}}<form method="post" action="{{$.Path}}/objects/delete" class="inline flush" data-confirm="Delete {{.Key}}?">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="key" value="{{.Key}}"><input type="hidden" name="prefix" value="{{$.Prefix}}">
+            <button class="link" type="submit">delete</button></form>{{end}}</td></tr>
+        {{end}}
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{if .Truncated}}<p class="small muted">Showing the first 200 entries; use the S3 API to list everything.</p>{{end}}
+    {{else if not .ListError}}<p class="small muted">{{if .Prefix}}This folder is empty.{{else}}This bucket is empty.{{end}}</p>{{end}}
+  </div>
+  {{if .CanEdit}}
+  <div class="section">
+    <h2>Upload a file</h2>
+    <form method="post" action="{{.Path}}/objects/upload" enctype="multipart/form-data" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="prefix" value="{{.Prefix}}">
+      <input type="file" name="file" required aria-label="File">
+      <button type="submit">Upload{{if .Prefix}} to {{.Prefix}}{{end}}</button>
+    </form>
+    <p class="small muted">Up to {{.MaxUploadMB}} MB from the console; use the S3 API or <code>aws s3 cp</code> for larger files and folders.</p>
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="connect" role="tabpanel" aria-label="Connect">
+  <div class="section">
+    <h2>Connection details</h2>
+    <div class="panel">
+      <dl class="kv">
+        <dt>bucket</dt><dd><code class="select">{{.Bucket.FullName}}</code></dd>
+        <dt>endpoint</dt><dd><code class="select">{{.S3URL}}</code></dd>
+        <dt>region</dt><dd><code>{{.Region}}</code></dd>
+        {{if .Bucket.Website}}<dt>website</dt><dd><a href="{{.WebsiteURL}}" target="_blank" rel="noopener">{{.WebsiteURL}}</a></dd>{{end}}
+      </dl>
+    </div>
+  </div>
+  {{if .CanEdit}}
+  <div class="section">
+    <h2>Connect to a service</h2>
+    {{if .Services}}
+    <p class="small muted">Creates an access key for that service only, with read and write access to this bucket, and stores AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL, AWS_REGION and S3_BUCKET as its secrets. Redeploy the service to apply them.</p>
+    <form method="post" action="{{.Path}}/attach" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <select name="service" aria-label="Service">{{range .Services}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+      <button type="submit">Connect</button>
+    </form>
+    {{else}}<p class="small muted">Create a service first.</p>{{end}}
+  </div>
+  {{end}}
+  <div class="section">
+    <h2>Keys with access</h2>
+    {{if .BucketKeys}}
+    <table>
+      <thead><tr><th>Key</th><th>Access key ID</th><th>Access</th></tr></thead>
+      <tbody>
+      {{range .BucketKeys}}<tr><td>{{.Name}}</td><td><code>{{.AccessKeyID}}</code></td><td>{{range .Grants}}{{if .Write}}read-write{{else}}read{{end}}{{end}}</td></tr>{{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="small muted">No access key reaches this bucket yet. Create one on the <a href="{{.Org.Path}}/storage#keys">Access keys</a> tab.</p>{{end}}
+  </div>
+</section>
+
+<section class="pane" id="settings" role="tabpanel" aria-label="Settings">
+  <div class="section">
+    <h2>Quota and website</h2>
+    <form method="post" action="{{.Path}}/settings" class="form-grid">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <fieldset {{if not .CanEdit}}disabled{{end}}>
+      <label>Quota <span class="hint">MB; writes beyond it are refused</span><input type="number" name="quota_mb" min="1" value="{{.Bucket.QuotaMB}}" required></label>
+      <label class="check wide"><input type="checkbox" name="website" value="1" {{if .Bucket.Website}}checked{{end}}> Public website
+        <span class="hint">anyone can read every object at {{.WebsiteURL}}; keep private files in another bucket</span></label>
+      <label>Index document<input name="index_document" value="{{.Bucket.IndexDocument}}" placeholder="index.html"></label>
+      <label>Error document <span class="hint">optional, e.g. 404.html</span><input name="error_document" value="{{.Bucket.ErrorDocument}}"></label>
+      <div class="wide"><button type="submit">Save settings</button></div>
+      </fieldset>
+    </form>
+  </div>
+  {{if .CanDelete}}
+  <div class="section">
+    <h2>Delete bucket</h2>
+    <p class="small">Deletes the bucket and all its objects ({{.Bucket.Objects}}). Access keys keep working for your other buckets. This cannot be undone.</p>
+    <form method="post" action="{{.Path}}/delete" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="confirm" placeholder="type {{.Bucket.Name}} to confirm" required aria-label="Confirm bucket name">
+      <button class="danger" type="submit">Delete bucket</button>
+    </form>
+  </div>
+  {{end}}
+</section>
+{{end}}

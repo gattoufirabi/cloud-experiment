@@ -1,0 +1,118 @@
+{{define "title"}}Storage · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Object storage</h1></div>
+<p class="lede">S3-compatible buckets for files, uploads, backups and static websites · {{.Quota.Buckets}} of {{.Quota.MaxBuckets}} buckets · {{.Quota.AllocatedMB}} of {{.Quota.MaxStorageMB}} MB given to buckets</p>
+
+{{with .NewKey}}
+<div class="panel strong" id="new-key">
+  <h2>Access key "{{.Name}}"</h2>
+  <p class="small">Copy the secret now: it will not be shown again. Use it with any S3 client (AWS CLI, SDKs, rclone).</p>
+  <dl class="kv">
+    <dt>access key ID</dt><dd><code class="select">{{.AccessKeyID}}</code></dd>
+    <dt>secret access key</dt><dd><code class="select wrap">{{.SecretAccessKey}}</code></dd>
+    <dt>endpoint</dt><dd><code class="select">{{$.S3URL}}</code></dd>
+    <dt>region</dt><dd><code>{{$.Region}}</code></dd>
+  </dl>
+</div>
+{{end}}
+
+<nav class="tabs" role="tablist" aria-label="Storage sections">
+  <a role="tab" href="#buckets">Buckets</a>
+  <a role="tab" href="#keys">Access keys</a>
+  <a role="tab" href="#use">Use from code</a>
+</nav>
+
+<section class="pane" id="buckets" role="tabpanel" aria-label="Buckets">
+  <p class="help"><a href="/docs/user#object-storage" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
+  <div class="section">
+    {{if .Buckets}}
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>Bucket</th><th>S3 name</th><th class="num">Objects</th><th>Used</th><th>Access</th></tr></thead>
+      <tbody>
+      {{range .Buckets}}
+        <tr><td><a href="{{$.Org.Path}}/storage/b/{{.Name}}"><strong>{{.Name}}</strong></a></td>
+          <td><code>{{.FullName}}</code></td><td class="num">{{.Objects}}</td>
+          <td class="nowrap"><progress class="meter" max="100" value="{{.UsedPercent}}" aria-label="{{.UsedPercent}}% of the quota"></progress> {{printf "%.1f" .UsedMB}} / {{.QuotaMB}} MB</td>
+          <td>{{if .Website}}<span class="badge">public website</span>{{else}}private{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    <p class="small muted">Usage is refreshed every few minutes.</p>
+    {{else}}<p class="small muted">No buckets yet. A bucket stores any number of files (objects), private by default, reachable with the S3 API and access keys.</p>{{end}}
+  </div>
+  {{if .CanEdit}}
+  <div class="section">
+    <h2>Create a bucket</h2>
+    <form method="post" action="{{.Org.Path}}/storage/buckets" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="name" placeholder="name, e.g. uploads" pattern="[a-z0-9][a-z0-9\-]{1,38}[a-z0-9]" required aria-label="Bucket name">
+      <label class="inline-label">Quota <input type="number" name="quota_mb" min="1" max="{{.Quota.FreeMB}}" value="{{if lt .Quota.FreeMB 1024}}{{.Quota.FreeMB}}{{else}}1024{{end}}" aria-label="Quota in MB"> MB</label>
+      <button type="submit" class="arrow">Create bucket</button>
+    </form>
+    <p class="small muted">The S3 name is <code>{{.Org.Slug}}-&lt;name&gt;</code>. Writes beyond the quota are refused; {{.Quota.FreeMB}} MB of your plan are still free.</p>
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="keys" role="tabpanel" aria-label="Access keys">
+  <p class="help"><a href="/docs/user#object-storage" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
+  <div class="section">
+    {{if .Keys}}
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>Key</th><th>Access key ID</th><th>Buckets</th><th>Created</th><th></th></tr></thead>
+      <tbody>
+      {{range .Keys}}
+        <tr><td><strong>{{.Name}}</strong>{{with .Service}} <span class="badge">service {{.}}</span>{{end}}</td>
+          <td><code>{{.AccessKeyID}}</code></td>
+          <td>{{range $i, $g := .Grants}}{{if $i}}, {{end}}{{$g.Bucket}} <span class="muted">({{if $g.Write}}read-write{{else}}read{{end}})</span>{{end}}</td>
+          <td class="nowrap">{{ago .Created}}</td>
+          <td>{{if $.CanEdit}}<form method="post" action="{{$.Org.Path}}/storage/keys/{{.ID}}/delete" data-confirm="Delete access key {{.Name}}? Clients using it lose access.">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">delete</button></form>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}<p class="small muted">No access keys yet.</p>{{end}}
+  </div>
+  {{if and .CanEdit .Buckets}}
+  <div class="section">
+    <h2>Create an access key</h2>
+    <p class="small muted">A key reaches only the buckets you choose. The secret is shown once.</p>
+    <form method="post" action="{{.Org.Path}}/storage/keys" class="form-grid">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label class="wide">Name <input name="name" maxlength="60" placeholder="e.g. laptop backups" required></label>
+      {{range .Buckets}}
+      <label>{{.Name}} <select name="perm_{{.Name}}"><option value="">no access</option><option value="read">read</option><option value="write">read and write</option></select></label>
+      {{end}}
+      <div class="wide"><button type="submit">Create access key</button></div>
+    </form>
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="use" role="tabpanel" aria-label="Use from code">
+  <div class="section">
+    <h2>Endpoint</h2>
+    <div class="panel">
+      <dl class="kv">
+        <dt>endpoint</dt><dd><code class="select">{{.S3URL}}</code></dd>
+        <dt>region</dt><dd><code>{{.Region}}</code></dd>
+        <dt>addressing</dt><dd>path-style (<code>{{.S3URL}}/&lt;bucket&gt;/&lt;key&gt;</code>)</dd>
+      </dl>
+    </div>
+  </div>
+  <div class="section">
+    <h2>AWS CLI</h2>
+    <div class="panel"><pre class="cmd">export AWS_ACCESS_KEY_ID=GK…  AWS_SECRET_ACCESS_KEY=…
+export AWS_ENDPOINT_URL={{.S3URL}}  AWS_REGION={{.Region}}
+aws s3 ls
+aws s3 cp ./photo.jpg s3://{{.Org.Slug}}-uploads/photos/photo.jpg
+aws s3 sync ./site s3://{{.Org.Slug}}-site
+aws s3 presign s3://{{.Org.Slug}}-uploads/photos/photo.jpg --expires-in 3600</pre></div>
+    <p class="small muted">SDKs (boto3, the AWS SDK for JavaScript, Go, Java…) read the same variables; set path-style addressing if your SDK asks (<code>forcePathStyle: true</code>). From a service of this organization, use <strong>Connect to a service</strong> on the bucket page instead of copying keys.</p>
+  </div>
+</section>
+{{end}}

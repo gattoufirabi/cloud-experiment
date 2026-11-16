@@ -48,6 +48,9 @@ x-app: &app
     VICTORIAMETRICS_URL: http://victoriametrics:8428
     REGISTRY_HOST: ${REGISTRY_HOST:?set REGISTRY_HOST}
     REGISTRY_INTERNAL_SECRET: ${REGISTRY_INTERNAL_SECRET:?set REGISTRY_INTERNAL_SECRET}
+    # Object storage (S3 API at https://$S3_HOST, website buckets at *.web.$APPS_DOMAIN).
+    S3_HOST: ${S3_HOST:-}
+    GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:-}
   volumes:
     - ./secrets/master.key:/run/secrets/master.key:ro
 
@@ -163,6 +166,24 @@ services:
       - caddy-admin:/run/caddy
       - /srv/platform/caddy:/data
     deploy: { resources: { limits: { memory: 512M } } }   # the WAF rule set needs ~100 MB
+
+  # S3-compatible object storage (Garage). Reached by Caddy and by the API/agent over
+  # the compose network only; data in /srv/platform/garage.
+  garage:
+    image: dxflrs/garage:v2.5.0
+    restart: unless-stopped
+    logging: *logging
+    command: ["/garage", "server", "--single-node"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?set GARAGE_RPC_SECRET (openssl rand -hex 32)}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:?set GARAGE_ADMIN_TOKEN (openssl rand -hex 32)}
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - /srv/platform/garage:/var/lib/garage
+    deploy: { resources: { limits: { memory: 512M } } }
 
   registry:
     image: registry:2.8.3

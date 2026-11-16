@@ -53,6 +53,7 @@ type Agent struct {
 	cleanWake   chan struct{}
 	diskWake    chan struct{}
 	jobWake     chan struct{}
+	storageWake chan struct{}
 	alertHTTP   *http.Client
 	probeFails  map[string]int
 	attached    map[string]bool // project networks the proxy and agent are known to be on
@@ -124,6 +125,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		cleanWake:   make(chan struct{}, 1),
 		diskWake:    make(chan struct{}, 1),
 		jobWake:     make(chan struct{}, 1),
+		storageWake: make(chan struct{}, 1),
 		alertHTTP:   newAlertHTTP(cfg.AlertAllowPrivate),
 		probeFails:  map[string]int{},
 		attached:    map[string]bool{},
@@ -153,6 +155,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.diskLoop(ctx)
 	go a.nodeLoop(ctx)
 	go a.jobLoop(ctx)
+	go a.storageLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)
@@ -197,6 +200,8 @@ func (a *Agent) listen(ctx context.Context) {
 							a.pokeJobs()
 						case "disk":
 							a.pokeDisk()
+						case "storage":
+							a.pokeStorage()
 						default:
 							a.poke()
 						}
@@ -446,7 +451,7 @@ func (a *Agent) ensureNetwork(ctx context.Context, j job) (string, error) {
 	// Caddy must reach the app (on the primary; workers publish the port instead);
 	// in development the agent container needs it for health checks.
 	if a.isPrimary() {
-		if err := a.dk.NetworkConnect(ctx, name, a.cfg.CaddyContainer); err != nil {
+		if err := a.attachProxy(ctx, name); err != nil {
 			return "", fmt.Errorf("connect proxy to network: %w", err)
 		}
 	}
@@ -812,7 +817,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 		}
 		var err error
 		if a.isPrimary() {
-			err = a.dk.NetworkConnect(ctx, netName, a.cfg.CaddyContainer)
+			err = a.attachProxy(ctx, netName)
 		}
 		if err == nil && a.cfg.AgentContainer != "" {
 			err = a.dk.NetworkConnect(ctx, netName, a.cfg.AgentContainer)
@@ -1006,6 +1011,52 @@ func (a *Agent) withDNS(hc docker.HostConfig) docker.HostConfig {
 	return hc
 }
 
+// proxyAddress is the proxy's fixed address on a project network: .253 of its /24.
+// Fixed, so the hosts entry services use to reach platform endpoints through the proxy
+// (the S3 API) stays right when Docker restarts and hands out addresses again.
+func (a *Agent) proxyAddress(ctx context.Context, netName string) (string, error) {
+	n, err := a.dk.NetworkInspect(ctx, netName)
+	if err != nil {
+		return "", err
+	}
+	if len(n.IPAM.Config) == 0 {
+		return "", errors.New("network " + netName + " has no subnet")
+	}
+	prefix, err := netip.ParsePrefix(n.IPAM.Config[0].Subnet)
+	if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 24 {
+		return "", fmt.Errorf("unexpected subnet %q on %s", n.IPAM.Config[0].Subnet, netName)
+	}
+	b := prefix.Addr().As4()
+	b[3] = 253
+	return netip.AddrFrom4(b).String(), nil
+}
+
+// attachProxy connects the proxy to a project network at its fixed address, moving it
+// there if it is attached elsewhere (a short interruption, once per network).
+func (a *Agent) attachProxy(ctx context.Context, netName string) error {
+	want, err := a.proxyAddress(ctx, netName)
+	if err != nil {
+		return a.dk.NetworkConnect(ctx, netName, a.cfg.CaddyContainer)
+	}
+	info, err := a.dk.ContainerInspect(ctx, a.cfg.CaddyContainer)
+	if err != nil {
+		return err
+	}
+	if ep, ok := info.NetworkSettings.Networks[netName]; ok {
+		if ep.IPAddress == want {
+			return nil
+		}
+		if err := a.dk.NetworkDisconnect(ctx, netName, a.cfg.CaddyContainer); err != nil {
+			return err
+		}
+	}
+	if err := a.dk.NetworkConnectIP(ctx, netName, a.cfg.CaddyContainer, want); err != nil {
+		a.log.Warn("proxy fixed address unavailable, attaching with any address", "network", netName, "err", err)
+		return a.dk.NetworkConnect(ctx, netName, a.cfg.CaddyContainer)
+	}
+	return nil
+}
+
 // databaseAddress picks a fixed address for a managed database on its project network,
 // in .200-.249 of the /24 (Docker hands out addresses from the bottom), derived from the
 // database ID so a recreated container usually gets the same one.
@@ -1055,6 +1106,15 @@ func (a *Agent) projectHosts(ctx context.Context, projectID, netName string) []s
 	}
 	rows.Close()
 	var hosts []string
+	// The S3 endpoint is reached through the proxy on the project network (the host's
+	// public address is closed to tenant containers).
+	if a.cfg.StorageEnabled() && a.isPrimary() {
+		if info, err := a.dk.ContainerInspect(ctx, a.cfg.CaddyContainer); err == nil {
+			if ep, ok := info.NetworkSettings.Networks[netName]; ok && ep.IPAddress != "" {
+				hosts = append(hosts, hostOnly(s3ServiceHost(a.cfg))+":"+ep.IPAddress)
+			}
+		}
+	}
 	for _, d := range list {
 		info, err := a.dk.ContainerInspect(ctx, d.cid)
 		if err != nil {

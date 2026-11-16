@@ -180,6 +180,21 @@ func (s *Server) tlsAsk(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid host", http.StatusBadRequest)
 		return
 	}
+	if s.cfg.StorageEnabled() {
+		if host == hostOnly(s.cfg.S3Host) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// Public website bucket: <bucket>.web.<apps domain>.
+		if name, found := strings.CutSuffix(host, "."+s.cfg.WebDomain()); found && !strings.Contains(name, ".") {
+			if err := s.pool.QueryRow(r.Context(), `SELECT bucket_website_served($1)`, name).Scan(&ok); err == nil && ok {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			http.Error(w, "unknown host", http.StatusNotFound)
+			return
+		}
+	}
 	if err := s.pool.QueryRow(r.Context(), `SELECT host_is_served($1, $2)`, host, s.cfg.AppsDomain).Scan(&ok); err != nil || !ok {
 		http.Error(w, "unknown host", http.StatusNotFound)
 		return

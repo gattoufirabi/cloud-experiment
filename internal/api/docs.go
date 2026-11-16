@@ -21,7 +21,7 @@ func loadDocs(cfg config.Config) (map[string]docPage, error) {
 	if registry == "" {
 		registry = "registry.example.com"
 	}
-	repl := strings.NewReplacer("{{console}}", cfg.BaseURL, "{{registry}}", registry, "{{apps}}", cfg.AppsDomain)
+	repl := strings.NewReplacer("{{console}}", cfg.BaseURL, "{{registry}}", registry, "{{apps}}", cfg.AppsDomain, "{{s3}}", cfg.S3PublicURL(), "{{s3region}}", cfg.S3Region)
 	pages := map[string]docPage{}
 	for _, name := range []string{"user", "admin"} {
 		raw, err := docsFS.ReadFile("docs/" + name + ".md")

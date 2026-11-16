@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -188,6 +189,23 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 			"terminal": true,
 		})
 	}
+	if cfg.StorageEnabled() {
+		// S3 API (path-style requests; no body limit, uploads stream through).
+		rs = append(rs, obj{
+			"match":    []any{obj{"host": storageHosts(cfg)}},
+			"handle":   []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.S3Upstream}}}},
+			"terminal": true,
+		})
+		// Public website buckets: <bucket>.web.<apps domain> is passed to Garage's web
+		// endpoint as "<bucket>.web" (its configured root domain).
+		label := strings.Count(cfg.WebDomain(), ".") + 1 // the bucket's label, counted from the right
+		rs = append(rs, obj{
+			"match": []any{obj{"host": []string{"*." + cfg.WebDomain()}}},
+			"handle": []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.S3WebUpstream}},
+				"headers": obj{"request": obj{"set": obj{"Host": []string{fmt.Sprintf("{http.request.host.labels.%d}.web", label)}}}}}},
+			"terminal": true,
+		})
+	}
 	// One shared WAF route (not terminal) for every service that turned it on: the rule
 	// set is compiled once instead of once per service, which keeps Caddy's memory flat.
 	var wafHosts []string
@@ -284,5 +302,27 @@ func platformHosts(cfg config.Config) []string {
 	if cfg.RegistryHost != "" {
 		hosts = append(hosts, hostOnly(cfg.RegistryHost))
 	}
+	if cfg.StorageEnabled() {
+		hosts = append(hosts, hostOnly(cfg.S3Host))
+	}
 	return hosts
+}
+
+// storageHosts are the names the S3 API answers to: the public host, and the one given
+// to services when it differs (development).
+func storageHosts(cfg config.Config) []string {
+	hosts := []string{hostOnly(cfg.S3Host)}
+	if h := hostOnly(s3ServiceHost(cfg)); h != hosts[0] {
+		hosts = append(hosts, h)
+	}
+	return hosts
+}
+
+// s3ServiceHost is the host[:port] of the endpoint given to services.
+func s3ServiceHost(cfg config.Config) string {
+	u := cfg.S3Endpoint()
+	if i := strings.Index(u, "://"); i >= 0 {
+		u = u[i+3:]
+	}
+	return strings.TrimRight(u, "/")
 }

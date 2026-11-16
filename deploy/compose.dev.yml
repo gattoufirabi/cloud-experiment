@@ -38,10 +38,30 @@ x-app: &app
     REGISTRY_INTERNAL_SECRET: dev-registry-internal-secret
     # Dev only: lets alert channels point at the local ntfy container (a private address).
     ALERT_ALLOW_PRIVATE_TARGETS: "true"
+    # Object storage: clients use port 8088; services reach the proxy on port 80.
+    S3_HOST: s3.localhost:8088
+    S3_SERVICE_URL: http://s3.localhost
+    GARAGE_ADMIN_TOKEN: dev-garage-admin-token
   volumes:
     - ./dev-secrets/master.key:/run/secrets/master.key:ro
 
 services:
+  # S3-compatible object storage. Reached by Caddy (s3.localhost, *.web.apps.localhost)
+  # and by the API/agent (admin API); never published.
+  garage:
+    image: dxflrs/garage:v2.5.0
+    restart: unless-stopped
+    command: ["/garage", "server", "--single-node"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      GARAGE_RPC_SECRET: 4f2c6a1e9b3d5f7a8c0e2b4d6f8a1c3e5b7d9f0a2c4e6b8d0f1a3c5e7b9d2f4a
+      GARAGE_ADMIN_TOKEN: dev-garage-admin-token
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage-data:/var/lib/garage
+
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -232,6 +252,7 @@ networks:
     name: platform-core
 
 volumes:
+  garage-data:
   pgdata:
   caddy-admin:
   caddy-data:

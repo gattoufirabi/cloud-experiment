@@ -22,6 +22,7 @@
 <p class="empty">No projects yet</p>
 {{end}}
 <div class="side-links">
+  {{if .StorageNav}}<a href="{{.Org.Path}}/storage" class="{{if .StoragePage}}cur{{end}}">Storage</a>{{end}}
   <a href="{{.Org.Path}}#members">Members</a>
   {{if .RegistryHostNav}}<a href="{{.Org.Path}}#registry">Registry</a>{{end}}
   <a href="{{.Org.Path}}#alerts">Alerts</a>

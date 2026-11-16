@@ -207,6 +207,19 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST "+dbp+"/backups/restore/{snap}", s.auth(authFull, s.databaseRestore))
 	m.HandleFunc("POST "+dbp+"/delete", s.auth(authFull, s.deleteDatabase))
 
+	const st = "/o/{org}/storage"
+	m.HandleFunc("GET "+st, s.auth(authFull, s.storagePage))
+	m.HandleFunc("POST "+st+"/buckets", s.auth(authFull, s.createBucket))
+	m.HandleFunc("POST "+st+"/keys", s.auth(authFull, s.createStorageKey))
+	m.HandleFunc("POST "+st+"/keys/{id}/delete", s.auth(authFull, s.deleteStorageKey))
+	m.HandleFunc("GET "+st+"/b/{bucket}", s.auth(authFull, s.bucketPage))
+	m.HandleFunc("POST "+st+"/b/{bucket}/settings", s.auth(authFull, s.bucketSettings))
+	m.HandleFunc("POST "+st+"/b/{bucket}/attach", s.auth(authFull, s.attachBucket))
+	m.HandleFunc("POST "+st+"/b/{bucket}/delete", s.auth(authFull, s.deleteBucket))
+	m.HandleFunc("POST "+st+"/b/{bucket}/objects/upload", s.auth(authFull, s.uploadObject))
+	m.HandleFunc("POST "+st+"/b/{bucket}/objects/delete", s.auth(authFull, s.deleteObject))
+	m.HandleFunc("GET "+st+"/b/{bucket}/objects/download", s.auth(authFull, s.downloadObject))
+
 	const svc = "/o/{org}/p/{project}/s/{service}"
 	m.HandleFunc("GET "+svc, s.auth(authFull, s.servicePage))
 	m.HandleFunc("POST "+svc+"/settings", s.auth(authFull, s.saveSettings))
@@ -273,7 +286,11 @@ func (s *Server) secureHeaders(next http.Handler) http.Handler {
 			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		if r.Method == http.MethodPost {
-			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+			limit := int64(1 << 20)
+			if strings.HasSuffix(r.URL.Path, "/objects/upload") { // console uploads to a bucket
+				limit = maxUploadBytes + 1<<20
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -442,8 +459,9 @@ func parseTemplates() (map[string]*template.Template, error) {
 			}
 			return s
 		},
-		"jobStatus": func(s string) string { return s }, // succeeded, failed, timed_out, skipped, running
+		"jobStatus":  func(s string) string { return s }, // succeeded, failed, timed_out, skipped, running
 		"engineName": engineName,
+		"bytes":      humanBytes,
 		"dbStatus": func(s string) string {
 			if s == "running" {
 				return "live"

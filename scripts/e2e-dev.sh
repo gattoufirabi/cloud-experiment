@@ -337,6 +337,101 @@ if pctl deploy shop/web --image nginx:1.27-alpine --wait | grep -q "is live"; th
 if pctl status shop/web | grep -q "live"; then ok "[CLI] platformctl status shows the live revision"; else bad "[CLI] status missing"; fi
 if echo "cli-secret-$RUN" | pctl secret set shop/web CLI_TEST | grep -q "saved"; then ok "[CLI] platformctl secret set"; else bad "[CLI] secret set failed"; fi
 if c ja "$BASE/o/$A/audit" | grep -q "via_api_token"; then ok "[API] audit log names the token"; else bad "[API] token missing from the audit log"; fi
+echo "== Object storage (S3)"
+S3=http://s3.localhost:$PORT
+s3c() { local k=$1 s=$2; shift 2; curl -sS --resolve "s3.localhost:$PORT:127.0.0.1" --aws-sigv4 "aws:amz:us-east-1:s3" --user "$k:$s" "$@"; }
+s3code() { local k=$1 s=$2; shift 2; s3c "$k" "$s" -o /dev/null -w '%{http_code}' "$@"; }
+storage_poke() { owner_sql "SELECT pg_notify('deployments', 'storage')" >/dev/null; }
+new_s3_key() { # new_s3_key <jar> <org> <csrf> <name> <perm args...>: prints "KEYID SECRET"
+  local jar=$1 org=$2 csrf=$3 name=$4; shift 4
+  local page; page=$(c "$jar" -X POST "$BASE/o/$org/storage/keys" -d csrf=$csrf -d "name=$name" "$@")
+  echo "$(grep -o 'GK[0-9a-f]\{24\}' <<<"$page" | head -1) $(sed -n 's/.*select wrap">\([0-9a-f]\{64\}\)<.*/\1/p' <<<"$page" | head -1)"
+}
+check "[A] storage page opens" "$(code_of ja "$BASE/o/$A/storage")" 200
+check "[A] bucket uploads created (5 MB)" "$(code_of ja -X POST "$BASE/o/$A/storage/buckets" -d csrf=$CSRF_A -d name=uploads -d quota_mb=5)" 303
+check "[A] bucket row and Garage bucket recorded" "$(owner_sql "SELECT full_name || ':' || (garage_id <> '') FROM buckets b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.name = 'uploads'")" "$A-uploads:true"
+if grep -q "err=Bucket+name" <<<"$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/storage/buckets" -d csrf=$CSRF_A -d name=Bad_Name)"; then ok "invalid bucket name refused"; else bad "invalid bucket name accepted"; fi
+if grep -q "err=Quota" <<<"$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/storage/buckets" -d csrf=$CSRF_A -d name=huge -d quota_mb=99999999)"; then ok "bucket quota above the plan refused"; else bad "bucket quota above the plan accepted"; fi
+check "[B->A] B cannot open A's bucket (404)" "$(code_of jb "$BASE/o/$A/storage/b/uploads")" 404
+read -r KW SW <<<"$(new_s3_key ja "$A" "$CSRF_A" e2e-rw -d perm_uploads=write)"
+read -r KR SR <<<"$(new_s3_key ja "$A" "$CSRF_A" e2e-ro -d perm_uploads=read)"
+if [ -n "$KW" ] && [ ${#SW} = 64 ] && [ -n "$KR" ]; then ok "[A] access keys created, secret shown once"; else bad "access key secret not shown ($KW)"; fi
+check "secret not shown again on the storage page" "$(c ja "$BASE/o/$A/storage" | grep -c "$SW")" 0
+echo "hello-s3-$RUN" > "$TMP/s3obj.txt"
+check "[S3] read-write key uploads an object" "$(s3code "$KW" "$SW" -T "$TMP/s3obj.txt" "$S3/$A-uploads/docs/hello.txt")" 200
+check "[S3] the object reads back" "$(s3c "$KW" "$SW" "$S3/$A-uploads/docs/hello.txt")" "hello-s3-$RUN"
+if grep -q "<Key>docs/hello.txt</Key>" <<<"$(s3c "$KR" "$SR" "$S3/$A-uploads?list-type=2")"; then ok "[S3] read-only key lists the bucket"; else bad "[S3] read-only key cannot list"; fi
+check "[S3] read-only key cannot write (403)" "$(s3code "$KR" "$SR" -T "$TMP/s3obj.txt" "$S3/$A-uploads/denied.txt")" 403
+check "[S3] request without credentials refused (403)" "$(curl -sS --resolve "s3.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' "$S3/$A-uploads/docs/hello.txt")" 403
+check "[S3] wrong secret refused (403)" "$(s3code "$KW" "0000000000000000000000000000000000000000000000000000000000000000" "$S3/$A-uploads/docs/hello.txt")" 403
+code_of jb -X POST "$BASE/o/$B/storage/buckets" -d csrf=$CSRF_B -d name=media -d quota_mb=5 >/dev/null
+read -r KB SB <<<"$(new_s3_key jb "$B" "$CSRF_B" b-key -d perm_media=write)"
+check "[B->A S3] B's key cannot read A's bucket (403)" "$(s3code "$KB" "$SB" "$S3/$A-uploads/docs/hello.txt")" 403
+check "[B->A S3] B's key cannot write A's bucket (403)" "$(s3code "$KB" "$SB" -T "$TMP/s3obj.txt" "$S3/$A-uploads/x.txt")" 403
+if grep -q "perm_uploads" <<<"$(c jb "$BASE/o/$B/storage")"; then bad "B's key form offers A's bucket"; else ok "B's key form lists only B's buckets"; fi
+head -c 6291456 /dev/zero > "$TMP/s3big.bin"
+check "[S3] upload beyond the bucket quota refused" "$(s3code "$KW" "$SW" -T "$TMP/s3big.bin" "$S3/$A-uploads/big.bin")" 403
+echo "console-upload-$RUN" > "$TMP/console.txt"
+check "[A] console upload" "$(code_of ja -X POST "$BASE/o/$A/storage/b/uploads/objects/upload" -F csrf=$CSRF_A -F prefix=docs/ -F "file=@$TMP/console.txt")" 303
+PAGE=$(c ja "$BASE/o/$A/storage/b/uploads?prefix=docs/")
+if grep -q "console.txt" <<<"$PAGE" && grep -q "hello.txt" <<<"$PAGE"; then ok "[A] object browser lists the folder"; else bad "object browser does not list the objects"; fi
+LINK=$(c ja -o /dev/null -w '%{redirect_url}' "$BASE/o/$A/storage/b/uploads/objects/download?key=docs/console.txt")
+check "[A] download link is a presigned URL that works" "$(curl -sS --resolve "s3.localhost:$PORT:127.0.0.1" "$LINK")" "console-upload-$RUN"
+check "[A] presigned URL refused once tampered (403)" "$(curl -sS --resolve "s3.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' "${LINK/console.txt/hello.txt}")" 403
+check "[A] console delete of an object" "$(code_of ja -X POST "$BASE/o/$A/storage/b/uploads/objects/delete" -d csrf=$CSRF_A -d key=docs/console.txt)" 303
+check "deleted object is gone (404)" "$(s3code "$KW" "$SW" "$S3/$A-uploads/docs/console.txt")" 404
+storage_poke
+check "usage refreshed by the agent" "$(for _ in $(seq 1 30); do [ "$(owner_sql "SELECT objects FROM buckets b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.name = 'uploads'")" = 1 ] && { echo 1; break; }; sleep 2; done)" 1
+check "storage usage metered for invoices" "$(owner_sql "SELECT count(*) > 0 FROM usage_hourly u JOIN orgs o ON o.id = u.org_id WHERE o.slug = '$A' AND u.kind = 'bucket' AND u.storage_bytes > 0")" t
+
+echo "<h1>site-$RUN</h1>" > "$TMP/index.html"
+WEB_HOST=$A-uploads.web.apps.localhost
+web_get() { curl -sS --resolve "$WEB_HOST:$PORT:127.0.0.1" -o "$TMP/web.out" -w '%{http_code}' "http://$WEB_HOST:$PORT/"; }
+s3code "$KW" "$SW" -T "$TMP/index.html" -H "Content-Type: text/html" "$S3/$A-uploads/index.html" >/dev/null
+check "website off: bucket not served (404)" "$(web_get)" 404
+check "[A] website turned on" "$(code_of ja -X POST "$BASE/o/$A/storage/b/uploads/settings" -d csrf=$CSRF_A -d quota_mb=5 -d website=1 -d index_document=index.html)" 303
+check "public website serves index.html" "$(web_get):$(cat "$TMP/web.out")" "200:<h1>site-$RUN</h1>"
+tls_ask() { dx run --rm --network platform-core curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' "http://api:8081/internal/tls-ask?domain=$1"; }
+check "website host approved for a certificate" "$(tls_ask "$WEB_HOST")" 200
+check "unknown website host refused a certificate" "$(tls_ask nope-x.web.apps.localhost)" 404
+code_of ja -X POST "$BASE/o/$A/storage/b/uploads/settings" -d csrf=$CSRF_A -d quota_mb=5 -d index_document=index.html >/dev/null
+check "website off again (404)" "$(web_get)" 404
+
+check "[A] bucket connected to service files" "$(code_of ja -X POST "$BASE/o/$A/storage/b/uploads/attach" -d csrf=$CSRF_A -d service=shop/files)" 303
+check "service got the AWS secrets" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name IN ('AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_ENDPOINT_URL','AWS_REGION','S3_BUCKET')")" 5
+check "service key recorded with its service" "$(owner_sql "SELECT count(*) FROM storage_keys k JOIN services v ON v.id = k.service_id WHERE v.slug = 'files' AND k.org_id = (SELECT id FROM orgs WHERE slug = '$A')")" 1
+code_of ja -X POST "$BASE/o/$A/p/shop/s/files/deploy" -d csrf=$CSRF_A >/dev/null
+CID_S3=""; for _ in $(seq 1 60); do CID_S3=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'files' AND d.status = 'live' ORDER BY d.revision DESC LIMIT 1"); [ -n "$CID_S3" ] && [ "$CID_S3" != "$CID_F" ] && break; sleep 2; done
+check "redeployed service has the S3 variables" "$(dx exec "$CID_S3" printenv S3_BUCKET 2>&1 | tr -d '\r')" "$A-uploads"
+if dx exec "$CID_S3" sh -c 'wget -qO- "$AWS_ENDPOINT_URL/$S3_BUCKET/docs/hello.txt" 2>&1' | grep -q "403\|Forbidden"; then ok "service reaches the S3 endpoint through the proxy (unsigned request refused)"; else bad "service cannot reach the S3 endpoint"; fi
+CID_F=$CID_S3
+
+owner_sql "UPDATE orgs SET suspended = true WHERE slug = '$A'" >/dev/null; storage_poke
+check "suspended organization: its keys lose access" "$(for _ in $(seq 1 30); do [ "$(s3code "$KW" "$SW" "$S3/$A-uploads/docs/hello.txt")" = 403 ] && { echo 403; break; }; sleep 2; done)" 403
+owner_sql "UPDATE orgs SET suspended = false WHERE slug = '$A'" >/dev/null; storage_poke
+check "reactivated organization: access restored" "$(for _ in $(seq 1 30); do [ "$(s3code "$KW" "$SW" "$S3/$A-uploads/docs/hello.txt")" = 200 ] && { echo 200; break; }; sleep 2; done)" 200
+
+KR_ID=$(owner_sql "SELECT k.id FROM storage_keys k JOIN orgs o ON o.id = k.org_id WHERE o.slug = '$A' AND k.name = 'e2e-ro'")
+check "[A] access key deleted" "$(code_of ja -X POST "$BASE/o/$A/storage/keys/$KR_ID/delete" -d csrf=$CSRF_A)" 303
+check "deleted key refused (403)" "$(for _ in $(seq 1 30); do [ "$(s3code "$KR" "$SR" "$S3/$A-uploads?list-type=2")" = 403 ] && { echo 403; break; }; sleep 2; done)" 403
+
+check "[API] bucket created with an API token" "$(api_code "$TOK_DEV" -X POST -H 'Content-Type: application/json' -d '{"name":"api-bucket","quota_mb":2}' "$BASE/api/v1/buckets")" 201
+check "[API] viewer token cannot create a bucket (403)" "$(api_code "$TOK_VIEW" -X POST -H 'Content-Type: application/json' -d '{"name":"nope"}' "$BASE/api/v1/buckets")" 403
+if pctl bucket list | grep -q "$A-api-bucket"; then ok "[CLI] platformctl bucket list"; else bad "[CLI] bucket list misses the bucket"; fi
+OUT=$(pctl key create cli-key api-bucket=write)
+KC=$(sed -n 's/^AWS_ACCESS_KEY_ID=//p' <<<"$OUT"); SC=$(sed -n 's/^AWS_SECRET_ACCESS_KEY=//p' <<<"$OUT")
+check "[CLI] key created by platformctl writes to its bucket" "$(s3code "$KC" "$SC" -T "$TMP/s3obj.txt" "$S3/$A-api-bucket/f.txt")" 200
+check "[CLI] that key cannot reach other buckets (403)" "$(s3code "$KC" "$SC" "$S3/$A-uploads/docs/hello.txt")" 403
+check "[B->A API] B's token cannot list A's buckets" "$(api_get "$TOK_B" "$BASE/api/v1/buckets" | grep -c "$A-api-bucket")" 0
+if pctl bucket delete api-bucket | grep -q "403\|forbidden\|role"; then ok "[CLI] developer token cannot delete a bucket (admin only)"; else bad "[CLI] developer token deleted a bucket"; fi
+check "[A] bucket deleted by an admin in the console" "$(code_of ja -X POST "$BASE/o/$A/storage/b/api-bucket/delete" -d csrf=$CSRF_A -d confirm=api-bucket)" 303
+
+check "[A] non-empty bucket deleted" "$(code_of ja -X POST "$BASE/o/$A/storage/b/uploads/delete" -d csrf=$CSRF_A -d confirm=uploads)" 303
+storage_poke
+check "deleted buckets emptied and removed from Garage" "$(for _ in $(seq 1 45); do [ "$(owner_sql "SELECT count(*) FROM storage_trash")" = 0 ] && { echo done; break; }; sleep 2; done)" done
+check "objects of the deleted bucket are gone" "$(s3code "$KW" "$SW" "$S3/$A-uploads/docs/hello.txt")" 404
+check "bucket deletion audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'bucket.deleted' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" 2
+
 TOK_ID=$(owner_sql "SELECT t.id FROM api_tokens t JOIN orgs o ON o.id = t.org_id WHERE o.slug = '$A' AND t.name = 'ci'")
 code_of ja -X POST "$BASE/o/$A/api-tokens/$TOK_ID/delete" -d csrf=$CSRF_A >/dev/null
 check "[API] revoked token refused (401)" "$(api_code "$TOK_DEV" "$BASE/api/v1/me")" 401

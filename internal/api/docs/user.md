@@ -206,6 +206,29 @@ Managed PostgreSQL, MySQL, MariaDB and Redis run next to your services, on the p
 - **Redis memory:** Redis uses at most 80% of the memory you give it and then refuses new writes instead of evicting keys, so size it for your data.
 - **Plans:** Starter includes 1 managed database, Pro includes 5 (all engines together).
 
+## Object storage
+
+S3-compatible buckets for files, uploads, backups and static websites, on the organization's **Storage** page. Any S3 tool works: the AWS CLI and SDKs, rclone, Cyberduck, restic.
+
+1. **Create a bucket** (developers): give it a name such as `uploads` and a quota in MB. Its S3 name is `<organization>-<name>` (for example `acme-uploads`). Writes that would go beyond the quota are refused; raise it later in the bucket's settings. The quotas of all your buckets together stay within your plan's storage.
+2. **Create an access key** on the **Access keys** tab: name it and choose, for each bucket, *no access*, *read* or *read and write*. Copy the secret immediately: it is shown once. Delete a key to revoke it within seconds.
+3. **Use it** with the endpoint and region shown on the **Use from code** tab, with path-style addressing:
+
+```
+export AWS_ACCESS_KEY_ID=GK…  AWS_SECRET_ACCESS_KEY=…
+export AWS_ENDPOINT_URL={{s3}}  AWS_REGION={{s3region}}
+aws s3 cp ./report.pdf s3://acme-uploads/reports/report.pdf
+aws s3 presign s3://acme-uploads/reports/report.pdf --expires-in 3600
+```
+
+- **From a service:** on the bucket's **Connect** tab, choose a service and click **Connect**. The platform creates a key for that service only (read and write on this bucket) and stores `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`, `AWS_REGION` and `S3_BUCKET` as its secrets. Redeploy the service; SDKs pick these variables up by themselves.
+- **Browse objects** on the bucket's **Objects** tab: open folders, download (through a link valid for 5 minutes), delete, and upload files of up to 25 MB. Use the S3 API for larger files and for whole folders (`aws s3 sync`).
+- **Static website:** in the bucket's settings, tick **Public website**: every object becomes readable by anyone at `https://<organization>-<name>.web.{{apps}}/`, with HTTPS, serving `index.html` (or the index document you set) for a folder and an optional error document. Keep private files in another bucket.
+- **Presigned URLs** (`aws s3 presign`, or your SDK) let someone download or upload one object for a limited time without a key.
+- **Deleting a bucket** (admins) removes it with all its objects; this cannot be undone.
+- **Not supported:** bucket policies and ACLs (use keys with per-bucket access instead), versioning, object lock and server-side encryption options. Data is stored on the platform's own servers.
+- **Plans:** Trial includes 2 buckets and 1 GB, Starter 10 buckets and 10 GB, Pro 100 buckets and 100 GB. Stored data is billed per GB-month.
+
 ## Public status page
 
 Each project can have a public page that anyone can open, without an account, at `/status/<organization>/<project>`. Share it with your customers.
@@ -358,6 +381,12 @@ platformctl deploy shop/web --image {{registry}}/<organization>/web:1.4.2 --wait
 | `platformctl job list <project>/<service>` | Lists the service's scheduled jobs, their last run and next run. |
 | `platformctl job run <project>/<service> JOB [--wait]` | Runs a job now; `--wait` prints its output and exits with an error if it fails. |
 | `platformctl job logs <project>/<service> JOB` | Prints the output of the job's last run. |
+| `platformctl bucket list` | Lists buckets with their usage, the S3 endpoint and region. |
+| `platformctl bucket create NAME [--quota MB]` | Creates bucket `<organization>-NAME`. |
+| `platformctl bucket delete NAME` | Deletes a bucket and all its objects (admin token). |
+| `platformctl key list` | Lists S3 access keys and the buckets they reach. |
+| `platformctl key create NAME BUCKET=read\|write…` | Creates an S3 access key and prints its secret once. |
+| `platformctl key delete ID` | Deletes an S3 access key (by its ID or access key ID). |
 
 `platformctl` is a single program with no dependencies; build it with `go build ./cmd/platformctl` from the platform's source, or ask your operator for a copy.
 
@@ -383,6 +412,12 @@ The same operations are available over HTTP with `Authorization: Bearer <token>`
 | `DELETE /api/v1/projects/{project}/services/{service}/jobs/{job}` | developer |
 | `POST /api/v1/projects/{project}/services/{service}/jobs/{job}/run` | developer |
 | `GET /api/v1/projects/{project}/services/{service}/jobs/{job}/runs` and `…/runs/{id}` (with the log) | viewer |
+| `GET /api/v1/buckets` | viewer |
+| `POST /api/v1/buckets` with `{"name": "uploads", "quota_mb": 1024}` | developer |
+| `DELETE /api/v1/buckets/{name}` | admin |
+| `GET /api/v1/storage-keys` | viewer |
+| `POST /api/v1/storage-keys` with `{"name": "ci", "buckets": {"uploads": "write"}}` (the answer holds the secret, once) | developer |
+| `DELETE /api/v1/storage-keys/{id}` | developer |
 
 A token works only inside its organization and only with its role. Every change made with a token appears in the audit log, named after the token.
 
@@ -402,6 +437,7 @@ Admins and owners find **Billing** in the organization's tabs.
 - **Invoices** cover one calendar month (UTC) and appear on the 1st of the next month. Open one to print it or save it as PDF from your browser. The plan fee of your first month is counted from the day the organization was created.
 - **Billing details:** the company name, address and tax ID printed on your invoices. Changes apply to the next invoices, not to ones already issued.
 - **Builds from git** are billed per build minute (shown on the Billing page with your plan's price).
+- **Object storage** is billed per GB-month of data stored in your buckets (measured every hour).
 - **Paying:** follow the payment instructions you received from the platform operator; an invoice shows **paid** once the operator has recorded your payment.
 
 ## Team members and roles

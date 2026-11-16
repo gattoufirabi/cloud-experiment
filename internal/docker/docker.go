@@ -471,6 +471,12 @@ func (c *Client) NetworkList(ctx context.Context, label string) ([]Network, erro
 	return out, err
 }
 
+// NetworkConnectIP attaches a container to a network at a fixed address.
+func (c *Client) NetworkConnectIP(ctx context.Context, network, container, ip string) error {
+	return c.call(ctx, http.MethodPost, "/networks/"+url.PathEscape(network)+"/connect", nil,
+		map[string]any{"Container": container, "EndpointConfig": EndpointConfig{IPAMConfig: &EndpointIPAM{IPv4Address: ip}}}, nil)
+}
+
 func (c *Client) NetworkDisconnect(ctx context.Context, network, container string) error {
 	err := c.call(ctx, http.MethodPost, "/networks/"+url.PathEscape(network)+"/disconnect", nil,
 		map[string]any{"Container": container, "Force": true}, nil)

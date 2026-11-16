@@ -6,7 +6,8 @@
 //   - the plan's monthly fee, prorated from the day the organization was created;
 //   - allocated CPU (vCPU-hours) and memory (GB-hours) of live services and running
 //     databases, metered every minute;
-//   - network out of services (GB, 10^9 bytes).
+//   - network out of services (GB, 10^9 bytes);
+//   - object storage: bytes stored in buckets, sampled hourly (GB-month = 730 hours).
 //
 // All prices are in cents of one currency per installation (BILLING_CURRENCY).
 package billing
@@ -26,24 +27,27 @@ import (
 )
 
 type Prices struct {
-	Monthly  int64   // cents per month
-	VCPUHour float64 // cents per vCPU-hour
-	GBHour   float64 // cents per GB-hour of memory
-	GBOut    float64 // cents per GB of network out
-	BuildMin float64 // cents per build minute
+	Monthly        int64   // cents per month
+	VCPUHour       float64 // cents per vCPU-hour
+	GBHour         float64 // cents per GB-hour of memory
+	GBOut          float64 // cents per GB of network out
+	BuildMin       float64 // cents per build minute
+	StorageGBMonth float64 // cents per GB-month of object storage
 }
 
 type Usage struct {
-	CPUMilliMinutes int64
-	MemMBMinutes    int64
-	EgressBytes     int64
-	BuildSeconds    int64
+	CPUMilliMinutes  int64
+	MemMBMinutes     int64
+	EgressBytes      int64
+	BuildSeconds     int64
+	StorageByteHours int64 // sum of hourly samples of stored bytes
 }
 
-func (u Usage) VCPUHours() float64    { return float64(u.CPUMilliMinutes) / 1000 / 60 }
-func (u Usage) GBHours() float64      { return float64(u.MemMBMinutes) / 1024 / 60 }
-func (u Usage) GBOut() float64        { return float64(u.EgressBytes) / 1e9 }
-func (u Usage) BuildMinutes() float64 { return float64(u.BuildSeconds) / 60 }
+func (u Usage) VCPUHours() float64       { return float64(u.CPUMilliMinutes) / 1000 / 60 }
+func (u Usage) GBHours() float64         { return float64(u.MemMBMinutes) / 1024 / 60 }
+func (u Usage) GBOut() float64           { return float64(u.EgressBytes) / 1e9 }
+func (u Usage) BuildMinutes() float64    { return float64(u.BuildSeconds) / 60 }
+func (u Usage) StorageGBMonths() float64 { return float64(u.StorageByteHours) / 1e9 / 730 }
 
 type Line struct {
 	Description string
@@ -73,6 +77,7 @@ func Lines(planName string, p Prices, u Usage, fraction float64) []Line {
 	add("Memory allocated to services and databases", "GB-hour", u.GBHours(), p.GBHour)
 	add("Network out", "GB", u.GBOut(), p.GBOut)
 	add("Builds from git", "build minute", u.BuildMinutes(), p.BuildMin)
+	add("Object storage", "GB-month", u.StorageGBMonths(), p.StorageGBMonth)
 	return out
 }
 
@@ -135,7 +140,7 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, month 
 	rows, err := pool.Query(ctx, `
 		SELECT o.id, o.name, o.billing_name, o.billing_address, o.billing_tax_id, p.name, o.created_at,
 		       p.price_monthly_cents, p.price_vcpu_hour_cents::float8, p.price_gb_hour_cents::float8, p.price_gb_out_cents::float8,
-		       p.price_build_minute_cents::float8
+		       p.price_build_minute_cents::float8, p.price_storage_gb_month_cents::float8
 		FROM orgs o JOIN plans p ON p.id = o.plan_id
 		WHERE o.created_at < $2
 		  AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.org_id = o.id AND i.period_start = $1::date)
@@ -146,7 +151,7 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, month 
 	orgs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (orgRow, error) {
 		var o orgRow
 		err := r.Scan(&o.ID, &o.Name, &o.BillName, &o.BillAddr, &o.BillTax, &o.Plan, &o.Created,
-			&o.P.Monthly, &o.P.VCPUHour, &o.P.GBHour, &o.P.GBOut, &o.P.BuildMin)
+			&o.P.Monthly, &o.P.VCPUHour, &o.P.GBHour, &o.P.GBOut, &o.P.BuildMin, &o.P.StorageGBMonth)
 		return o, err
 	})
 	if err != nil {
@@ -156,9 +161,10 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, month 
 	for _, o := range orgs {
 		var u Usage
 		if err := pool.QueryRow(ctx, `
-			SELECT coalesce(sum(cpu_milli_minutes), 0)::bigint, coalesce(sum(mem_mb_minutes), 0)::bigint, coalesce(sum(egress_bytes), 0)::bigint
+			SELECT coalesce(sum(cpu_milli_minutes), 0)::bigint, coalesce(sum(mem_mb_minutes), 0)::bigint, coalesce(sum(egress_bytes), 0)::bigint,
+			       coalesce(sum(storage_bytes), 0)::bigint
 			FROM usage_hourly WHERE org_id = $1 AND hour >= $2 AND hour < $3`, o.ID, start, end).
-			Scan(&u.CPUMilliMinutes, &u.MemMBMinutes, &u.EgressBytes); err != nil {
+			Scan(&u.CPUMilliMinutes, &u.MemMBMinutes, &u.EgressBytes, &u.StorageByteHours); err != nil {
 			return created, err
 		}
 		if u.BuildSeconds, err = BuildSeconds(ctx, pool, o.ID, start, end); err != nil {

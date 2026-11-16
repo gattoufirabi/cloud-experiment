@@ -23,13 +23,13 @@
   {{if .Usage}}
   <div class="scroll-x">
   <table>
-    <thead><tr><th>Resource</th><th class="num">CPU (vCPU-h)</th><th class="num">Memory (GB-h)</th><th class="num">Network out (GB)</th></tr></thead>
+    <thead><tr><th>Resource</th><th class="num">CPU (vCPU-h)</th><th class="num">Memory (GB-h)</th><th class="num">Network out (GB)</th><th class="num">Storage (GB-month)</th></tr></thead>
     <tbody>
-    {{range .Usage}}<tr><td>{{.Name}} <span class="muted small">{{.Kind}}</span></td><td class="num">{{qty .VCPUHours}}</td><td class="num">{{qty .GBHours}}</td><td class="num">{{qty .GB}}</td></tr>{{end}}
+    {{range .Usage}}<tr><td>{{.Name}} <span class="muted small">{{.Kind}}</span></td><td class="num">{{qty .VCPUHours}}</td><td class="num">{{qty .GBHours}}</td><td class="num">{{qty .GB}}</td><td class="num">{{if .StorageGB}}{{printf "%.4f" .StorageGB}}{{end}}</td></tr>{{end}}
     </tbody>
   </table>
   </div>
-  {{else}}<p class="muted">No running services or databases this month.</p>{{end}}
+  {{else}}<p class="muted">No running services, databases or buckets this month.</p>{{end}}
 </div>
 
 <div class="section">

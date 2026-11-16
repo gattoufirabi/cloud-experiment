@@ -110,7 +110,39 @@ type Config struct {
 	BillingSeller     string        // seller block printed on invoices; "|" separates lines
 	AlertInterval     time.Duration // health probe / evaluation period
 	AlertAllowPrivate bool          // dev only: let notifications reach private addresses
+
+	// Object storage (S3-compatible, served by Garage). On when S3Host is set.
+	S3Host           string // public host[:port] of the S3 endpoint, e.g. s3.example.com
+	S3Upstream       string // Garage S3 API address for Caddy and the API
+	S3WebUpstream    string // Garage website endpoint address for Caddy
+	S3Region         string // region clients sign requests for
+	S3ServiceURL     string // endpoint given to services (default: the public URL)
+	GarageAdminURL   string
+	GarageAdminToken string
 }
+
+// StorageEnabled reports whether object storage is configured.
+func (c Config) StorageEnabled() bool { return c.S3Host != "" && c.GarageAdminToken != "" }
+
+// S3PublicURL is the S3 endpoint as clients outside the platform use it.
+func (c Config) S3PublicURL() string {
+	if c.TLSMode == "acme" {
+		return "https://" + c.S3Host
+	}
+	return "http://" + c.S3Host
+}
+
+// S3Endpoint is the S3 endpoint given to services (they reach it through the proxy on
+// their project network).
+func (c Config) S3Endpoint() string {
+	if c.S3ServiceURL != "" {
+		return c.S3ServiceURL
+	}
+	return c.S3PublicURL()
+}
+
+// WebDomain hosts public website buckets: <bucket>.<WebDomain>.
+func (c Config) WebDomain() string { return "web." + c.AppsDomain }
 
 func Load() Config {
 	return Config{
@@ -160,6 +192,14 @@ func Load() Config {
 		AlertsEnabled:     envBool("ALERTS_ENABLED", false),
 		AlertInterval:     time.Duration(envInt("ALERT_INTERVAL_SECONDS", 30)) * time.Second,
 		AlertAllowPrivate: envBool("ALERT_ALLOW_PRIVATE_TARGETS", false),
+
+		S3Host:           env("S3_HOST", ""),
+		S3Upstream:       env("S3_UPSTREAM", "garage:3900"),
+		S3WebUpstream:    env("S3_WEB_UPSTREAM", "garage:3902"),
+		S3Region:         env("S3_REGION", "us-east-1"),
+		S3ServiceURL:     strings.TrimRight(env("S3_SERVICE_URL", ""), "/"),
+		GarageAdminURL:   strings.TrimRight(env("GARAGE_ADMIN_URL", "http://garage:3903"), "/"),
+		GarageAdminToken: env("GARAGE_ADMIN_TOKEN", ""),
 
 		TenantResolvConf:   env("TENANT_RESOLV_CONF", ""),
 		NodeID:             env("NODE_ID", ""),
