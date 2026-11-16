@@ -43,7 +43,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | gVisor sandbox for tenant containers | done, verified on a Debian 12 server (Phase 0 gate) |
 | Host firewall for tenant networks, isolation test (Phase 0 gate) | done, gate PASSED on a real server via `host/deploy.sh` |
 
-The end-to-end test (`scripts/e2e-dev.sh`) runs 216 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds and self-signup. Unit tests: `go test ./...` (outbound request guard).
+The end-to-end test (`scripts/e2e-dev.sh`) runs 264 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds and self-signup. Unit tests: `go test ./...` (outbound request guard).
 
 **Not built yet** (next phases in ARCHITECTURE.md): Phase 4 (multiple servers), hard filesystem disk quotas (XFS project quotas).
 
