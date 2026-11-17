@@ -23,6 +23,7 @@ type serviceInfo struct {
 	Port, CPUMillis, MemoryMB, Instances    int
 	Worker                                  bool
 	Env                                     map[string]string
+	Ports                                   []model.PublicPort
 	PreviewName, ParentSlug                 string // set for preview environments
 	Expires                                 *time.Time
 }
@@ -39,18 +40,18 @@ func (s *Server) serviceHost(o *orgInfo, p *projectInfo, sv *serviceInfo) string
 
 func (sv *serviceInfo) spec() model.Spec {
 	return model.Spec{Image: sv.Image, Port: sv.Port, CPUMillis: sv.CPUMillis, MemoryMB: sv.MemoryMB,
-		HealthPath: sv.HealthPath, VolumePath: sv.VolumePath, Env: sv.Env, Worker: sv.Worker, Instances: sv.Instances}
+		HealthPath: sv.HealthPath, VolumePath: sv.VolumePath, Env: sv.Env, Worker: sv.Worker, Instances: sv.Instances, Ports: sv.Ports}
 }
 
 func (s *Server) loadService(r *http.Request, tx pgx.Tx, projectID string) (*serviceInfo, error) {
 	var sv serviceInfo
 	err := tx.QueryRow(r.Context(), `
 		SELECT s.id, s.slug, s.image, s.health_path, s.volume_path, s.port, s.cpu_millis, s.memory_mb, s.env,
-		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker, s.instances
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker, s.instances, s.ports
 		FROM services s LEFT JOIN services ps ON ps.id = s.preview_of
 		WHERE s.project_id = $1 AND s.slug = $2`, projectID, r.PathValue("service")).
 		Scan(&sv.ID, &sv.Slug, &sv.Image, &sv.HealthPath, &sv.VolumePath, &sv.Port, &sv.CPUMillis, &sv.MemoryMB, &sv.Env,
-			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker, &sv.Instances)
+			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker, &sv.Instances, &sv.Ports)
 	if sv.Env == nil {
 		sv.Env = map[string]string{}
 	}
@@ -257,6 +258,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		"Org": o, "Project": p, "Service": sv, "EnvText": model.FormatEnv(sv.Env),
 		"Deployments": deps, "Secrets": secrets, "Domains": domains, "ProjectVars": projectVars,
 		"URL": s.appURL(host), "Path": svcPath(o, p, sv), "AppsDomain": s.cfg.AppsDomain,
+		"PortHost": host, "PortsText": model.PortsText(sv.Ports),
 		"CanEdit": model.RoleAtLeast(o.Role, "developer"),
 		"Scan":    scan, "Findings": findings, "RegistryHost": s.cfg.RegistryHost,
 		"Backups": backups, "CanRestore": model.RoleAtLeast(o.Role, "admin"),
@@ -288,7 +290,16 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			formErr = "Environment: " + err.Error()
 			return nil
 		}
+		ports, err := model.ParsePorts(r.PostFormValue("ports"))
+		if err != nil {
+			formErr = "Public ports: " + err.Error()
+			return nil
+		}
+		if sv.isPreview() {
+			ports = nil // previews have no public ports
+		}
 		next := model.Spec{
+			Ports:      ports,
 			Image:      strings.TrimSpace(r.PostFormValue("image")),
 			Port:       atoi(r.PostFormValue("port")),
 			CPUMillis:  atoi(r.PostFormValue("cpu_millis")),
@@ -301,6 +312,9 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if sv.isPreview() {
 			next.Instances = 1 // previews run a single instance
+		}
+		if next.Worker && !strings.HasPrefix(next.HealthPath, "/") {
+			next.HealthPath = "/" // unused by workers
 		}
 		if next.Worker && !sv.Worker {
 			var n int
@@ -336,11 +350,20 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
+		if next.Ports, err = s.allocatePorts(r, tx, o, sv.ID, next.Ports); err != nil {
+			var qe quotaError
+			if errors.As(err, &qe) {
+				formErr = qe.Error()
+				return nil
+			}
+			return err
+		}
 		envJSON, _ := json.Marshal(next.Env)
+		portsJSON, _ := json.Marshal(next.Ports)
 		if _, err := tx.Exec(r.Context(), `
 			UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8, worker = $9,
-			       instances = $10
-			WHERE id = $1`, sv.ID, next.Image, next.Port, next.CPUMillis, next.MemoryMB, next.HealthPath, next.VolumePath, envJSON, next.Worker, next.Count()); err != nil {
+			       instances = $10, ports = $11
+			WHERE id = $1`, sv.ID, next.Image, next.Port, next.CPUMillis, next.MemoryMB, next.HealthPath, next.VolumePath, envJSON, next.Worker, next.Count(), portsJSON); err != nil {
 			return err
 		}
 		s.audit(r, tx, o.ID, "service.updated", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"image": next.Image, "cpu_millis": next.CPUMillis, "memory_mb": next.MemoryMB, "worker": next.Worker, "instances": next.Count()})

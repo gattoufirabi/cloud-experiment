@@ -23,6 +23,16 @@
 <!-- ============ overview ============ -->
 <section class="pane" id="overview" role="tabpanel" aria-label="Overview">
   <p class="help"><a href="/docs/user#updates-and-rollbacks" target="_blank" rel="noopener">Guide: updates and rollbacks ↗</a></p>
+  {{with .Service.Ports}}
+  <div class="section">
+    <h2>Public TCP/UDP endpoints</h2>
+    <table class="resources compact">
+      <thead><tr><th>Connect to</th><th>Protocol</th><th>Container port</th></tr></thead>
+      <tbody>{{range .}}<tr><td><code class="select">{{$.PortHost}}:{{.PublicPort}}</code></td><td>{{.Protocol}}</td><td>{{.ContainerPort}}</td></tr>{{end}}</tbody>
+    </table>
+    <p class="small muted">Applied at the next deployment. A deployment replaces the running container (a few seconds without connections), because a public port goes to one container.</p>
+  </div>
+  {{end}}
 
   <div class="section">
     <div class="head">
@@ -115,6 +125,8 @@
       <label>CPU <span class="hint">millicores, 1000 = 1 core</span><input type="number" name="cpu_millis" min="50" max="8000" step="50" value="{{.Service.CPUMillis}}" required></label>
       <label>Memory <span class="hint">MB</span><input type="number" name="memory_mb" min="32" max="16384" step="32" value="{{.Service.MemoryMB}}" required></label>
       <label>Instances <span class="hint">identical copies sharing the traffic; CPU and memory count for each</span><input type="number" name="instances" min="1" max="10" value="{{.Service.Instances}}" required{{if .Service.PreviewName}} disabled{{end}}></label>
+      {{if not .Service.PreviewName}}<label>Public TCP/UDP ports <span class="hint">for non-HTTP traffic (game servers, MQTT…): one per line, such as 25565/tcp or 27015/udp; each gets a public port</span>
+        <textarea name="ports" rows="2" class="code-editor" spellcheck="false" placeholder="25565/tcp">{{.PortsText}}</textarea></label>{{end}}
       <label class="wide">Persistent folder <span class="hint">optional, kept and backed up, e.g. /data</span><input name="volume_path" value="{{.Service.VolumePath}}" placeholder="/data"></label>
       <label class="wide">Environment variables <span class="hint">one KEY=value per line; not for passwords</span>
         <textarea name="env" rows="5" spellcheck="false">{{.EnvText}}</textarea></label>

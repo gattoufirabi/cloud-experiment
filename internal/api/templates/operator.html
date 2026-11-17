@@ -59,12 +59,24 @@
     {{if .Projects}}
     <form method="post" action="/operator/nodes/{{.ID}}/drain" class="inline">
       <input type="hidden" name="csrf" value="{{$.CSRF}}">
-      <button type="submit" class="danger" data-confirm="Drain {{.Name}}? It is cordoned and its projects without persistent data move to other nodes (each app restarts once).">Drain</button>
-      <span class="small muted">Moves stateless projects to other nodes; projects with persistent data stay.</span>
+      {{if $.MovesEnabled}}<label class="check"><input type="checkbox" name="move_stateful" value="1"> also move projects with data <span class="hint">each stops while its data is copied</span></label>{{end}}
+      <button type="submit" class="danger" data-confirm="Drain {{.Name}}? It is cordoned and its projects move to other nodes (each app restarts once).">Drain</button>
+      <span class="small muted">{{if $.MovesEnabled}}Projects with persistent data move too when ticked; their folders and databases travel through the backup repository.{{else}}Moves stateless projects; projects with persistent data stay (moving them needs an off-site backup repository, BACKUP_REST_URL).{{end}}</span>
     </form>
     {{end}}
   </div>
   {{else}}<div class="section"><p class="muted">No node has reported yet (the agent sends a heartbeat every 30 seconds).</p></div>{{end}}
+  {{with .Moves}}
+  <div class="section" id="moves">
+    <h2>Moves</h2>
+    <table class="resources">
+      <thead><tr><th>Project</th><th>From</th><th>To</th><th>Status</th><th>When</th></tr></thead>
+      <tbody>{{range .}}<tr><td>{{.Org}}/{{.Project}}</td><td>{{.From}}</td><td>{{.To}}</td>
+        <td>{{if eq .Status "done"}}<span class="st st-live">done</span>{{else if eq .Status "failed"}}<span class="st st-failed">failed</span>{{else}}<span class="st st-deploying">{{.Status}}</span>{{end}} <span class="small muted">{{.Message}}</span></td>
+        <td class="nowrap">{{ago .Updated}}</td></tr>{{end}}</tbody>
+    </table>
+  </div>
+  {{end}}
 </section>
 
 <section class="pane" id="op-usage" role="tabpanel" aria-label="Usage">

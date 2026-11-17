@@ -48,18 +48,20 @@ type Agent struct {
 	backupWake   chan struct{}
 	resticPulled bool
 
-	alertWake   chan struct{}
-	buildWake   chan struct{}
-	cleanWake   chan struct{}
-	diskWake    chan struct{}
-	jobWake     chan struct{}
-	storageWake chan struct{}
-	fnWake      chan struct{}
-	fn          *fnState
-	alertHTTP   *http.Client
-	probeFails  map[string]int
-	attached    map[string]bool // project networks the proxy and agent are known to be on
-	restoringDB map[string]bool // databases held stopped by a restore
+	alertWake     chan struct{}
+	buildWake     chan struct{}
+	cleanWake     chan struct{}
+	diskWake      chan struct{}
+	jobWake       chan struct{}
+	storageWake   chan struct{}
+	fnWake        chan struct{}
+	logExportWake chan struct{}
+	moveWake      chan struct{}
+	fn            *fnState
+	alertHTTP     *http.Client
+	probeFails    map[string]int
+	attached      map[string]bool // project networks the proxy and agent are known to be on
+	restoringDB   map[string]bool // databases held stopped by a restore
 
 	selfID string // this node (NODE_ID or the Docker host name)
 
@@ -120,20 +122,22 @@ func Run(ctx context.Context, cfg config.Config) error {
 		wake:  make(chan struct{}, 1),
 		log:   log,
 
-		scanWake:    make(chan struct{}, 1),
-		backupWake:  make(chan struct{}, 1),
-		alertWake:   make(chan struct{}, 1),
-		buildWake:   make(chan struct{}, 1),
-		cleanWake:   make(chan struct{}, 1),
-		diskWake:    make(chan struct{}, 1),
-		jobWake:     make(chan struct{}, 1),
-		storageWake: make(chan struct{}, 1),
-		fnWake:      make(chan struct{}, 1),
-		fn:          newFnState(),
-		alertHTTP:   newAlertHTTP(cfg.AlertAllowPrivate),
-		probeFails:  map[string]int{},
-		attached:    map[string]bool{},
-		restoringDB: map[string]bool{},
+		scanWake:      make(chan struct{}, 1),
+		backupWake:    make(chan struct{}, 1),
+		alertWake:     make(chan struct{}, 1),
+		buildWake:     make(chan struct{}, 1),
+		cleanWake:     make(chan struct{}, 1),
+		diskWake:      make(chan struct{}, 1),
+		jobWake:       make(chan struct{}, 1),
+		storageWake:   make(chan struct{}, 1),
+		fnWake:        make(chan struct{}, 1),
+		logExportWake: make(chan struct{}, 1),
+		moveWake:      make(chan struct{}, 1),
+		fn:            newFnState(),
+		alertHTTP:     newAlertHTTP(cfg.AlertAllowPrivate),
+		probeFails:    map[string]int{},
+		attached:      map[string]bool{},
+		restoringDB:   map[string]bool{},
 	}
 
 	a.resolveSelf(ctx)
@@ -161,6 +165,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.jobLoop(ctx)
 	go a.storageLoop(ctx)
 	go a.fnLoop(ctx)
+	go a.logExportLoop(ctx)
+	go a.moveLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)
@@ -209,6 +215,11 @@ func (a *Agent) listen(ctx context.Context) {
 							a.pokeStorage()
 						case "fn":
 							a.pokeFn()
+						case "logexport":
+							a.pokeLogExport()
+						case "move":
+							a.pokeMoves()
+							a.poke()
 						default:
 							a.poke()
 						}
@@ -337,6 +348,25 @@ func (a *Agent) deploy(ctx context.Context, j job) error {
 	if err != nil {
 		return err
 	}
+	// A public TCP/UDP port can be bound by one container only: stop the running one
+	// first (a short interruption); it is started again if the new one fails.
+	var stopped []string
+	if len(j.Spec.Ports) > 0 {
+		if cs, err := a.dk.ContainerList(ctx, "platform.service="+j.ServiceID); err == nil {
+			for _, c := range cs {
+				if c.State == "running" && c.Labels["platform.job"] == "" && a.owns(c.Labels) {
+					if err := a.dk.ContainerStop(ctx, c.ID, 10); err == nil {
+						stopped = append(stopped, c.ID)
+					}
+				}
+			}
+		}
+	}
+	restore := func() {
+		for _, id := range stopped {
+			_ = a.dk.ContainerStart(context.Background(), id)
+		}
+	}
 	// Start every instance, wait until all are healthy, then switch traffic at once.
 	n := j.Spec.Count()
 	var insts []instance
@@ -344,6 +374,7 @@ func (a *Agent) deploy(ctx context.Context, j job) error {
 		for _, in := range insts {
 			_ = a.dk.ContainerRemove(context.Background(), in.ID)
 		}
+		restore() // the previous version keeps serving its ports
 	}
 	if n > 1 {
 		a.setMessage(ctx, j.ID, fmt.Sprintf("starting %d instances", n))
@@ -587,6 +618,19 @@ func (a *Agent) containerConfig(j job, netName string, env, hosts []string) dock
 		port := strconv.Itoa(j.Spec.Port) + "/tcp"
 		cfg.ExposedPorts = map[string]struct{}{port: {}}
 		cfg.HostConfig.PortBindings = map[string][]docker.PortBinding{port: {{HostIP: a.cfg.NodeBind}}}
+	}
+	// Public TCP/UDP ports (non-HTTP services), on every address of the node.
+	for _, p := range j.Spec.Ports {
+		if p.PublicPort == 0 {
+			continue
+		}
+		if cfg.ExposedPorts == nil {
+			cfg.ExposedPorts = map[string]struct{}{}
+			cfg.HostConfig.PortBindings = map[string][]docker.PortBinding{}
+		}
+		key := p.Key()
+		cfg.ExposedPorts[key] = struct{}{}
+		cfg.HostConfig.PortBindings[key] = append(cfg.HostConfig.PortBindings[key], docker.PortBinding{HostIP: "0.0.0.0", HostPort: strconv.Itoa(p.PublicPort)})
 	}
 	return cfg
 }

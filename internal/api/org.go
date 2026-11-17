@@ -258,6 +258,14 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 	d["RegistryHost"], d["RegistryTokens"], d["Scans"] = s.cfg.RegistryHost, tokens, scans
 	d["Channels"], d["Incidents"], d["AlertKinds"] = channels, incidents, alertKinds
 	d["APITokens"], d["BaseURL"] = apiTokens, s.cfg.BaseURL
+	if model.RoleAtLeast(o.Role, "admin") {
+		sso, err := s.loadSSO(r.Context(), o.ID)
+		if err != nil {
+			s.serverError(w, r, err)
+			return
+		}
+		d["SSO"], d["SSOCallback"] = sso, ssoCallback(s)
+	}
 	page, _ := d["Page"].(string)
 	if page == "" {
 		page = "console"

@@ -94,6 +94,7 @@ func (s *Server) upsertPreview(r *http.Request, tx pgx.Tx, o *orgInfo, p *projec
 		return res, apiErr{http.StatusUnprocessableEntity, "Give an image: the service has none yet."}
 	}
 	spec := parent.spec()
+	spec.Ports = nil     // public ports belong to the service itself
 	spec.Instances = 1   // a preview runs a single instance
 	spec.VolumePath = "" // previews never get persistent storage
 	if img := strings.TrimSpace(req.Image); img != "" {

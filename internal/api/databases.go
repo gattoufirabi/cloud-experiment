@@ -174,7 +174,7 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 			o.ID, p.ID, slug, engine, version, dbName, user).Scan(&id); err != nil {
 			if isUniqueViolation(err) {
 				formErr = "A database with this ID already exists in the project."
-				return nil
+				return errRollback
 			}
 			return err
 		}
@@ -190,12 +190,12 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	switch {
+	case formErr != "":
+		back(w, r, base+"#databases", "", formErr)
 	case isNoRows(err):
 		s.notFound(w, r)
 	case err != nil:
 		s.serverError(w, r, err)
-	case formErr != "":
-		back(w, r, base+"#databases", "", formErr)
 	default:
 		back(w, r, base+"/d/"+slug, "Database created. It is starting; this takes under a minute.", "")
 	}

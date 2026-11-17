@@ -378,8 +378,8 @@ func (a *Agent) deployBuilt(ctx context.Context, b buildJob, image string) error
 	var envJSON []byte
 	if err := tx.QueryRow(ctx, `
 		UPDATE services SET image = $2 WHERE id = $1
-		RETURNING port, cpu_millis, memory_mb, health_path, volume_path, env, worker, instances`, target, image).
-		Scan(&spec.Port, &spec.CPUMillis, &spec.MemoryMB, &spec.HealthPath, &spec.VolumePath, &envJSON, &spec.Worker, &spec.Instances); err != nil {
+		RETURNING port, cpu_millis, memory_mb, health_path, volume_path, env, worker, instances, ports`, target, image).
+		Scan(&spec.Port, &spec.CPUMillis, &spec.MemoryMB, &spec.HealthPath, &spec.VolumePath, &envJSON, &spec.Worker, &spec.Instances, &spec.Ports); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) && b.PreviewID != nil {
 			return errors.New("the preview was deleted while building (pull request closed)")
 		}

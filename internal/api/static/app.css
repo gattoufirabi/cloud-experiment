@@ -522,3 +522,8 @@ textarea.code-editor { width: 100%; font: 13px/1.5 var(--mono); tab-size: 2; whi
 th.sel, td.sel { width: 36px; padding-right: 0; }
 h3.step { margin: 8px 0 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 15px; color: var(--text-2); }
 h3.step:first-of-type { border-top: 0; padding-top: 0; }
+
+/* logs page */
+.logs-filter select, .logs-filter input { width: auto; }
+.logs-table td.mono { font-family: var(--mono); white-space: pre-wrap; word-break: break-word; }
+.logs-table td.err { color: var(--bad-text); }

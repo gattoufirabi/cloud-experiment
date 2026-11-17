@@ -120,8 +120,16 @@ func (s *Server) operatorPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	type opMove struct {
+		Org, Project, From, To, Status, Message string
+		Updated                                 time.Time
+	}
+	var moves []opMove
+	if rows, err := s.pool.Query(r.Context(), `SELECT * FROM operator_moves()`); err == nil {
+		moves, _ = pgx.CollectRows(rows, pgx.RowToStructByPos[opMove])
+	}
 	s.render(w, r, "operator", http.StatusOK, data{"Overview": ov, "Orgs": orgs, "Invoices": invoices, "Events": events,
-		"Plans": plans, "Nodes": nodes, "Usage": usage})
+		"Plans": plans, "Nodes": nodes, "Usage": usage, "Moves": moves, "MovesEnabled": s.cfg.MovesEnabled()})
 }
 
 func (s *Server) operatorSetPlan(w http.ResponseWriter, r *http.Request) {
@@ -265,14 +273,20 @@ func (s *Server) loadNodesWithLoad(r *http.Request) ([]opNode, error) {
 func (s *Server) operatorDrainNode(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var moved, kept int64
-	if err := s.pool.QueryRow(r.Context(), `SELECT * FROM operator_drain_node($1)`, id).Scan(&moved, &kept); err != nil {
+	// Projects with data move through the backup repository, which every node must reach.
+	moveStateful := r.PostFormValue("move_stateful") == "1" && s.cfg.MovesEnabled()
+	if err := s.pool.QueryRow(r.Context(), `SELECT * FROM operator_drain_node($1, $2)`, id, moveStateful).Scan(&moved, &kept); err != nil {
 		s.serverError(w, r, err)
 		return
 	}
-	_ = db.Audit(r.Context(), s.pool, "", sessionFrom(r).UserID, "operator.node_drain", "node:"+id, map[string]int64{"moved": moved, "kept": kept}, clientIP(r))
+	_ = db.Audit(r.Context(), s.pool, "", sessionFrom(r).UserID, "operator.node_drain", "node:"+id,
+		map[string]any{"moved": moved, "kept": kept, "move_stateful": moveStateful}, clientIP(r))
 	msg := "Node " + id + " drained: " + itoa(int(moved)) + " project(s) are moving to other nodes."
+	if moveStateful {
+		msg += " Projects with data stop for the time their data is copied (see Moves)."
+	}
 	if kept > 0 {
-		msg += " " + itoa(int(kept)) + " project(s) with persistent data stay until you move them (backup, then restore on the new node)."
+		msg += " " + itoa(int(kept)) + " project(s) with persistent data stay on the node."
 	}
 	back(w, r, "/operator#op-nodes", msg, "")
 }

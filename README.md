@@ -22,6 +22,10 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Vulnerability scanning** (Trivy): every push, every deploy (cached 24 h per image), nightly rescan of running images; report per service | done, tested |
 | Scan policy per organization: `warn` (default) or `block-critical` | done, tested |
 | **Per-client backups** (restic) of each service's persistent folder: nightly + on demand, retention, self-service restore with a safety snapshot | done, tested |
+| **Moving projects with data between nodes**: drain moves folders and databases through the encrypted backup repository (snapshot, hand over, restore), with retries and fallback to the source node | done, tested (two nodes on one host) |
+| **TCP/UDP services (game servers, MQTT...)**: public TCP and UDP ports from a platform range, stable across deployments, per-plan limits, replace-in-place deployments with rollback | done, tested |
+| **Log retention per plan and export**: organization-wide log search and download, retention by plan (1/7/30 days), continuous export to a bucket (hourly gzipped NDJSON) or a signed HTTPS endpoint, exactly once | done, tested |
+| **Single sign-on (OIDC) per organization**: Google Workspace, Entra ID, Okta, Keycloak..., PKCE, accounts created at first sign-in, roles from provider groups, domains routing, optional "require SSO" with owner break-glass | done, tested |
 | **Functions (Lambda-style)**: Node.js 22 and Python 3.13 handlers in the AWS Lambda format, code editor or zip, function URLs (Lambda payload 2.0, public or token), schedules, synchronous and asynchronous invoke over the API and CLI, warm sandboxes with scale to zero, concurrency limits, logs and metrics, GB-second billing | done, tested |
 | **Cloud-style console**: Services menu with pinned favorites, global search, per-product areas (Compute, Databases, Storage, Domains, Registry, Monitoring, IAM, Billing) with lists across projects, a remembered project filter, breadcrumbs, project overview of all resources | done, tested |
 | **Object storage (S3-compatible, Garage)**: per-organization buckets with quotas, access keys scoped per bucket (read / read-write), console object browser, presigned downloads, public website buckets with HTTPS, one-click `AWS_*` secrets for a service, usage billed per GB-month, REST API and CLI | done, tested |
@@ -52,7 +56,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | gVisor sandbox for tenant containers | done, verified on a Debian 12 server (Phase 0 gate) |
 | Host firewall for tenant networks, isolation test (Phase 0 gate) | done, gate PASSED on a real server via `host/deploy.sh` |
 
-The end-to-end test (`scripts/e2e-dev.sh`) runs 528 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds, self-signup, the operator console and a second node (placement, proxying, zero-downtime drain). Unit tests: `go test ./...` (outbound request guard).
+The end-to-end test (`scripts/e2e-dev.sh`) runs 585 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds, self-signup, the operator console and a second node (placement, proxying, zero-downtime drain). Unit tests: `go test ./...` (outbound request guard).
 
 **Not built yet** (next phases in ARCHITECTURE.md): multi-node: moving projects with persistent data automatically, control plane on two nodes (database replica); hard filesystem disk quotas (XFS project quotas).
 

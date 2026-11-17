@@ -5,6 +5,7 @@ go 1.23
 require (
 	github.com/fxamacker/cbor/v2 v2.7.0
 	github.com/go-webauthn/webauthn v0.11.2
+	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/jackc/pgx/v5 v5.7.1
 	golang.org/x/crypto v0.31.0
 	rsc.io/qr v0.2.0
@@ -12,7 +13,6 @@ require (
 
 require (
 	github.com/go-webauthn/x v0.1.14 // indirect
-	github.com/golang-jwt/jwt/v5 v5.2.1 // indirect
 	github.com/google/go-tpm v0.9.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

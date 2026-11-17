@@ -78,7 +78,8 @@ One server runs everything (the **primary**). Add **worker nodes** for capacity:
 5. The node appears in the operator console (**Nodes**) within a minute. New projects go to the online, uncordoned node with the most free memory.
 
 - **Clusters:** a cluster is a group of nodes (for example a region). Set a node's cluster in the Nodes tab; pin an organization to a cluster on its operator page so its new projects only go there.
-- **Cordon** a node to stop placing new projects on it (running ones stay). **Drain** it to also move its projects without persistent data to other nodes (each app restarts once). Projects with a persistent folder or a database stay: move them with a backup and restore.
+- **Cordon** a node to stop placing new projects on it (running ones stay). **Drain** it to also move its projects without persistent data to other nodes (each app restarts once, with no gap: the old container serves until the new one is live).
+- **Moving projects with data:** tick **also move projects with data** when draining. For each such project the node stops it, snapshots every persistent folder and database data volume into the organization's encrypted backup repository, and hands it to the least loaded node of its cluster, which restores the volumes and starts it. The project is down while its data is copied (seconds to minutes, depending on size); the **Moves** list on the Nodes tab shows each step. A move that fails five times gives the project back to its source node, whose volumes were never changed. Moves need a backup repository every node reaches: set `BACKUP_REST_URL` (the local backup volume only works for nodes on one Docker host). The source node keeps its copy of the volumes until you clean them up.
 - Apps on workers are published only on the worker's WireGuard address; the proxy on the primary reaches them there. Builds, scans, billing and alert delivery run on the primary.
 
 ## Operator console

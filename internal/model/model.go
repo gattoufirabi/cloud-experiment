@@ -35,6 +35,8 @@ type Spec struct {
 	Worker bool `json:"worker,omitempty"`
 	// Instances: identical containers behind the proxy (1 when unset).
 	Instances int `json:"instances,omitempty"`
+	// Ports: public TCP/UDP ports (non-HTTP services); forces a single instance.
+	Ports []PublicPort `json:"ports,omitempty"`
 }
 
 // Count is the number of instances to run (at least 1).
@@ -62,6 +64,9 @@ func (s Spec) Validate() error {
 	}
 	if s.Instances < 0 || s.Instances > 10 {
 		return fmt.Errorf("instances must be between 1 and 10")
+	}
+	if err := validatePorts(s); err != nil {
+		return err
 	}
 	if s.Count() > 1 && s.VolumePath != "" {
 		return fmt.Errorf("a service with a persistent folder runs a single instance (the folder cannot be shared)")

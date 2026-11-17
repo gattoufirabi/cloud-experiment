@@ -31,6 +31,7 @@ import (
 	"platform/internal/billing"
 	"platform/internal/config"
 	"platform/internal/db"
+	"platform/internal/oidc"
 	"platform/internal/registry"
 	"platform/internal/secure"
 )
@@ -57,6 +58,8 @@ type Server struct {
 	ceremonies *ceremonyStore
 	pow        *powStore
 	fnWait     fnWaiters // requests waiting for a function's result
+	oidc       *oidc.Client
+	oidcOnce   sync.Once
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -156,6 +159,8 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /password/reset/{token}", s.resetSubmit)
 	m.HandleFunc("GET /login", s.loginPage)
 	m.HandleFunc("POST /login", s.loginSubmit)
+	m.HandleFunc("POST /sso/start", s.ssoStart)
+	m.HandleFunc("GET /sso/callback", s.ssoCallback)
 	m.HandleFunc("POST /logout", s.auth(authAny, s.logout))
 	m.HandleFunc("GET /totp/setup", s.auth(authPassword, s.totpSetupPage))
 	m.HandleFunc("POST /totp/setup", s.auth(authPassword, s.totpSetupSubmit))
@@ -168,6 +173,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /o/{org}", s.auth(authFull, s.orgPage))
 	m.HandleFunc("GET /o/{org}/services", s.auth(authFull, s.servicesPage))
 	m.HandleFunc("POST /o/{org}/pins", s.auth(authFull, s.togglePin))
+	m.HandleFunc("POST /o/{org}/sso", s.auth(authFull, s.saveSSO))
 	m.HandleFunc("GET /o/{org}/scope", s.auth(authFull, s.setScope))
 	m.HandleFunc("GET /o/{org}/search", s.auth(authFull, s.searchPage))
 	m.HandleFunc("GET /o/{org}/projects", s.auth(authFull, s.orgArea("projects", "viewer")))
@@ -182,6 +188,10 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /o/{org}/databases", s.auth(authFull, s.databasesPage))
 	m.HandleFunc("POST /o/{org}/databases", s.auth(authFull, s.createDatabaseIn))
 	m.HandleFunc("GET /o/{org}/domains", s.auth(authFull, s.domainsPage))
+	m.HandleFunc("GET /o/{org}/monitoring/logs", s.auth(authFull, s.orgLogsPage))
+	m.HandleFunc("GET /o/{org}/monitoring/logs.txt", s.auth(authFull, s.downloadLogs))
+	m.HandleFunc("POST /o/{org}/monitoring/logs/exports", s.auth(authFull, s.createLogExport))
+	m.HandleFunc("POST /o/{org}/monitoring/logs/exports/{id}", s.auth(authFull, s.updateLogExport))
 	m.HandleFunc("GET /o/{org}/functions", s.auth(authFull, s.functionsPage))
 	m.HandleFunc("POST /o/{org}/functions", s.auth(authFull, s.createFunction))
 	const fnp = "/o/{org}/p/{project}/f/{fn}"
@@ -497,6 +507,7 @@ func parseTemplates() (map[string]*template.Template, error) {
 		"icon":       icon,
 		"runtime":    runtimeLabel,
 		"list":       func(xs ...int) []int { return xs },
+		"contains":   strings.Contains,
 		"int64":      func(i int) int64 { return int64(i) },
 		"ms":         itoaPtr,
 		"dbStatus": func(s string) string {

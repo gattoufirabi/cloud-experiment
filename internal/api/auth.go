@@ -58,6 +58,11 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = s.pool.Exec(r.Context(), `UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = $1`, id)
+	if org := s.ssoRequired(r.Context(), id, email); org != "" {
+		_ = db.Audit(r.Context(), s.pool, "", id, "login.refused_sso_required", "user:"+id, nil, ip)
+		s.render(w, r, "login", http.StatusForbidden, data{"SSOErr": org + " requires single sign-on: sign in with your work email below.", "Who": email})
+		return
+	}
 	if err := s.startSession(w, r, id, false); err != nil {
 		s.serverError(w, r, err)
 		return

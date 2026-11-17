@@ -14,7 +14,10 @@ import (
 // as before).
 
 // mineSQL is a condition on a projects row aliased p; arguments $1 = node ID, $2 = primary.
-const mineSQL = `(p.node_id = $1 OR (p.node_id IS NULL AND $2::boolean))`
+// mineSQL: the project runs on this node (or is unplaced and this is the primary), and
+// is not being moved (a moving project belongs to no node until its data is restored).
+const mineSQL = `((p.node_id = $1 OR (p.node_id IS NULL AND $2::boolean))
+	AND NOT EXISTS (SELECT 1 FROM project_moves mv WHERE mv.project_id = p.id AND mv.status IN ('snapshot', 'restore')))`
 
 func (a *Agent) self() string    { return a.selfID }
 func (a *Agent) isPrimary() bool { return a.cfg.NodeRole != "worker" }

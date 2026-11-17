@@ -1,0 +1,70 @@
+{{define "title"}}Logs · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Logs</h1></div>
+<p class="lede">The output of every service of {{.Org.Name}}. Your plan keeps logs <strong>{{.Scope.Retention}} day{{if ne .Scope.Retention 1}}s{{end}}</strong>; export them to keep them longer.</p>
+<p class="help"><a href="/docs/user#logs-and-metrics" target="_blank" rel="noopener">Guide: logs ↗</a></p>
+
+<div class="section">
+  <form method="get" action="{{.Org.Path}}/monitoring/logs" class="inline logs-filter">
+    <select name="target" aria-label="Project or service">
+      <option value="">all services</option>
+      {{range .Scope.Targets}}<option value="{{.Slug}}" {{if eq .Slug $.Scope.Target}}selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
+    <select name="range" aria-label="Time range">
+      {{range .Ranges}}<option value="{{.Key}}" {{if eq .Key $.Scope.Range}}selected{{end}} {{if not .Allowed}}disabled{{end}}>{{.Label}}{{if not .Allowed}} (longer than your plan keeps){{end}}</option>{{end}}
+    </select>
+    <input type="search" name="q" value="{{.Scope.Q}}" placeholder="text to find" aria-label="Text to find">
+    <button type="submit">Search</button>
+    <a class="small" href="{{.Org.Path}}/monitoring/logs.txt?target={{.Scope.Target}}&amp;range={{.Scope.Range}}&amp;q={{.Scope.Q}}">Download</a>
+  </form>
+  {{if .Lines}}
+  <div class="scroll-x">
+  <table class="resources logs-table">
+    <thead><tr><th>Time (UTC)</th><th>Service</th><th>Message</th></tr></thead>
+    <tbody>{{range .Lines}}<tr><td class="nowrap mono small">{{.Time}}</td><td class="nowrap">{{.Service}}</td><td class="mono small {{if eq .Stream "stderr"}}err{{end}}">{{.Msg}}</td></tr>{{end}}</tbody>
+  </table>
+  </div>
+  <p class="small muted">Newest first, up to 500 lines here; the download holds up to 100,000.</p>
+  {{else}}<p class="small muted">No log lines match.</p>{{end}}
+</div>
+
+<div class="section" id="exports">
+  <h2>Exports</h2>
+  <p class="small muted">Send every new log line, in order and once, to {{if .StorageNav}}one of your buckets (an NDJSON file per hour, gzipped: <code>&lt;prefix&gt;YYYY/MM/DD/HH/…ndjson.gz</code>) or {{end}}an HTTPS endpoint (gzipped NDJSON batches, signed with <code>X-Platform-Signature: sha256=…</code>). Each line is <code>{"time", "project", "service", "stream", "message"}</code>.</p>
+  {{if .Exports}}
+  <table class="resources">
+    <thead><tr><th>Export</th><th>Destination</th><th>Status</th><th class="num">Lines sent</th><th></th></tr></thead>
+    <tbody>
+    {{range .Exports}}
+      <tr><td><strong>{{.Name}}</strong>{{with .Project}} <span class="badge">{{.}}</span>{{end}}{{if not .Enabled}} <span class="badge">paused</span>{{end}}</td>
+        <td>{{if eq .Kind "bucket"}}bucket <code>{{.Bucket}}/{{.Prefix}}</code>{{else}}<code class="trunc">{{.URL}}</code>{{end}}</td>
+        <td>{{if eq .LastStatus "ok"}}<span class="st st-live">ok</span>{{else if eq .LastStatus "error"}}<span class="st st-failed">error</span> <span class="small muted">{{.LastError}}</span>{{else}}<span class="st st-pending">waiting</span>{{end}}
+          <br><span class="small muted">sent up to {{datetime .Cursor}}</span></td>
+        <td class="num">{{.Lines}}</td>
+        <td>{{if $.CanEdit}}<form method="post" action="{{$.Org.Path}}/monitoring/logs/exports/{{.ID}}" class="inline flush">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <button class="link" name="action" value="{{if .Enabled}}pause{{else}}resume{{end}}">{{if .Enabled}}pause{{else}}resume{{end}}</button>
+          <button class="link" name="action" value="delete" data-confirm="Delete export {{.Name}}?">delete</button></form>{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="small muted">No exports.</p>{{end}}
+  {{if .CanEdit}}
+  <h3>Add an export</h3>
+  <form method="post" action="{{.Org.Path}}/monitoring/logs/exports" class="form-grid">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Name<input name="name" maxlength="60" placeholder="e.g. archive" required></label>
+    <label>Logs of<select name="project"><option value="">every project</option>{{range .Scope.Targets}}{{if not (contains .Slug "/")}}<option value="{{.Slug}}">{{.Name}}</option>{{end}}{{end}}</select></label>
+    <fieldset class="wide choice"><legend>Destination</legend>
+      {{if .Buckets}}<label class="option"><input type="radio" name="kind" value="bucket" checked> <strong>Bucket</strong></label>{{end}}
+      <label class="option"><input type="radio" name="kind" value="https" {{if not .Buckets}}checked{{end}}> <strong>HTTPS endpoint</strong></label>
+    </fieldset>
+    {{if .Buckets}}<label>Bucket<select name="bucket">{{range .Buckets}}<option value="{{.Name}}">{{.FullName}}</option>{{end}}</select></label>
+    <label>Prefix <span class="hint">bucket only</span><input name="prefix" value="logs/"></label>{{end}}
+    <label class="wide">Endpoint URL <span class="hint">HTTPS only; receives POST requests</span><input name="url" placeholder="https://logs.example.com/ingest"></label>
+    <label>Signing secret <span class="hint">HTTPS only; optional</span><input type="password" name="secret" autocomplete="off"></label>
+    <div class="wide"><button type="submit">Add export</button></div>
+  </form>
+  {{end}}
+</div>
+{{end}}

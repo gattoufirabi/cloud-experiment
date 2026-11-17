@@ -111,6 +111,19 @@ How they combine:
 - Changes apply at the next deployment of each service. Rolling back to an earlier revision uses the current values.
 - `PORT` and names starting with `PLATFORM_` are reserved.
 
+## TCP and UDP services
+
+Services that do not speak HTTP (game servers, MQTT brokers, voice servers, custom protocols) can expose TCP and UDP ports directly.
+
+1. On the service's **Settings** tab, list the ports your container listens on in **Public TCP/UDP ports**, one per line: `25565/tcp`, `27015/udp`. Choose the type **Worker** if the service has no website; a web service can have public ports too.
+2. Save and deploy. Each port gets a **public port** of the platform (for example `20003`), kept as long as the service lists it; the **Overview** tab shows where to connect: `<service>-<project>-<organization>.{{apps}}:20003`.
+
+Good to know:
+
+- A service with public ports runs a **single instance**, and a deployment replaces the running container: connections drop for a few seconds (the previous version is started again if the new one fails to start).
+- Traffic reaches the container directly, without the proxy: the request limit and web application firewall do not apply, so your server must handle its own authentication and limits.
+- Plans: Trial has no public ports, Starter 2, Pro 10. Previews never get public ports.
+
 ## Several instances
 
 Run more than one copy of a service to share the load and keep it up if one copy fails.
@@ -339,6 +352,13 @@ Everything your application writes to standard output and standard error is coll
 - **Logs tab:** the last 6 hours, up to 300 lines, refreshed every few seconds while the tab is open. Use the filter to search; untick **follow** to stop auto-scrolling.
 - **Overview tab:** CPU (in % of one core) and memory (MB against the limit) over the last hour, about a minute after the first deployment.
 - **Privacy:** your logs and metrics are stored separately from other clients' and are only readable through your organization.
+- **All services at once:** **Monitoring → Logs** searches the logs of every service of the organization, or of one project or service, over the last hour up to your plan's retention, newest first. **Download** saves up to 100,000 lines as a text file.
+- **Retention:** Trial keeps logs 1 day, Starter 7 days, Pro 30 days. Older lines are no longer shown or exported.
+- **Export** (admins, on the same page) keeps logs as long as you want, or feeds your own tools. Each export starts with the last hour, then sends new lines every minute, in order and exactly once (a failed delivery is retried without losing or repeating lines):
+  - to one of your **buckets**: one gzipped NDJSON file per hour under `<prefix>YYYY/MM/DD/HH/`;
+  - to an **HTTPS endpoint**: POST requests with gzipped NDJSON (`Content-Encoding: gzip`), signed with `X-Platform-Signature: sha256=<HMAC of the body>` when you set a secret.
+
+  Every line is `{"time": "…", "project": "shop", "service": "web", "stream": "stdout", "message": "…"}`. Pause, resume or delete an export at any time; its status shows the last delivery.
 
 Write logs to standard output rather than files: files are lost at each deployment unless they are in the persistent folder.
 
@@ -485,6 +505,21 @@ Admins and owners find **Billing** in the organization's tabs.
 - **Object storage** is billed per GB-month of data stored in your buckets (measured every hour).
 - **Functions** are billed per million requests and per GB-second (memory × run time of each invocation).
 - **Paying:** follow the payment instructions you received from the platform operator; an invoice shows **paid** once the operator has recorded your payment.
+
+## Single sign-on
+
+Members can sign in with your organization's identity provider instead of a password: Google Workspace, Microsoft Entra ID, Okta, Keycloak, Authentik or any OpenID Connect provider. Admins set it up in **Access management → Single sign-on**.
+
+1. **At your provider**, create an application (OpenID Connect, "web" type) with the redirect URI shown on that tab (`{{console}}/sso/callback`) and the scopes `openid email profile`. Note its issuer URL, client ID and client secret.
+2. **On the platform**, enter the issuer URL (for example `https://accounts.google.com` or `https://login.microsoftonline.com/<tenant>/v2.0`), the client ID and secret, and your **email domains** (`example.com`). The platform checks that it can reach the provider when you save.
+3. Choose the **role of new members**, and optionally the provider **groups** that make someone an admin, a developer or a viewer (the `groups` claim by default). With group lists, a member's role follows the provider at each sign-in (owners keep theirs).
+4. Tick **Turn on single sign-on**. Members click **Sign in with SSO** on the login page and enter their work email; their account is created at the first sign-in.
+
+Good to know:
+
+- **Require it** to refuse password sign-in for emails of your domains: everyone then goes through your provider and its own two-step checks. Owners keep their password, so a broken provider cannot lock you out.
+- A domain belongs to one organization only. An email outside your domains is refused, and so is an email the provider has not verified unless it is in your domains.
+- Sign-in links are single-use and expire after 10 minutes; every SSO sign-in and every role change it makes is in the audit log.
 
 ## Team members and roles
 

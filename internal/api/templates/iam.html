@@ -5,6 +5,7 @@
 <nav class="tabs" role="tablist" aria-label="Access sections" data-default="{{.Tab}}">
   <a role="tab" href="#members">Members <span class="count">{{len .Members}}</span></a>
   <a role="tab" href="#api">API tokens <span class="count">{{len .APITokens}}</span></a>
+  {{if roleAtLeast .Org.Role "admin"}}<a role="tab" href="#sso">Single sign-on</a>{{end}}
 </nav>
 <!-- ============ members ============ -->
 <section class="pane" id="members" role="tabpanel" aria-label="Members">
@@ -105,5 +106,36 @@ curl -X POST -H "Authorization: Bearer $PLATFORM_TOKEN"   -d '{"image": "&lt;ima
   </div>
 </section>
 
+{{if roleAtLeast .Org.Role "admin"}}
+<section class="pane" id="sso" role="tabpanel" aria-label="Single sign-on">
+  <p class="help"><a href="/docs/user#single-sign-on" target="_blank" rel="noopener">Guide: single sign-on ↗</a></p>
+  <div class="section">
+    <h2>Single sign-on (OpenID Connect)</h2>
+    <p class="small muted">Members sign in with your identity provider (Google Workspace, Microsoft Entra ID, Okta, Keycloak, Authentik...) from the login page, using their work email. Accounts are created at their first sign-in.</p>
+    <div class="panel"><dl class="kv">
+      <dt>redirect URI to register</dt><dd><code class="select">{{.SSOCallback}}</code></dd>
+      <dt>scopes</dt><dd><code>openid email profile</code></dd>
+      {{with .SSO}}<dt>status</dt><dd>{{if .Enabled}}<span class="st st-live">on</span>{{if .Enforce}} · password sign-in refused for your domains{{end}}{{else}}<span class="st st-none">off</span>{{end}}</dd>{{end}}
+    </dl></div>
+    <form method="post" action="{{.Org.Path}}/sso" class="form-grid">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label class="wide">Issuer URL <span class="hint">e.g. https://accounts.google.com, https://login.microsoftonline.com/&lt;tenant&gt;/v2.0</span>
+        <input name="issuer" value="{{with .SSO}}{{.Issuer}}{{end}}" required></label>
+      <label>Client ID<input name="client_id" value="{{with .SSO}}{{.ClientID}}{{end}}" required></label>
+      <label>Client secret <span class="hint">{{with .SSO}}{{if .HasSecret}}saved; leave empty to keep it{{end}}{{end}}</span><input type="password" name="client_secret" autocomplete="off"></label>
+      <label class="wide">Email domains <span class="hint">comma separated; emails of these domains sign in to this organization</span><input name="domains" value="{{with .SSO}}{{.DomainsText}}{{end}}" placeholder="example.com"></label>
+      <label>Role of new members<select name="default_role">{{$r := "developer"}}{{with .SSO}}{{$r = .DefaultRole}}{{end}}
+        <option value="viewer" {{if eq $r "viewer"}}selected{{end}}>viewer</option><option value="developer" {{if eq $r "developer"}}selected{{end}}>developer</option><option value="admin" {{if eq $r "admin"}}selected{{end}}>admin</option></select></label>
+      <label>Groups claim <span class="hint">claim of the ID token listing groups</span><input name="groups_claim" value="{{with .SSO}}{{.GroupsClaim}}{{else}}groups{{end}}"></label>
+      <label>Admin groups <span class="hint">optional</span><input name="admin_groups" value="{{with .SSO}}{{.AdminText}}{{end}}"></label>
+      <label>Developer groups <span class="hint">optional</span><input name="developer_groups" value="{{with .SSO}}{{.DeveloperText}}{{end}}"></label>
+      <label>Viewer groups <span class="hint">optional; with group lists, roles follow the provider at each sign-in</span><input name="viewer_groups" value="{{with .SSO}}{{.ViewerText}}{{end}}"></label>
+      <label class="check wide"><input type="checkbox" name="enabled" value="1" {{with .SSO}}{{if .Enabled}}checked{{end}}{{end}}> Turn on single sign-on</label>
+      <label class="check wide"><input type="checkbox" name="enforce" value="1" {{with .SSO}}{{if .Enforce}}checked{{end}}{{end}}> Require it: refuse password sign-in for emails of these domains <span class="hint">owners keep their password, to recover if the provider fails</span></label>
+      <div class="wide"><button type="submit">Save single sign-on</button></div>
+    </form>
+  </div>
+</section>
+{{end}}
 {{if roleAtLeast .Org.Role "admin"}}<p class="small muted">Every change is recorded in the <a href="{{.Org.Path}}/audit">audit log</a>.{{if .StorageNav}} S3 access keys are managed in <a href="{{.Org.Path}}/storage#keys">Object storage</a>.{{end}}</p>{{end}}
 {{end}}

@@ -18,7 +18,7 @@ x-app: &app
     APPS_DOMAIN: apps.localhost
     SIGNUP_ENABLED: "true"
     SIGNUP_POW_BITS: "8"           # dev: easy proof of work (production default 16)
-    ANOMALY_MINUTES: "2"           # dev: quick CPU-anomaly test (production default 30)
+    ANOMALY_MINUTES: "1"           # dev: quick CPU-anomaly test (production default 30)
     OPERATOR_NTFY_URL: http://ntfy/platform-operator
     SMTP_HOST: mailpit
     SMTP_PORT: "1025"
@@ -42,6 +42,11 @@ x-app: &app
     S3_HOST: s3.localhost:8088
     S3_SERVICE_URL: http://s3.localhost
     GARAGE_ADMIN_TOKEN: dev-garage-admin-token
+    # Dev only: single sign-on against the e2e test's local provider (http, private address).
+    OIDC_ALLOW_INSECURE: "true"
+    # Dev only: both test nodes share one Docker host and its local backup volume.
+    MOVES_SHARED_LOCAL_REPO: "true"
+    BACKUPS_ENABLED: "true"
   volumes:
     - ./dev-secrets/master.key:/run/secrets/master.key:ro
 
@@ -238,7 +243,7 @@ services:
   victorialogs:
     image: victoriametrics/victoria-logs:v1.15.0-victorialogs
     restart: unless-stopped
-    command: ["-storageDataPath=/vlogs", "-retentionPeriod=14d"]
+    command: ["-storageDataPath=/vlogs", "-retentionPeriod=31d"]
     volumes: [vlogs:/vlogs]
 
   victoriametrics:

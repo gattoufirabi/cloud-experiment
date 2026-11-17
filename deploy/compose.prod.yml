@@ -220,7 +220,7 @@ services:
     ports: ["${CONTROL_PLANE_ADDRESS:-127.0.0.1}:9428:9428"]
     restart: unless-stopped
     logging: *logging
-    command: ["-storageDataPath=/vlogs", "-retentionPeriod=14d"]
+    command: ["-storageDataPath=/vlogs", "-retentionPeriod=31d"]
     volumes: ["/srv/platform/vlogs:/vlogs"]
     deploy: { resources: { limits: { memory: 512M } } }
 

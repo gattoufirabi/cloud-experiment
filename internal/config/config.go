@@ -119,6 +119,23 @@ type Config struct {
 	S3ServiceURL     string // endpoint given to services (default: the public URL)
 	GarageAdminURL   string
 	GarageAdminToken string
+
+	// OIDCAllowInsecure lets single sign-on use http:// and private addresses (development
+	// only, for a local test provider).
+	OIDCAllowInsecure bool
+
+	// MovesSharedLocalRepo: the nodes share the local backup volume (one Docker host,
+	// development), so projects with data can move without BACKUP_REST_URL.
+	MovesSharedLocalRepo bool
+
+	// Public TCP/UDP ports for non-HTTP services are taken from this range.
+	PublicPortMin, PublicPortMax int
+}
+
+// MovesEnabled: projects with data can move between nodes (their volumes travel through
+// the backup repository, which must be shared: off-site, or one Docker host in dev).
+func (c Config) MovesEnabled() bool {
+	return c.BackupsEnabled && (c.BackupRestURL != "" || c.MovesSharedLocalRepo)
 }
 
 // StorageEnabled reports whether object storage is configured.
@@ -200,6 +217,11 @@ func Load() Config {
 		S3ServiceURL:     strings.TrimRight(env("S3_SERVICE_URL", ""), "/"),
 		GarageAdminURL:   strings.TrimRight(env("GARAGE_ADMIN_URL", "http://garage:3903"), "/"),
 		GarageAdminToken: env("GARAGE_ADMIN_TOKEN", ""),
+
+		OIDCAllowInsecure:    envBool("OIDC_ALLOW_INSECURE", false),
+		MovesSharedLocalRepo: envBool("MOVES_SHARED_LOCAL_REPO", false),
+		PublicPortMin:        envInt("PUBLIC_PORT_MIN", 20000),
+		PublicPortMax:        envInt("PUBLIC_PORT_MAX", 20999),
 
 		TenantResolvConf:   env("TENANT_RESOLV_CONF", ""),
 		NodeID:             env("NODE_ID", ""),

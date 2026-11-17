@@ -44,7 +44,7 @@ func (s *Server) createServiceFull(w http.ResponseWriter, r *http.Request) {
 		Worker:     r.PostFormValue("kind") == "worker",
 		Instances:  atoiDefault(r.PostFormValue("instances"), 1),
 	}
-	if spec.HealthPath == "" {
+	if spec.HealthPath == "" || (spec.Worker && !strings.HasPrefix(spec.HealthPath, "/")) {
 		spec.HealthPath = "/"
 	}
 	deployNow := r.PostFormValue("deploy") == "1" && spec.Image != ""
@@ -90,7 +90,7 @@ func (s *Server) createServiceFull(w http.ResponseWriter, r *http.Request) {
 			o.ID, projectID, slug, spec.Image, spec.Port, spec.CPUMillis, spec.MemoryMB, spec.HealthPath, envJSON, spec.Worker, spec.Count()).Scan(&id); err != nil {
 			if isUniqueViolation(err) {
 				formErr = "A service with this name already exists in the project."
-				return nil
+				return errRollback
 			}
 			return err
 		}
@@ -110,10 +110,10 @@ func (s *Server) createServiceFull(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	switch {
-	case err != nil:
-		s.serverError(w, r, err)
 	case formErr != "":
 		back(w, r, formBack, "", formErr)
+	case err != nil:
+		s.serverError(w, r, err)
 	case deployNow:
 		back(w, r, o.Path()+"/p/"+project+"/s/"+slug, "Service created. The first deployment has started.", "")
 	default:
