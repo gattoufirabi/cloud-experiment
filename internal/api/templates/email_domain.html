@@ -1,0 +1,33 @@
+{{define "title"}}{{.Domain.Domain}} · Email · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>{{.Domain.Domain}}</h1>
+  {{if eq .Domain.Status "verified"}}<span class="badge">verified</span>{{end}}
+</div>
+<p class="lede">{{if eq .Domain.Status "verified"}}Ready: send from any address at {{.Domain.Domain}}.{{else if eq .Domain.Status "failed"}}Sending is paused. {{.Domain.Message}}{{else}}Waiting for the DNS records. {{.Domain.Message}}{{end}}
+  {{with .Domain.Checked}}Last checked {{ago .}}.{{end}}</p>
+<div class="section">
+  <div class="table-tools"><h2>DNS records</h2>
+    {{if .CanEdit}}<form method="post" action="{{.Org.Path}}/email/d/{{.Domain.Domain}}/check" class="inline flush"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Check now</button></form>{{end}}</div>
+  <p class="small muted">Create these records at your DNS provider. The first two are required; DNS changes can take a few minutes to be visible.</p>
+  <div class="scroll-x">
+  <table class="resources">
+    <thead><tr><th>Name</th><th>Type</th><th>Value</th><th>Why</th></tr></thead>
+    <tbody>
+    {{range .Records}}<tr><td><code class="wrap">{{.Name}}</code></td><td>{{.Type}}</td><td><code class="wrap">{{.Value}}</code></td><td class="small">{{.Purpose}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+{{if .CanEdit}}
+<div class="section">
+  <h2>Delete domain</h2>
+  <p class="small muted">Messages from it that are still queued fail.</p>
+  <form method="post" action="{{.Org.Path}}/email/d/{{.Domain.Domain}}/delete" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input name="confirm" placeholder="type {{.Domain.Domain}} to confirm" required aria-label="Confirm domain">
+    <button class="danger" type="submit">Delete domain</button>
+  </form>
+</div>
+{{end}}
+{{end}}

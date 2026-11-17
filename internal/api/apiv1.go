@@ -34,6 +34,11 @@ func apiError(w http.ResponseWriter, status int, msg string) {
 }
 
 // apiAuth resolves the bearer token and enforces the minimum role.
+type queueScopeKeyT struct{}
+
+// apiQueueScopeKey holds the queue a token is limited to ("" for organization tokens).
+var apiQueueScopeKey = queueScopeKeyT{}
+
 func (s *Server) apiAuth(minRole string, h func(http.ResponseWriter, *http.Request, *orgInfo)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -50,10 +55,11 @@ func (s *Server) apiAuth(minRole string, h func(http.ResponseWriter, *http.Reque
 		}
 		var o orgInfo
 		var name, role string
-		var createdBy *string
+		var createdBy, queueScope *string
+		var emailOnly bool
 		err := s.pool.QueryRow(r.Context(), `
-			SELECT token_name, role, created_by::text, org_id, org_slug, org_name, plan_id, scan_policy FROM api_token_check($1)`,
-			secure.HashToken(tok)).Scan(&name, &role, &createdBy, &o.ID, &o.Slug, &o.Name, &o.PlanID, &o.ScanPolicy)
+			SELECT token_name, role, created_by::text, org_id, org_slug, org_name, plan_id, scan_policy, queue_id::text, email_only FROM api_token_check($1)`,
+			secure.HashToken(tok)).Scan(&name, &role, &createdBy, &o.ID, &o.Slug, &o.Name, &o.PlanID, &o.ScanPolicy, &queueScope, &emailOnly)
 		if err != nil {
 			if !s.limiter.allow("api-fail:"+ip, 30, 10*time.Minute) {
 				apiError(w, http.StatusTooManyRequests, "too many failed attempts")
@@ -73,6 +79,19 @@ func (s *Server) apiAuth(minRole string, h func(http.ResponseWriter, *http.Reque
 		}
 		ctx := context.WithValue(r.Context(), sessKey, &session{UserID: actor})
 		ctx = context.WithValue(ctx, apiTokenKey, name)
+		if queueScope != nil { // a queue token only sends, receives and deletes messages of its queue
+			p := r.URL.Path
+			if !strings.HasPrefix(p, "/api/v1/queues/") || !(strings.HasSuffix(p, "/messages") || strings.HasSuffix(p, "/receive") || strings.Contains(p, "/messages/")) {
+				apiError(w, http.StatusForbidden, "this token only works for its queue's messages")
+				return
+			}
+			ctx = context.WithValue(ctx, apiQueueScopeKey, *queueScope)
+		}
+		if emailOnly && !(r.Method == http.MethodPost && r.URL.Path == "/api/v1/email/send") &&
+			!(r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/email/messages/")) {
+			apiError(w, http.StatusForbidden, "this token only sends email")
+			return
+		}
 		h(w, r.WithContext(ctx), &o)
 	}
 }
@@ -127,6 +146,23 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("DELETE /api/v1/projects/{project}/functions/{fn}", s.apiAuth("developer", s.apiDeleteFunction))
 	m.HandleFunc("POST /api/v1/projects/{project}/functions/{fn}/invoke", s.apiAuth("developer", s.apiInvoke))
 	m.HandleFunc("GET /api/v1/projects/{project}/functions/{fn}/invocations", s.apiAuth("viewer", s.apiInvocations))
+	m.HandleFunc("GET /api/v1/email/domains", s.apiAuth("viewer", s.apiEmailDomains))
+	m.HandleFunc("POST /api/v1/email/domains", s.apiAuth("developer", s.apiAddEmailDomain))
+	m.HandleFunc("DELETE /api/v1/email/domains/{domain}", s.apiAuth("developer", s.apiDeleteEmailDomain))
+	m.HandleFunc("POST /api/v1/email/send", s.apiAuth("developer", s.apiSendEmail))
+	m.HandleFunc("GET /api/v1/email/messages/{id}", s.apiAuth("viewer", s.apiEmailMessage))
+	m.HandleFunc("GET /api/v1/secrets", s.apiAuth("viewer", s.apiOrgSecrets))
+	m.HandleFunc("POST /api/v1/secrets", s.apiAuth("developer", s.apiCreateOrgSecret))
+	m.HandleFunc("GET /api/v1/secrets/{secret}", s.apiAuth("developer", s.apiGetOrgSecret))
+	m.HandleFunc("PUT /api/v1/secrets/{secret}", s.apiAuth("developer", s.apiPutOrgSecret))
+	m.HandleFunc("DELETE /api/v1/secrets/{secret}", s.apiAuth("developer", s.apiDeleteOrgSecret))
+	m.HandleFunc("GET /api/v1/queues", s.apiAuth("viewer", s.apiQueues))
+	m.HandleFunc("POST /api/v1/queues", s.apiAuth("developer", s.apiCreateQueue))
+	m.HandleFunc("DELETE /api/v1/queues/{queue}", s.apiAuth("admin", s.apiDeleteQueue))
+	m.HandleFunc("POST /api/v1/queues/{queue}/messages", s.apiAuth("developer", s.apiSendMessages))
+	m.HandleFunc("POST /api/v1/queues/{queue}/receive", s.apiAuth("developer", s.apiReceive))
+	m.HandleFunc("DELETE /api/v1/queues/{queue}/messages/{receipt}", s.apiAuth("developer", s.apiDeleteMessage))
+	m.HandleFunc("POST /api/v1/queues/{queue}/purge", s.apiAuth("developer", s.apiPurgeQueue))
 	m.HandleFunc("GET /api/v1/buckets", s.apiAuth("viewer", s.apiBuckets))
 	m.HandleFunc("POST /api/v1/buckets", s.apiAuth("developer", s.apiCreateBucket))
 	m.HandleFunc("DELETE /api/v1/buckets/{bucket}", s.apiAuth("admin", s.apiDeleteBucket))

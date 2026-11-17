@@ -57,6 +57,8 @@ type Agent struct {
 	fnWake        chan struct{}
 	logExportWake chan struct{}
 	moveWake      chan struct{}
+	queueWake     chan struct{}
+	emailWake     chan struct{}
 	fn            *fnState
 	alertHTTP     *http.Client
 	probeFails    map[string]int
@@ -133,6 +135,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 		fnWake:        make(chan struct{}, 1),
 		logExportWake: make(chan struct{}, 1),
 		moveWake:      make(chan struct{}, 1),
+		queueWake:     make(chan struct{}, 1),
+		emailWake:     make(chan struct{}, 1),
 		fn:            newFnState(),
 		alertHTTP:     newAlertHTTP(cfg.AlertAllowPrivate),
 		probeFails:    map[string]int{},
@@ -167,6 +171,9 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.fnLoop(ctx)
 	go a.logExportLoop(ctx)
 	go a.moveLoop(ctx)
+	go a.queueLoop(ctx)
+	go a.autoscaleLoop(ctx)
+	go a.emailLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)
@@ -220,6 +227,10 @@ func (a *Agent) listen(ctx context.Context) {
 						case "move":
 							a.pokeMoves()
 							a.poke()
+						case "queue":
+							a.pokeQueues()
+						case "email":
+							a.pokeEmail()
 						default:
 							a.poke()
 						}
@@ -558,7 +569,7 @@ func (a *Agent) buildEnv(ctx context.Context, j job) ([]string, error) {
 	if !j.Spec.Worker {
 		env = append(env, "PORT="+strconv.Itoa(j.Spec.Port))
 	}
-	return dedupEnv(env), nil
+	return a.resolveSecretRefs(ctx, j.OrgID, dedupEnv(env))
 }
 
 // dedupEnv keeps one entry per name, the last one, at the position of its first.

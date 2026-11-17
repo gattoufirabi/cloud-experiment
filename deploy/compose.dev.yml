@@ -44,6 +44,9 @@ x-app: &app
     GARAGE_ADMIN_TOKEN: dev-garage-admin-token
     # Dev only: single sign-on against the e2e test's local provider (http, private address).
     OIDC_ALLOW_INSECURE: "true"
+    EMAIL_DNS_RESOLVER: e2e-dns:53     # dev only: the e2e test's DNS server (mockoidc -dns)
+    EMAIL_SPF_INCLUDE: spf.example.test
+    SIGNUPS_PER_HOUR: "100"            # dev only: the e2e test signs up several times per run
     # Dev only: both test nodes share one Docker host and its local backup volume.
     MOVES_SHARED_LOCAL_REPO: "true"
     BACKUPS_ENABLED: "true"

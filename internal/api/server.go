@@ -192,6 +192,27 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /o/{org}/monitoring/logs.txt", s.auth(authFull, s.downloadLogs))
 	m.HandleFunc("POST /o/{org}/monitoring/logs/exports", s.auth(authFull, s.createLogExport))
 	m.HandleFunc("POST /o/{org}/monitoring/logs/exports/{id}", s.auth(authFull, s.updateLogExport))
+	m.HandleFunc("GET /o/{org}/email", s.auth(authFull, s.emailPage))
+	m.HandleFunc("POST /o/{org}/email/domains", s.auth(authFull, s.addEmailDomain))
+	m.HandleFunc("POST /o/{org}/email/send", s.auth(authFull, s.sendEmailConsole))
+	m.HandleFunc("POST /o/{org}/email/attach", s.auth(authFull, s.emailAttach))
+	m.HandleFunc("GET /o/{org}/email/d/{domain}", s.auth(authFull, s.emailDomainPage))
+	m.HandleFunc("POST /o/{org}/email/d/{domain}/check", s.auth(authFull, s.checkEmailDomain))
+	m.HandleFunc("POST /o/{org}/email/d/{domain}/delete", s.auth(authFull, s.deleteEmailDomain))
+	m.HandleFunc("GET /o/{org}/secrets", s.auth(authFull, s.orgSecretsPage))
+	m.HandleFunc("POST /o/{org}/secrets", s.auth(authFull, s.createOrgSecret))
+	m.HandleFunc("GET /o/{org}/secrets/{secret}", s.auth(authFull, s.orgSecretPage))
+	m.HandleFunc("POST /o/{org}/secrets/{secret}/reveal", s.auth(authFull, s.revealOrgSecret))
+	m.HandleFunc("POST /o/{org}/secrets/{secret}/version", s.auth(authFull, s.rotateOrgSecret))
+	m.HandleFunc("POST /o/{org}/secrets/{secret}/delete", s.auth(authFull, s.deleteOrgSecret))
+	m.HandleFunc("GET /o/{org}/queues", s.auth(authFull, s.queuesPage))
+	m.HandleFunc("POST /o/{org}/queues", s.auth(authFull, s.createQueue))
+	m.HandleFunc("GET /o/{org}/queues/{queue}", s.auth(authFull, s.queuePage))
+	m.HandleFunc("POST /o/{org}/queues/{queue}/send", s.auth(authFull, s.queueSendConsole))
+	m.HandleFunc("POST /o/{org}/queues/{queue}/settings", s.auth(authFull, s.queueSettingsConsole))
+	m.HandleFunc("POST /o/{org}/queues/{queue}/purge", s.auth(authFull, s.queuePurgeConsole))
+	m.HandleFunc("POST /o/{org}/queues/{queue}/delete", s.auth(authFull, s.queueDeleteConsole))
+	m.HandleFunc("POST /o/{org}/queues/{queue}/attach", s.auth(authFull, s.queueAttach))
 	m.HandleFunc("GET /o/{org}/functions", s.auth(authFull, s.functionsPage))
 	m.HandleFunc("POST /o/{org}/functions", s.auth(authFull, s.createFunction))
 	const fnp = "/o/{org}/p/{project}/f/{fn}"
@@ -508,6 +529,7 @@ func parseTemplates() (map[string]*template.Template, error) {
 		"runtime":    runtimeLabel,
 		"list":       func(xs ...int) []int { return xs },
 		"contains":   strings.Contains,
+		"hoursOf":    func(sec int) int { return max(1, sec/3600) },
 		"int64":      func(i int) int64 { return int64(i) },
 		"ms":         itoaPtr,
 		"dbStatus": func(s string) string {

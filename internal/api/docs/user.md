@@ -111,6 +111,23 @@ How they combine:
 - Changes apply at the next deployment of each service. Rolling back to an earlier revision uses the current values.
 - `PORT` and names starting with `PLATFORM_` are reserved.
 
+## Secrets manager
+
+Secrets used by several projects (a payment provider key, a database password, a webhook signing key) live once in the organization's **Secrets manager**, encrypted and versioned.
+
+1. Open **Secrets manager** from the services menu and create a secret: a name such as `stripe-key` and its value.
+2. In a service or function, set a variable to `${secret:stripe-key}`, for example `STRIPE_KEY=${secret:stripe-key}`. The whole value must be the reference.
+3. Deploy. The service receives the secret's current value as `STRIPE_KEY`.
+
+Rotating: save a new value on the secret's page (or `platformctl vault put stripe-key -`). It becomes the current version, every live service using it is redeployed with no downtime, and functions pick it up at their next start. The last 10 versions are kept; you can read an older one while you roll back.
+
+Good to know:
+
+- Values are never listed. Developers and admins can **reveal** a version on the secret's page or read it with the API; each read is recorded in the audit log.
+- A secret in use cannot be deleted: the page shows which services and functions use it.
+- A deployment referencing a secret that does not exist fails with a clear message, and the previous revision keeps serving.
+- API: `GET/POST /api/v1/secrets`, `GET/PUT/DELETE /api/v1/secrets/NAME` (`?version=N` to read an older version). CLI: `platformctl vault list|create|get|put|delete`.
+
 ## TCP and UDP services
 
 Services that do not speak HTTP (game servers, MQTT brokers, voice servers, custom protocols) can expose TCP and UDP ports directly.
@@ -133,6 +150,15 @@ Run more than one copy of a service to share the load and keep it up if one copy
 - The proxy sends requests to the instances in turn and stops sending to one that fails for 20 seconds. If an instance disappears, the platform replaces the whole set with a fresh revision.
 - Each instance gets the plan's CPU and memory again: 3 instances of 250 millicores use 750 millicores of your plan and are billed that way.
 - Instances do not share memory or local files: keep sessions and uploads in a database, Redis or object storage. A service with a persistent folder runs a single instance; previews always run one.
+
+### Autoscaling
+
+Instead of a fixed number, a web service or worker can follow its load: on the **Settings** tab, tick **Autoscaling** and choose a **minimum** and **maximum** number of instances and a **CPU target** (for example 70% of the CPU you give each instance).
+
+- Every minute the platform compares the average CPU of the service's instances (over the last two minutes) with the target and computes the instances needed to get back to it, as AWS target tracking does.
+- It **scales out** within a minute when the CPU is above the target, and **scales in** only after 5 minutes without changes and when the CPU is well below it, so short spikes do not make it flap.
+- Each change is a normal deployment with no downtime, recorded in the audit log with the measured CPU.
+- Your plan's limit on instances and its CPU and memory apply to the maximum. Services with a persistent folder or public TCP/UDP ports run a single instance and cannot autoscale.
 
 ## Updates and rollbacks
 
@@ -253,6 +279,42 @@ How it runs:
 - The first call after a while starts a fresh sandbox (a **cold start**, about a second; the very first call of a runtime also downloads it). The sandbox then stays warm for 10 minutes after the last call: warm calls take a few milliseconds. Do not keep state in memory between calls; use a database or a bucket.
 - Events and responses are limited to 6 MB. Invocations, their logs and errors are kept 7 days (**Monitor** tab; `platformctl fn logs`).
 - **Billing:** per million requests and per GB-second (memory × run time), at your plan's prices.
+
+## Queues
+
+Queues pass work between your services and functions, like AWS SQS: a producer sends messages, a consumer receives them, processes them and deletes them. Open **Queues** in the Services menu.
+
+- **Send:** `POST /api/v1/queues/<queue>/messages` with `{"body": "…"}` (up to 256 KB), or `{"messages": [{"body": "…"}, …]}` for up to 10; `"delay_seconds"` hides them for up to 15 minutes.
+- **Receive:** `POST /api/v1/queues/<queue>/receive?max=10&wait=20` returns up to 10 messages, waiting up to 20 seconds when the queue is empty (long polling). Each message comes with a `receipt`.
+- **Delete** a processed message: `DELETE /api/v1/queues/<queue>/messages/<receipt>`. A message that is not deleted comes back after the **visibility timeout** (30 seconds by default): delivery is *at least once*, so make your processing safe to repeat.
+- **Dead-letter queue:** in the queue's settings, choose another queue and a **max receives**: a message received that many times without being deleted moves there, so one bad message cannot block the others.
+- **From a service:** on the queue's **Connect** tab, choose a service: it gets the secrets `QUEUE_URL` and `QUEUE_TOKEN`, a token that only works for this queue's messages.
+- **With a function:** set a **function trigger** in the queue's settings. The function receives batches (up to 10) in the AWS SQS event format (`event.Records[]` with `messageId`, `receiptHandle`, `body`, `attributes`), as many batches at once as its concurrency. When it succeeds, the batch is deleted; return `{"batchItemFailures": [{"itemIdentifier": "<messageId>"}]}` to retry only some messages. When it fails or times out, the batch comes back after the visibility timeout.
+- Messages are kept 4 days by default (1 minute to 14 days). Queue requests are billed per million.
+
+## Email
+
+Send transactional email (receipts, password resets, notifications) from your own domain, signed with DKIM so it is not taken for spam.
+
+1. Open **Email** › **Domains** and add a domain you own, such as `example.com` or `mail.example.com`.
+2. At your DNS provider, create the TXT records the domain's page lists: one proves you own the domain, the other publishes its DKIM key. The SPF and DMARC records are recommended.
+3. The platform checks the records every minute (or click **Check now**). Once the domain shows **verified**, send from any address at it.
+
+Sending from your code: **Use from code** › **Connect to a service** stores `EMAIL_API_URL` and `EMAIL_TOKEN` in a service, a token that can only send email. Then:
+
+```
+curl -X POST -H "Authorization: Bearer $EMAIL_TOKEN" -H 'Content-Type: application/json' $EMAIL_API_URL -d '{"from": "Shop <hello@example.com>", "to": ["buyer@example.org"], "subject": "Your order", "text": "Thanks!", "html": "<p>Thanks!</p>"}'
+```
+
+The answer is `202` with the message's id; `GET /api/v1/email/messages/ID` gives its status (`queued`, `sent` or `failed`).
+
+Good to know:
+
+- Up to 50 recipients and 256 KB per message; your plan sets the number of emails a day and of sending domains.
+- Messages that cannot be delivered are retried for about half an hour, then marked failed with the reason.
+- The **Sending log** shows the last 100 messages. Bodies are deleted as soon as a message is sent; the log keeps 30 days.
+- The platform rechecks verified domains daily; if the records disappear, sending from the domain pauses until they are back.
+- Emails are billed per recipient, per thousand.
 
 ## Object storage
 
@@ -441,6 +503,11 @@ platformctl deploy shop/web --image {{registry}}/<organization>/web:1.4.2 --wait
 | `platformctl fn invoke <project>/<fn> [--event JSON\|-] [--async]` | Runs it, prints its log on standard error and its result on standard output; exits with an error if the function failed. |
 | `platformctl fn logs <project>/<fn>` | Recent invocations with status, duration and log. |
 | `platformctl fn delete <project>/<fn>` | Deletes a function. |
+| `platformctl queue list` | Lists queues with their available and in-flight messages. |
+| `platformctl queue create NAME` / `queue purge NAME` | Creates a queue / deletes all its messages. |
+| `platformctl queue send NAME BODY` | Sends a message (`-` reads the body from standard input). |
+| `platformctl queue receive NAME [--max N] [--wait S]` | Receives messages, printing each receipt and body. |
+| `platformctl queue delete NAME RECEIPT` | Deletes a received message. |
 | `platformctl bucket list` | Lists buckets with their usage, the S3 endpoint and region. |
 | `platformctl bucket create NAME [--quota MB]` | Creates bucket `<organization>-NAME`. |
 | `platformctl bucket delete NAME` | Deletes a bucket and all its objects (admin token). |
@@ -477,6 +544,9 @@ The same operations are available over HTTP with `Authorization: Bearer <token>`
 | `POST /api/v1/projects/{project}/functions/{fn}/invoke` with the event as the body (`X-Invocation-Type: Event` for asynchronous, `X-Log-Type: Tail` for the log in `X-Platform-Log-Result`) | developer |
 | `GET /api/v1/projects/{project}/functions/{fn}/invocations` | viewer |
 | `DELETE /api/v1/projects/{project}/functions/{fn}` | developer |
+| `GET /api/v1/queues`, `POST /api/v1/queues` with `{"name": "orders"}` | viewer, developer |
+| `POST /api/v1/queues/{queue}/messages`, `POST …/receive?max=&wait=&visibility=`, `DELETE …/messages/{receipt}` | developer, or the queue's own token |
+| `POST /api/v1/queues/{queue}/purge`, `DELETE /api/v1/queues/{queue}` | developer, admin |
 | `GET /api/v1/buckets` | viewer |
 | `POST /api/v1/buckets` with `{"name": "uploads", "quota_mb": 1024}` | developer |
 | `DELETE /api/v1/buckets/{name}` | admin |

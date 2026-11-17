@@ -30,6 +30,7 @@ x-app: &app
     SMTP_PASSWORD: ${SMTP_PASSWORD:-}
     SMTP_FROM: ${SMTP_FROM:-}
     SMTP_TLS: ${SMTP_TLS:-starttls}
+    EMAIL_SPF_INCLUDE: ${EMAIL_SPF_INCLUDE:-}
     OPERATOR_NTFY_URL: ${OPERATOR_NTFY_URL:-}
     # resolv.conf for gVisor containers (they cannot use Docker's embedded DNS); set by host/deploy.sh
     TENANT_RESOLV_CONF: ${TENANT_RESOLV_CONF:-}

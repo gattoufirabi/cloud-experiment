@@ -33,8 +33,6 @@ func Send(cfg config.Config, to, subject, body string) error {
 			return errors.New("invalid header value")
 		}
 	}
-	host := cfg.SMTPHost
-	addr := net.JoinHostPort(host, strconv.Itoa(cfg.SMTPPort))
 	idBytes := make([]byte, 12)
 	_, _ = rand.Read(idBytes)
 	domain := cfg.SMTPFrom[strings.LastIndex(cfg.SMTPFrom, "@")+1:]
@@ -47,7 +45,20 @@ func Send(cfg config.Config, to, subject, body string) error {
 		"Content-Type: text/plain; charset=utf-8\r\n" +
 		"Content-Transfer-Encoding: 8bit\r\n\r\n" +
 		strings.ReplaceAll(body, "\n", "\r\n")
+	from := cfg.SMTPFrom
+	if i := strings.LastIndex(from, "<"); i >= 0 {
+		from = strings.TrimSuffix(from[i+1:], ">")
+	}
+	return SendRaw(cfg, from, []string{to}, msg)
+}
 
+// SendRaw hands a complete CRLF message to the SMTP server for the given envelope.
+func SendRaw(cfg config.Config, envelopeFrom string, to []string, msg string) error {
+	if cfg.SMTPHost == "" {
+		return ErrNotConfigured
+	}
+	host := cfg.SMTPHost
+	addr := net.JoinHostPort(host, strconv.Itoa(cfg.SMTPPort))
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	var conn net.Conn
 	var err error
@@ -76,15 +87,13 @@ func Send(cfg config.Config, to, subject, body string) error {
 			return fmt.Errorf("smtp auth: %w", err)
 		}
 	}
-	from := cfg.SMTPFrom
-	if i := strings.LastIndex(from, "<"); i >= 0 {
-		from = strings.TrimSuffix(from[i+1:], ">")
-	}
-	if err := c.Mail(from); err != nil {
+	if err := c.Mail(envelopeFrom); err != nil {
 		return err
 	}
-	if err := c.Rcpt(to); err != nil {
-		return err
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("recipient %s: %w", rcpt, err)
+		}
 	}
 	w, err := c.Data()
 	if err != nil {

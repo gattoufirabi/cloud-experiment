@@ -3,7 +3,7 @@
 // mock_groups, mock_verified query parameters) and a /token endpoint with client
 // authentication and PKCE. It also has /sink, an endpoint that receives log exports
 // (gzipped NDJSON, signed), and /sink/count?q=text to check what arrived. Never use it
-// for anything else.
+// for anything else. With -dns it also answers TXT queries (see dns.go).
 package main
 
 import (
@@ -15,10 +15,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"fmt"
-	"io"
 	"encoding/json"
 	"flag"
+	"fmt"
+	"io"
 	"log"
 	"math/big"
 	"net/http"
@@ -42,7 +42,13 @@ func main() {
 	clientID := flag.String("client-id", "platform-e2e", "client ID")
 	secret := flag.String("client-secret", "e2e-client-secret", "client secret")
 	sinkSecret := flag.String("sink-secret", "e2e-sink-secret", "secret that signs log exports")
+	dnsAddr := flag.String("dns", "", "UDP address of the test DNS server (off when empty)")
 	flag.Parse()
+	store := &txtStore{recs: map[string][]string{}}
+	store.handlers()
+	if *dnsAddr != "" {
+		go serveDNS(*dnsAddr, store)
+	}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		log.Fatal(err)

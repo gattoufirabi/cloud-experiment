@@ -124,7 +124,9 @@ func (a *Agent) setDBStatus(ctx context.Context, id, status, msg, containerID st
 // environment variable holding the password, for MySQL or MariaDB.
 func mysqlTools(d managedDB) (client, dump, pwVar string) {
 	if d.Engine == "mariadb" {
-		return "mariadb", "mariadb-dump", "MARIADB_PASSWORD"
+		// Loopback connections skip TLS: MariaDB 11.4+ clients verify the server's
+		// self-generated certificate, which fails when the sandbox clock drifts.
+		return "mariadb --skip-ssl", "mariadb-dump --skip-ssl", "MARIADB_PASSWORD"
 	}
 	return "mysql", "mysqldump --set-gtid-purged=OFF", "MYSQL_PASSWORD"
 }

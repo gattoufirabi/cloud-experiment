@@ -125,6 +125,13 @@
       <label>CPU <span class="hint">millicores, 1000 = 1 core</span><input type="number" name="cpu_millis" min="50" max="8000" step="50" value="{{.Service.CPUMillis}}" required></label>
       <label>Memory <span class="hint">MB</span><input type="number" name="memory_mb" min="32" max="16384" step="32" value="{{.Service.MemoryMB}}" required></label>
       <label>Instances <span class="hint">identical copies sharing the traffic; CPU and memory count for each</span><input type="number" name="instances" min="1" max="10" value="{{.Service.Instances}}" required{{if .Service.PreviewName}} disabled{{end}}></label>
+      {{if not .Service.PreviewName}}
+      <label class="check wide"><input type="checkbox" name="autoscale" value="1" {{if .Service.AutoMin}}checked{{end}}> Autoscaling
+        <span class="hint">adds and removes instances to keep the average CPU near the target; scales up within a minute, down after 5 quiet minutes</span></label>
+      <label>Minimum instances<input type="number" name="autoscale_min" min="1" max="10" value="{{if .Service.AutoMin}}{{.Service.AutoMin}}{{else}}1{{end}}"></label>
+      <label>Maximum instances<input type="number" name="autoscale_max" min="1" max="10" value="{{if .Service.AutoMax}}{{.Service.AutoMax}}{{else}}3{{end}}"></label>
+      <label>CPU target <span class="hint">% of the CPU you give each instance</span><input type="number" name="autoscale_cpu" min="10" max="95" value="{{.Service.AutoCPU}}"></label>
+      {{end}}
       {{if not .Service.PreviewName}}<label>Public TCP/UDP ports <span class="hint">for non-HTTP traffic (game servers, MQTT…): one per line, such as 25565/tcp or 27015/udp; each gets a public port</span>
         <textarea name="ports" rows="2" class="code-editor" spellcheck="false" placeholder="25565/tcp">{{.PortsText}}</textarea></label>{{end}}
       <label class="wide">Persistent folder <span class="hint">optional, kept and backed up, e.g. /data</span><input name="volume_path" value="{{.Service.VolumePath}}" placeholder="/data"></label>

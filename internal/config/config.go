@@ -124,6 +124,14 @@ type Config struct {
 	// only, for a local test provider).
 	OIDCAllowInsecure bool
 
+	// Outgoing email for tenants: EMAIL_DNS_RESOLVER (host:port) replaces the system
+	// resolver for domain verification (tests); EMAIL_SPF_INCLUDE is the domain tenants
+	// add to their SPF record (shown in the console when set).
+	EmailDNSResolver, EmailSPFInclude string
+
+	// SignupsPerHour limits self-signups from one address (SIGNUPS_PER_HOUR, default 5).
+	SignupsPerHour int
+
 	// MovesSharedLocalRepo: the nodes share the local backup volume (one Docker host,
 	// development), so projects with data can move without BACKUP_REST_URL.
 	MovesSharedLocalRepo bool
@@ -219,6 +227,9 @@ func Load() Config {
 		GarageAdminToken: env("GARAGE_ADMIN_TOKEN", ""),
 
 		OIDCAllowInsecure:    envBool("OIDC_ALLOW_INSECURE", false),
+		EmailDNSResolver:     env("EMAIL_DNS_RESOLVER", ""),
+		EmailSPFInclude:      env("EMAIL_SPF_INCLUDE", ""),
+		SignupsPerHour:       envInt("SIGNUPS_PER_HOUR", 5),
 		MovesSharedLocalRepo: envBool("MOVES_SHARED_LOCAL_REPO", false),
 		PublicPortMin:        envInt("PUBLIC_PORT_MIN", 20000),
 		PublicPortMax:        envInt("PUBLIC_PORT_MAX", 20999),

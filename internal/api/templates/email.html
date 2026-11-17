@@ -1,0 +1,105 @@
+{{define "title"}}Email · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>Email</h1>
+  {{if .CanEdit}}<a class="button-link right" href="#domains">Add domain</a>{{end}}
+</div>
+<p class="lede">Send transactional email (receipts, password resets, notifications) from your own domains. Each message is signed with the domain's DKIM key. {{.SentToday}} of {{.MaxDay}} emails sent in the last 24 hours.</p>
+<p class="help"><a href="/docs/user#email" target="_blank" rel="noopener">Guide: sending email ↗</a></p>
+
+<nav class="tabs" role="tablist" aria-label="Email sections">
+  <a role="tab" href="#log">Sending log</a>
+  <a role="tab" href="#domains">Domains</a>
+  <a role="tab" href="#connect">Use from code</a>
+</nav>
+
+<section class="pane" id="log" role="tabpanel" aria-label="Sending log">
+  <div class="section">
+    <div class="table-tools">
+      <h2>Recent messages <span class="count">{{len .Messages}}</span></h2>
+      <input type="search" data-filter="email-log" placeholder="Find messages" aria-label="Find messages">
+    </div>
+    {{if .Messages}}
+    <div class="scroll-x">
+    <table id="email-log" class="resources">
+      <thead><tr><th>Queued</th><th>From</th><th>To</th><th>Subject</th><th>Status</th></tr></thead>
+      <tbody>
+      {{range .Messages}}
+        <tr><td class="nowrap">{{ago .Created}}</td><td>{{.From}}</td><td>{{range $i, $t := .To}}{{if $i}}, {{end}}{{$t}}{{end}}</td><td>{{.Subject}}</td>
+          <td>{{if eq .Status "sent"}}<span class="badge">sent</span>{{else if eq .Status "failed"}}<span class="error-text">failed</span> <span class="small muted">{{.Error}}</span>{{else}}{{.Status}}{{with .Error}} <span class="small muted">(retrying: {{.}})</span>{{end}}{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    <p class="small muted">The last 100 messages; bodies are deleted once sent. The log keeps 30 days.</p>
+    {{else}}<p class="small muted">Nothing sent yet.</p>{{end}}
+  </div>
+  {{if and .CanEdit .Verified}}
+  <div class="section" id="send">
+    <h2>Send a test email</h2>
+    <form method="post" action="{{.Org.Path}}/email/send" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>From<input name="from" value="hello@{{index .Verified 0}}" required></label>
+      <label>To<input name="to" type="email" required></label>
+      <label>Subject<input name="subject" value="Test from {{.Org.Name}}" required maxlength="200"></label>
+      <label>Text<textarea name="text" rows="3" required>It works.</textarea></label>
+      <div class="inline"><button type="submit">Send</button></div>
+    </form>
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="domains" role="tabpanel" aria-label="Domains">
+  <div class="section">
+    <h2>Sending domains <span class="count">{{len .Domains}}</span></h2>
+    {{if .Domains}}
+    <table class="resources">
+      <thead><tr><th>Domain</th><th>Status</th><th>Checked</th></tr></thead>
+      <tbody>
+      {{range .Domains}}
+        <tr><td><a href="{{$.Org.Path}}/email/d/{{.Domain}}"><strong>{{.Domain}}</strong></a></td>
+          <td>{{if eq .Status "verified"}}<span class="badge">verified</span>{{else if eq .Status "failed"}}<span class="error-text">records removed</span>{{else}}waiting for DNS{{end}}</td>
+          <td class="nowrap">{{with .Checked}}{{ago .}}{{else}}<span class="muted">not yet</span>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="small muted">Add a domain you own to send from it.</p>{{end}}
+  </div>
+  {{if .CanEdit}}
+  <div class="section">
+    <h2>Add domain</h2>
+    {{if .Enabled}}
+    <form method="post" action="{{.Org.Path}}/email/domains" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="domain" placeholder="example.com or mail.example.com" required aria-label="Domain">
+      <button type="submit" class="arrow">Add domain</button>
+    </form>
+    <p class="small muted">You then add two TXT records at your DNS provider.</p>
+    {{else}}<p class="small muted">Outgoing email is not configured on this platform.</p>{{end}}
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="connect" role="tabpanel" aria-label="Use from code">
+  <div class="section">
+    <h2>Send with the API</h2>
+    <div class="panel"><pre class="cmd">curl -X POST -H "Authorization: Bearer $EMAIL_TOKEN" -H 'Content-Type: application/json' $EMAIL_API_URL \
+  -d '{"from": "Shop &lt;hello@{{if .Verified}}{{index .Verified 0}}{{else}}example.com{{end}}&gt;", "to": ["buyer@example.org"],
+       "subject": "Your order", "text": "Thanks!", "html": "&lt;p&gt;Thanks!&lt;/p&gt;"}'</pre></div>
+    <p class="small muted">Answers <code>202</code> with the message id; <code>GET /api/v1/email/messages/ID</code> gives its status. Up to 50 recipients and 256 KB per message.</p>
+  </div>
+  {{if .CanEdit}}
+  <div class="section">
+    <h2>Connect to a service</h2>
+    {{if .Services}}
+    <p class="small muted">Stores <code>EMAIL_API_URL</code> and <code>EMAIL_TOKEN</code> as secrets of the service: a token that can only send email. Redeploy the service to apply them.</p>
+    <form method="post" action="{{.Org.Path}}/email/attach" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <select name="service" aria-label="Service">{{range .Services}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+      <button type="submit">Connect</button>
+    </form>
+    {{else}}<p class="small muted">Create a service first.</p>{{end}}
+  </div>
+  {{end}}
+</section>
+{{end}}

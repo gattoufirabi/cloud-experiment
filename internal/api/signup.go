@@ -156,7 +156,7 @@ func (s *Server) signupSubmit(w http.ResponseWriter, r *http.Request) {
 		sent()
 		return
 	}
-	if !s.limiter.allow("signup:"+ip, 5, time.Hour) {
+	if !s.limiter.allow("signup:"+ip, s.cfg.SignupsPerHour, time.Hour) {
 		again("Too many sign-ups from your network; try again in an hour.")
 		return
 	}

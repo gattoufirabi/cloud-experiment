@@ -319,7 +319,7 @@ mysql_engine() { # mysql_engine <slug> <engine:version> <client> <label>
 admin set-plan --slug "$A" --plan pro >/dev/null   # two databases at once
 # MySQL initialises while the MariaDB checks run (its own create check then finds it existing)
 code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=mysql -d engine=mysql:8.4 >/dev/null
-mysql_engine maria mariadb:11.4 mariadb "MariaDB"
+mysql_engine maria mariadb:11.4 "mariadb --skip-ssl" "MariaDB"
 mysql_engine mysql mysql:8.4 mysql "MySQL"
 check "[A] unknown engine falls back to PostgreSQL" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=oracle -d engine=oracle:23 >/dev/null; my_db oracle engine)" postgres
 code_of ja -X POST "$BASE/o/$A/p/shop/d/oracle/delete" -d csrf=$CSRF_A -d confirm=oracle >/dev/null
@@ -577,6 +577,138 @@ pctl fn delete shop/pyfn >/dev/null 2>&1
 ORG_A_ID=$(owner_sql "SELECT id FROM orgs WHERE slug = '$A'")
 check "function containers removed after deletion" "$(for _ in $(seq 1 45); do [ "$(docker ps -aq --filter label=platform.function --filter "label=platform.org=$ORG_A_ID" | wc -l)" = 0 ] && { echo yes; break; }; sleep 2; done)" yes
 
+section "Queues"
+qapi() { local t=$1 m=$2 path=$3; shift 3; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/queues$path" "$@"; }
+qcode() { local t=$1 m=$2 path=$3; shift 3; qapi "$t" "$m" "$path" -o /dev/null -w '%{http_code}' "$@"; }
+check "[A] queue created in the console" "$(code_of ja -X POST "$BASE/o/$A/queues" -d csrf=$CSRF_A -d name=orders)" 303
+check "[API] dead-letter queue created" "$(qcode "$TOK_DEV" POST "" -d '{"name": "orders-dlq"}')" 201
+check "[API] message sent" "$(qcode "$TOK_DEV" POST /orders/messages -d '{"body": "order-1"}')" 201
+R=$(qapi "$TOK_DEV" POST "/orders/receive?max=10")
+RECEIPT=$(grep -o '"receipt":"[^"]*"' <<<"$R" | head -1 | cut -d'"' -f4)
+check "[API] receive returns the message with a receipt" "$(grep -o '"body":"order-1"' <<<"$R"):$([ -n "$RECEIPT" ] && echo receipt)" '"body":"order-1":receipt'
+check "a received message is hidden from other consumers" "$(qapi "$TOK_DEV" POST "/orders/receive?max=10" | grep -c order-1)" 0
+check "[API] message deleted with its receipt" "$(qcode "$TOK_DEV" DELETE "/orders/messages/$RECEIPT")" 204
+check "deleting twice answers 404" "$(qcode "$TOK_DEV" DELETE "/orders/messages/$RECEIPT")" 404
+check "[B->A API] B's token cannot reach A's queue (404)" "$(qcode "$TOK_B" POST /orders/messages -d '{"body": "evil"}')" 404
+check "[A] visibility 2 s, 2 receives, then orders-dlq" "$(code_of ja -X POST "$BASE/o/$A/queues/orders/settings" -d csrf=$CSRF_A -d visibility=2 -d retention_hours=24 -d max_receives=2 -d dlq=orders-dlq -d batch_size=10)" 303
+qcode "$TOK_DEV" POST /orders/messages -d '{"body": "poison"}' >/dev/null
+qapi "$TOK_DEV" POST "/orders/receive" >/dev/null; sleep 3
+check "a message not deleted comes back after the visibility timeout" "$(qapi "$TOK_DEV" POST "/orders/receive" | grep -o '"receive_count":2')" '"receive_count":2'
+sleep 3
+check "after max receives it moves to the dead-letter queue" "$(qapi "$TOK_DEV" POST "/orders/receive" | grep -c poison):$(qapi "$TOK_DEV" POST "/orders-dlq/receive" | grep -c poison)" "0:1"
+T0=$(date +%s); (sleep 2; qcode "$TOK_DEV" POST /orders/messages -d '{"body": "late"}' >/dev/null) &
+R=$(qapi "$TOK_DEV" POST "/orders/receive?wait=10"); T1=$(date +%s); wait
+check "long polling waits for a message and returns it as soon as it arrives" "$(grep -c '"body":"late"' <<<"$R"):$([ $((T1 - T0)) -ge 1 ] && [ $((T1 - T0)) -le 8 ] && echo fast)" "1:fast"
+check "[A] queue connected to service files" "$(code_of ja -X POST "$BASE/o/$A/queues/orders/attach" -d csrf=$CSRF_A -d service=shop/files)" 303
+QT_COUNT=$(owner_sql "SELECT count(*) FROM api_tokens t JOIN queues q ON q.id = t.queue_id JOIN orgs o ON o.id = t.org_id WHERE o.slug = '$A' AND q.name = 'orders'")
+check "the service got a token limited to the queue" "$QT_COUNT:$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name IN ('QUEUE_URL', 'QUEUE_TOKEN')")" "1:2"
+# The scoped token itself is only stored encrypted; create one directly to test its limits.
+SCOPED=pla_e2e$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+owner_sql "INSERT INTO api_tokens (org_id, name, token_hash, role, queue_id) SELECT o.id, 'scoped-probe', sha256(convert_to('$SCOPED', 'UTF8')), 'developer', q.id FROM orgs o JOIN queues q ON q.org_id = o.id WHERE o.slug = '$A' AND q.name = 'orders'" >/dev/null
+check "a queue token sends and receives on its queue" "$(qcode "$SCOPED" POST /orders/messages -d '{"body": "scoped"}'):$(qapi "$SCOPED" POST "/orders/receive?max=10" | grep -c scoped)" "201:1"
+check "a queue token cannot reach another queue (404)" "$(qcode "$SCOPED" POST /orders-dlq/messages -d '{"body": "x"}')" 404
+check "a queue token cannot list queues or deploy (403)" "$(qcode "$SCOPED" GET "" ):$(api_code "$SCOPED" -X POST "$BASE/api/v1/projects/shop/services/web/deploy")" "403:403"
+qcode "$TOK_DEV" POST /orders/purge >/dev/null
+check "[API] purge empties the queue" "$(owner_sql "SELECT count(*) FROM queue_messages m JOIN queues q ON q.id = m.queue_id JOIN orgs o ON o.id = q.org_id WHERE o.slug = '$A' AND q.name = 'orders'")" 0
+# Function trigger: the function retries only the message whose body is "fail".
+CONSUMER='export const handler = async (event) => ({ batchItemFailures: event.Records.filter((r) => r.body === "fail").map((r) => ({ itemIdentifier: r.messageId })) });'
+PUT_BODY=$(printf '%s' "$CONSUMER" | python -c 'import json,sys; print(json.dumps({"runtime": "nodejs22", "code": sys.stdin.read()}))')
+check "[API] consumer function deployed" "$(fn_api PUT consumer -o /dev/null -w '%{http_code}' -d "$PUT_BODY")" 201
+check "[A] function trigger set on the queue" "$(code_of ja -X POST "$BASE/o/$A/queues/orders/settings" -d csrf=$CSRF_A -d visibility=2 -d retention_hours=24 -d max_receives=2 -d dlq=orders-dlq -d function=shop/consumer -d batch_size=10 -d trigger_enabled=1)" 303
+qcode "$TOK_DEV" POST /orders/messages -d '{"messages": [{"body": "ok-1"}, {"body": "ok-2"}, {"body": "fail"}]}' >/dev/null
+check "the function consumed the batch; only the failed item stayed" "$(for _ in $(seq 1 45); do r=$(owner_sql "SELECT string_agg(m.body, ',' ORDER BY m.body) FROM queue_messages m JOIN queues q ON q.id = m.queue_id JOIN orgs o ON o.id = q.org_id WHERE o.slug = '$A' AND q.name IN ('orders', 'orders-dlq') AND m.body IN ('ok-1', 'ok-2', 'fail')"); [ "$r" = fail ] && { echo yes; break; }; sleep 2; done)" yes
+check "the failed item ends in the dead-letter queue" "$(for _ in $(seq 1 30); do [ "$(owner_sql "SELECT q.name FROM queue_messages m JOIN queues q ON q.id = m.queue_id JOIN orgs o ON o.id = q.org_id WHERE o.slug = '$A' AND m.body = 'fail'")" = orders-dlq ] && { echo yes; break; }; sleep 2; done)" yes
+check "queue invocations recorded with the SQS event source" "$(owner_sql "SELECT count(*) > 0 FROM function_invocations i JOIN functions f ON f.id = i.function_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'consumer' AND i.trigger = 'queue' AND i.status = 'succeeded'")" t
+check "[CLI] platformctl queue send and receive" "$(pctl queue send orders-dlq cli-msg >/dev/null; pctl queue receive orders-dlq --max 10 | grep -c cli-msg)" 1
+check "queue requests metered for invoices" "$(owner_sql "SELECT sum(queue_requests) > 0 FROM usage_hourly u JOIN orgs o ON o.id = u.org_id WHERE o.slug = '$A' AND u.kind = 'queue'")" t
+if grep -q "/o/$A/queues/orders\"" <<<"$(c ja "$BASE/o/$A/queues")"; then ok "queues area lists the queue"; else bad "queues area misses it"; fi
+fn_api DELETE consumer >/dev/null
+code_of ja -X POST "$BASE/o/$A/queues/orders/delete" -d csrf=$CSRF_A -d confirm=orders >/dev/null
+check "[API] queue deletion needs an admin token (403)" "$(qcode "$TOK_DEV" DELETE /orders-dlq)" 403
+code_of ja -X POST "$BASE/o/$A/queues/orders-dlq/delete" -d csrf=$CSRF_A -d confirm=orders-dlq >/dev/null
+
+section "Secrets manager"
+vapi() { local t=$1 m=$2 path=$3; shift 3; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/secrets$path" "$@"; }
+vcode() { local t=$1 m=$2 path=$3; shift 3; vapi "$t" "$m" "$path" -o /dev/null -w '%{http_code}' "$@"; }
+admin set-plan --slug "$A" --plan pro >/dev/null   # room for one more service
+check "[A] secret created in the console" "$(code_of ja -X POST "$BASE/o/$A/secrets" -d csrf=$CSRF_A -d name=stripe-key -d description=payments -d "value=sk-test-v1-$RUN")" 303
+V_PAGE=$(c ja "$BASE/o/$A/secrets")
+check "the list shows it, never its value" "$(grep -c 'stripe-key' <<<"$V_PAGE" | sed 's/^[1-9][0-9]*$/listed/'):$(grep -c "sk-test-v1" <<<"$V_PAGE")" "listed:0"
+check "the value is stored encrypted" "$(owner_sql "SELECT count(*) FROM org_secret_versions WHERE position(convert_to('sk-test-v1', 'UTF8') in value_enc) > 0")" 0
+check "[API] secret created" "$(vcode "$TOK_DEV" POST "" -d '{"name": "db-pass", "value": "pw-1"}')" 201
+check "[API] the same name twice is refused (409)" "$(vcode "$TOK_DEV" POST "" -d '{"name": "db-pass", "value": "pw-2"}')" 409
+check "[B->A API] B cannot read A's secret (404)" "$(vcode "$TOK_B" GET /stripe-key)" 404
+check "[CLI] platformctl vault list" "$(pctl vault list | grep -c -e '^stripe-key' -e '^db-pass')" 2
+code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=vaultsvc -d image=nginx:1.27-alpine >/dev/null
+V_SET=(-d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=80 -d health_path=%2F -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path=)
+check "[A] service variable references the secret" "$(code_of ja -X POST "$BASE/o/$A/p/shop/s/vaultsvc/settings" "${V_SET[@]}" --data-urlencode 'env=STRIPE_KEY=${secret:stripe-key}' -d deploy=1)" 303
+check "[A] service live" "$(wait_status ja /o/$A/p/shop/s/vaultsvc)" live
+V_CID() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'vaultsvc' AND d.status = 'live' ORDER BY d.revision DESC LIMIT 1"; }
+V1=$(V_CID)
+check "the container receives the secret's value" "$(dx exec "$V1" printenv STRIPE_KEY 2>&1 | tr -d '\r')" "sk-test-v1-$RUN"
+check "the secret's page lists the service using it" "$(c ja "$BASE/o/$A/secrets/stripe-key" | grep -c 'shop/vaultsvc' | sed 's/^[1-9][0-9]*$/yes/')" yes
+check "[API] new version redeploys the service" "$(vapi "$TOK_DEV" PUT /stripe-key -d "{\"value\": \"sk-test-v2-$RUN\"}" | grep -o '"services_redeployed":1')" '"services_redeployed":1'
+V2=; for _ in $(seq 1 60); do V2=$(V_CID); [ -n "$V2" ] && [ "$V2" != "$V1" ] && break; sleep 2; done
+check "the redeployed container has the new version" "$(dx exec "$V2" printenv STRIPE_KEY 2>&1 | tr -d '\r')" "sk-test-v2-$RUN"
+check "[API] read the current value and an older version" "$(vapi "$TOK_DEV" GET /stripe-key | grep -o "sk-test-v2-$RUN"):$(vapi "$TOK_DEV" GET '/stripe-key?version=1' | grep -o "sk-test-v1-$RUN")" "sk-test-v2-$RUN:sk-test-v1-$RUN"
+check "[A] reveal in the console shows the value" "$(c ja -X POST "$BASE/o/$A/secrets/stripe-key/reveal" -d csrf=$CSRF_A -d version=2 | grep -c "sk-test-v2-$RUN" | sed 's/^[1-9][0-9]*$/yes/')" yes
+check "reads, creation and rotation are audited" "$(owner_sql "SELECT count(DISTINCT action) FROM audit_events WHERE target = 'secret:stripe-key' AND action IN ('secret.created', 'secret.rotated', 'secret.read') AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" 3
+check "a viewer of the API cannot read values (403)" "$(vcode "$TOK_VIEW" GET /stripe-key)" 403
+check "[API] a secret in use cannot be deleted (409)" "$(vcode "$TOK_DEV" DELETE /stripe-key)" 409
+code_of ja -X POST "$BASE/o/$A/p/shop/s/vaultsvc/settings" "${V_SET[@]}" --data-urlencode 'env=STRIPE_KEY=${secret:no-such-secret}' -d deploy=1 >/dev/null
+st=; for _ in $(seq 1 30); do st=$(owner_sql "SELECT d.status || ':' || (d.message LIKE '%no-such-secret%does not exist%') FROM deployments d JOIN services s ON s.id = d.service_id WHERE s.slug = 'vaultsvc' AND d.org_id = (SELECT id FROM orgs WHERE slug = '$A') ORDER BY d.revision DESC LIMIT 1"); [ "${st%%:*}" = failed ] && break; sleep 2; done
+check "a missing secret fails the deployment with a clear message" "$st" "failed:true"
+code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/vaultsvc >/dev/null
+check "[A] unused secret deleted in the console" "$(code_of ja -X POST "$BASE/o/$A/secrets/stripe-key/delete" -d csrf=$CSRF_A -d confirm=stripe-key)" 303
+check "[API] secret deleted" "$(vcode "$TOK_DEV" DELETE /db-pass)" 204
+admin set-plan --slug "$A" --plan starter >/dev/null
+
+section "Outgoing email (verified domains, DKIM)"
+eapi() { local t=$1 m=$2 path=$3; shift 3; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/email$path" "$@"; }
+ecode() { local t=$1 m=$2 path=$3; shift 3; eapi "$t" "$m" "$path" -o /dev/null -w '%{http_code}' "$@"; }
+mkdir -p "$TMP/oidc"; (cd .. && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$TMP/oidc/mockoidc" ./scripts/mockoidc) || bad "mock DNS server did not build"
+docker rm -f e2e-dns >/dev/null 2>&1
+MSYS_NO_PATHCONV=1 docker run -d --name e2e-dns --network platform-core -p 8098:8098 -v "$(cygpath -w "$TMP/oidc"):/m:ro" alpine:3.20 /m/mockoidc -addr :8098 -dns :53 >/dev/null
+dnsset() { curl -sS -X POST -G "http://127.0.0.1:8098/dns/set" --data-urlencode "name=$1" --data-urlencode "txt=$2"; }
+ED=$A-mail.example.test
+ESEND() { printf '{"from": "Shop <hello@%s>", "to": ["%s"], "subject": "%s", "text": "Thanks for your order.", "html": "<p>Thanks!</p>"}' "$ED" "$1" "$2"; }
+check "[A] invalid domain refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/email/domains" -d csrf=$CSRF_A -d domain=not_a_domain | grep -c 'err=')" 1
+check "[A] sending domain added in the console" "$(code_of ja -X POST "$BASE/o/$A/email/domains" -d csrf=$CSRF_A -d "domain=$ED")" 303
+check "its page lists the ownership and DKIM records" "$(c ja "$BASE/o/$A/email/d/$ED" | grep -o -e "_platform-verify.$ED" -e "_domainkey.$ED" | sort -u | wc -l | tr -d ' ')" 2
+check "the DKIM private key is stored encrypted" "$(owner_sql "SELECT count(*) FROM email_domains WHERE domain = '$ED' AND position(convert_to('PRIVATE KEY', 'UTF8') in dkim_key_enc) = 0")" 1
+check "[API] sending before verification is refused (422)" "$(ecode "$TOK_DEV" POST /send -d "$(ESEND buyer-$RUN@example.org early)")" 422
+IFS='|' read -r ETOK ESEL ETXT <<<"$(owner_sql "SELECT verify_token || '|' || dkim_selector || '|' || dkim_txt FROM email_domains WHERE domain = '$ED'")"
+dnsset "_platform-verify.$ED" "platform-verify=$ETOK"; dnsset "$ESEL._domainkey.$ED" "$ETXT"
+check "[A] check now" "$(code_of ja -X POST "$BASE/o/$A/email/d/$ED/check" -d csrf=$CSRF_A)" 303
+st=; for _ in $(seq 1 30); do st=$(owner_sql "SELECT status FROM email_domains WHERE domain = '$ED'"); [ "$st" = verified ] && break; sleep 2; done
+check "domain verified through DNS" "$st" verified
+EID=$(eapi "$TOK_DEV" POST /send -d "$(ESEND buyer-$RUN@example.org "Order $RUN")" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+check "[API] email queued (202 with an id)" "$([ -n "$EID" ] && echo yes)" yes
+EM_ID=; for _ in $(seq 1 20); do EM_ID=$(curl -s -G "http://localhost:8025/api/v1/search" --data-urlencode "query=to:buyer-$RUN@example.org" | grep -o '"ID":"[^"]*"' | head -1 | cut -d'"' -f4); [ -n "$EM_ID" ] && break; sleep 1; done
+EM=$(curl -s "http://localhost:8025/api/v1/message/$EM_ID/raw")
+check "delivered with a DKIM signature of the domain" "$(grep -o "d=$ED; s=$ESEL" <<<"$EM" | head -1)" "d=$ED; s=$ESEL"
+check "text and HTML parts" "$(grep -c -e 'Thanks for your order.' -e '<p>Thanks!</p>' <<<"$EM" | sed 's/^[1-9][0-9]*$/yes/')" yes
+st=; for _ in $(seq 1 10); do st=$(eapi "$TOK_DEV" GET "/messages/$EID" | grep -o '"status":"[a-z]*"' | cut -d'"' -f4); [ "$st" = sent ] && break; sleep 1; done
+check "[API] message status is sent" "$st" sent
+check "the body is deleted once sent" "$(owner_sql "SELECT body_text = '' AND body_html = '' FROM email_messages WHERE id = '$EID'")" t
+check "the sending log shows it" "$(c ja "$BASE/o/$A/email" | grep -c "Order $RUN" | sed 's/^[1-9][0-9]*$/yes/')" yes
+check "[B->A API] B cannot send from A's domain (422)" "$(ecode "$TOK_B" POST /send -d "$(ESEND victim@example.org spoof)")" 422
+check "[API] a header injection in the subject is refused (422)" "$(ecode "$TOK_DEV" POST /send -d "$(ESEND x@example.org 'a\r\nBcc: evil@example.org')")" 422
+ESCOPED="pla_e2e_email_only_$RUN"
+owner_sql "INSERT INTO api_tokens (org_id, name, token_hash, role, email_only) SELECT id, 'email-probe', sha256(convert_to('$ESCOPED', 'UTF8')), 'developer', true FROM orgs WHERE slug = '$A'" >/dev/null
+check "an email-only token sends (202)" "$(ecode "$ESCOPED" POST /send -d "$(ESEND buyer2-$RUN@example.org scoped)")" 202
+check "an email-only token cannot do anything else (403)" "$(ecode "$ESCOPED" GET /domains):$(curl -sS -o /dev/null -w '%{http_code}' --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $ESCOPED" "$BASE/api/v1/queues")" "403:403"
+check "[A] connect email to a service" "$(code_of ja -X POST "$BASE/o/$A/email/attach" -d csrf=$CSRF_A -d service=shop/files)" 303
+check "the service got EMAIL_API_URL and EMAIL_TOKEN" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id WHERE v.slug = 'files' AND s.org_id = (SELECT id FROM orgs WHERE slug = '$A') AND s.name IN ('EMAIL_API_URL', 'EMAIL_TOKEN')")" 2
+EMAX=$(owner_sql "SELECT p.max_emails_day FROM plans p JOIN orgs o ON o.plan_id = p.id WHERE o.slug = '$A'")
+owner_sql "UPDATE plans SET max_emails_day = 2 WHERE id = (SELECT plan_id FROM orgs WHERE slug = '$A')" >/dev/null
+check "[API] the daily limit answers 429" "$(ecode "$TOK_DEV" POST /send -d "$(ESEND buyer3-$RUN@example.org over)")" 429
+owner_sql "UPDATE plans SET max_emails_day = $EMAX WHERE id = (SELECT plan_id FROM orgs WHERE slug = '$A')" >/dev/null
+check "sent emails are metered" "$(for _ in $(seq 1 10); do n=$(owner_sql "SELECT coalesce(sum(emails), 0) FROM usage_hourly WHERE kind = 'email' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')"); [ "${n:-0}" -ge 2 ] && { echo yes; break; }; sleep 1; done)" yes
+check "[A] domain deleted" "$(code_of ja -X POST "$BASE/o/$A/email/d/$ED/delete" -d csrf=$CSRF_A -d "confirm=$ED")" 303
+owner_sql "DELETE FROM api_tokens WHERE name = 'email-probe'" >/dev/null
+docker rm -f e2e-dns >/dev/null 2>&1
+
 section "Single sign-on (OIDC)"
 mkdir -p "$TMP/oidc"
 (cd .. && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$TMP/oidc/mockoidc" ./scripts/mockoidc) || bad "mock OIDC provider did not build"
@@ -642,7 +774,7 @@ check "[A] export to an HTTPS endpoint created" "$(code_of ja -X POST "$BASE/o/$
 check "export endpoint secret stored encrypted" "$(owner_sql "SELECT count(*) FROM log_exports e JOIN orgs o ON o.id = e.org_id WHERE o.slug = '$A' AND e.secret_enc IS NOT NULL AND position(convert_to('e2e-sink-secret', 'UTF8') in e.secret_enc) = 0")" 1
 check "[B] cannot export to A's bucket" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/monitoring/logs/exports" -d csrf=$CSRF_B -d name=steal -d kind=bucket -d bucket=logs | grep -c 'err=')" 1
 owner_sql "SELECT pg_notify('deployments', 'logexport')" >/dev/null
-check "HTTPS export delivered the lines, signed" "$(for _ in $(seq 1 45); do r=$(curl -s --resolve host.docker.internal:8097:127.0.0.1 "$IDP/sink/count?q=$LOGMARK"); [ "${r%% *}" -ge 3 ] 2>/dev/null && { echo "ok ${r##* }"; break; }; sleep 2; done)" "ok 0"
+check "HTTPS export delivered the lines, signed" "$(for i in $(seq 1 60); do [ $((i % 10)) = 0 ] && owner_sql "SELECT pg_notify('deployments', 'logexport')" >/dev/null; r=$(curl -s --resolve host.docker.internal:8097:127.0.0.1 "$IDP/sink/count?q=$LOGMARK"); [ "${r%% *}" -ge 3 ] 2>/dev/null && { echo "ok ${r##* }"; break; }; sleep 2; done)" "ok 0"
 read -r KL SL <<<"$(new_s3_key ja "$A" "$CSRF_A" log-reader -d perm_logs=read)"
 check "bucket export wrote hourly gzipped NDJSON files" "$(for _ in $(seq 1 30); do k=$(s3c "$KL" "$SL" "$S3/$A-logs?list-type=2&prefix=app-logs/" | grep -o '<Key>[^<]*ndjson.gz</Key>' | head -1 | sed 's/<[^>]*>//g'); [ -n "$k" ] && { echo yes; break; }; sleep 2; done)" yes
 EXPORTED=""; for k in $(s3c "$KL" "$SL" "$S3/$A-logs?list-type=2&prefix=app-logs/" | grep -o '<Key>[^<]*</Key>' | sed 's/<[^>]*>//g'); do EXPORTED+=$(s3c "$KL" "$SL" "$S3/$A-logs/$k" | gzip -dc 2>/dev/null); done
@@ -878,6 +1010,24 @@ check "[B->A] B's token scales only B's service" "$(owner_sql "SELECT instances 
 if pctl scale shop/web 1 --wait | grep -q "is live"; then ok "[CLI] scale back to 1 instance"; else bad "[CLI] scale back failed"; fi
 check "one container after scaling down" "$(docker ps -q --filter label=platform.deployment=$(WEB_DEP id) | wc -l | tr -d ' ')" 1
 check "app answers after scaling down" "$(app_code /)" 200
+
+section "Autoscaling"
+admin set-plan --slug "$A" --plan pro >/dev/null   # room for three instances
+mkdir -p "$TMP/busy"; printf '%s\n' 'FROM nginx:1.27-alpine' 'CMD ["sh", "-c", "yes > /dev/null & exec nginx -g \"daemon off;\""]' > "$TMP/busy/Dockerfile"
+docker build -q -t "$REG/$A/busy:1" "$(cygpath -w "$TMP/busy")" >/dev/null
+TOK_AS=$(new_token ja "$A" "$CSRF_A")
+echo "$TOK_AS" | dk login $REG -u "$A" --password-stdin >/dev/null; dk push "$REG/$A/busy:1" >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=busy -d image=nginx:1.27-alpine >/dev/null
+AS_SET=(-d csrf=$CSRF_A -d "image=$REG/$A/busy:1" -d port=80 -d health_path=%2F -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env=)
+check "autoscaling refused above the plan's instances" "$(admin set-plan --slug "$A" --plan starter >/dev/null; c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/shop/s/busy/settings" "${AS_SET[@]}" -d autoscale=1 -d autoscale_min=1 -d autoscale_max=9 -d autoscale_cpu=50 | grep -c 'err='; admin set-plan --slug "$A" --plan pro >/dev/null)" 1
+check "autoscaling refused with a persistent folder" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/shop/s/busy/settings" "${AS_SET[@]/volume_path=/volume_path=%2Fdata}" -d autoscale=1 -d autoscale_min=1 -d autoscale_max=3 -d autoscale_cpu=50 | grep -c 'persistent+folder')" 1
+check "[A] CPU-busy service with autoscaling 1-3 at 50%" "$(code_of ja -X POST "$BASE/o/$A/p/shop/s/busy/settings" "${AS_SET[@]}" -d autoscale=1 -d autoscale_min=1 -d autoscale_max=3 -d autoscale_cpu=50 -d deploy=1)" 303
+check "[A] busy service live" "$(wait_status ja /o/$A/p/shop/s/busy)" live
+check "it scales out when the CPU stays above the target" "$(for _ in $(seq 1 60); do n=$(owner_sql "SELECT instances FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'busy'"); [ "${n:-1}" -ge 2 ] && { echo yes; break; }; sleep 5; done)" yes
+check "the new instances go live behind the proxy" "$(wait_status ja /o/$A/p/shop/s/busy):$(owner_sql "SELECT jsonb_array_length(d.instances) >= 2 FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'busy' AND d.status = 'live'")" "live:t"
+check "scaling audited with the measured CPU" "$(owner_sql "SELECT count(*) > 0 FROM audit_events WHERE action = 'service.autoscaled' AND org_id = (SELECT id FROM orgs WHERE slug = '$A') AND detail->>'target' = '50'")" t
+code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/busy >/dev/null
+admin set-plan --slug "$A" --plan starter >/dev/null
 
 section "Builds from git"
 # A local git server (static "dumb HTTP" repository) reached from the build sandbox

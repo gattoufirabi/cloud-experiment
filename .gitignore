@@ -3,3 +3,4 @@ deploy/secrets/
 deploy/.env
 /platform
 /platform.exe
+/platformctl.exe

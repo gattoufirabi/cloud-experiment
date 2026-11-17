@@ -110,6 +110,10 @@ func main() {
 		err = c.storageKeys(args)
 	case "fn":
 		err = c.functions(args)
+	case "queue":
+		err = c.queues(args)
+	case "vault":
+		err = c.orgSecrets(args)
 	default:
 		usage(2)
 	}
@@ -157,6 +161,17 @@ func usage(code int) {
                                            run it and print the result (event from stdin with -)
   fn logs <project>/<fn>                   recent invocations with their status and logs
   fn delete <project>/<fn>                 delete a function
+  queue list                               queues with available and in-flight messages
+  queue create NAME                        create a queue
+  queue send NAME BODY|-                   send a message (body from stdin with -)
+  queue receive NAME [--max N] [--wait S]  receive messages (prints receipt and body, tab separated)
+  queue delete NAME RECEIPT                delete a received message
+  queue purge NAME                         delete every message
+  vault list                               secrets of the secrets manager (no values)
+  vault create NAME VALUE|-                create a secret (value from stdin with -)
+  vault get NAME [--version N]             print a secret's value (the read is audited)
+  vault put NAME VALUE|-                   store a new version; services using it redeploy
+  vault delete NAME                        delete an unused secret
 
 environment: PLATFORM_URL (console address), PLATFORM_TOKEN (API token "pla_...")`)
 	os.Exit(code)
@@ -1002,6 +1017,181 @@ func (c *client) functions(args []string) error {
 			return err
 		}
 		fmt.Println("function deleted")
+		return nil
+	}
+	usage(2)
+	return nil
+}
+
+func (c *client) orgSecrets(args []string) error {
+	if len(args) < 1 {
+		usage(2)
+	}
+	need := func(n int) {
+		if len(args) < n {
+			usage(2)
+		}
+	}
+	value := func() (string, error) {
+		if args[2] != "-" {
+			return args[2], nil
+		}
+		b, err := io.ReadAll(os.Stdin)
+		return strings.TrimRight(string(b), "\r\n"), err
+	}
+	switch args[0] {
+	case "list":
+		var ss []struct {
+			Name    string   `json:"name"`
+			Version int      `json:"version"`
+			UsedBy  []string `json:"used_by"`
+		}
+		if err := c.do("GET", "/api/v1/secrets", nil, &ss); err != nil {
+			return err
+		}
+		var rows [][]string
+		for _, s := range ss {
+			rows = append(rows, []string{s.Name, fmt.Sprint(s.Version), strings.Join(s.UsedBy, ", ")})
+		}
+		table("NAME\tVERSION\tUSED BY", rows)
+		return nil
+	case "create", "put":
+		need(3)
+		v, err := value()
+		if err != nil {
+			return err
+		}
+		if args[0] == "create" {
+			if err := c.do("POST", "/api/v1/secrets", map[string]any{"name": args[1], "value": v}, nil); err != nil {
+				return err
+			}
+			fmt.Printf("secret %s created; reference it as ${secret:%s}\n", args[1], args[1])
+			return nil
+		}
+		var out struct {
+			Version    int `json:"version"`
+			Redeployed int `json:"services_redeployed"`
+		}
+		if err := c.do("PUT", "/api/v1/secrets/"+url.PathEscape(args[1]), map[string]any{"value": v}, &out); err != nil {
+			return err
+		}
+		fmt.Printf("version %d is current; %d service(s) redeploying\n", out.Version, out.Redeployed)
+		return nil
+	case "get":
+		need(2)
+		fl := flag.NewFlagSet("get", flag.ExitOnError)
+		version := fl.Int("version", 0, "version (default: current)")
+		_ = fl.Parse(args[2:])
+		var out struct {
+			Value string `json:"value"`
+		}
+		if err := c.do("GET", fmt.Sprintf("/api/v1/secrets/%s?version=%d", url.PathEscape(args[1]), *version), nil, &out); err != nil {
+			return err
+		}
+		fmt.Println(out.Value)
+		return nil
+	case "delete":
+		need(2)
+		if err := c.do("DELETE", "/api/v1/secrets/"+url.PathEscape(args[1]), nil, nil); err != nil {
+			return err
+		}
+		fmt.Println("secret deleted")
+		return nil
+	}
+	usage(2)
+	return nil
+}
+
+func (c *client) queues(args []string) error {
+	if len(args) < 1 {
+		usage(2)
+	}
+	need := func(n int) {
+		if len(args) < n {
+			usage(2)
+		}
+	}
+	switch args[0] {
+	case "list":
+		var qs []struct {
+			Name      string
+			Available int64  `json:"available"`
+			InFlight  int64  `json:"in_flight"`
+			DLQ       string `json:"dead_letter_queue"`
+			Function  string `json:"function"`
+		}
+		if err := c.do("GET", "/api/v1/queues", nil, &qs); err != nil {
+			return err
+		}
+		var rows [][]string
+		for _, q := range qs {
+			rows = append(rows, []string{q.Name, fmt.Sprint(q.Available), fmt.Sprint(q.InFlight), q.Function, q.DLQ})
+		}
+		table("NAME\tAVAILABLE\tIN FLIGHT\tFUNCTION\tDEAD-LETTER", rows)
+		return nil
+	case "create":
+		need(2)
+		if err := c.do("POST", "/api/v1/queues", map[string]any{"name": args[1]}, nil); err != nil {
+			return err
+		}
+		fmt.Println("queue", args[1], "created")
+		return nil
+	case "send":
+		need(3)
+		body := args[2]
+		if body == "-" {
+			b, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return err
+			}
+			body = string(b)
+		}
+		var out struct {
+			IDs []string `json:"message_ids"`
+		}
+		if err := c.do("POST", "/api/v1/queues/"+url.PathEscape(args[1])+"/messages", map[string]any{"body": body}, &out); err != nil {
+			return err
+		}
+		fmt.Println(strings.Join(out.IDs, "\n"))
+		return nil
+	case "receive":
+		need(2)
+		fl := flag.NewFlagSet("receive", flag.ExitOnError)
+		max := fl.Int("max", 1, "messages, 1 to 10")
+		wait := fl.Int("wait", 0, "seconds to wait for messages, up to 20")
+		_ = fl.Parse(args[2:])
+		var out struct {
+			Messages []struct {
+				Receipt string
+				Body    string
+			}
+		}
+		hc := *c.hc
+		hc.Timeout = 30 * time.Second
+		saved := c.hc
+		c.hc = &hc
+		err := c.do("POST", fmt.Sprintf("/api/v1/queues/%s/receive?max=%d&wait=%d", url.PathEscape(args[1]), *max, *wait), nil, &out)
+		c.hc = saved
+		if err != nil {
+			return err
+		}
+		for _, m := range out.Messages {
+			fmt.Printf("%s\t%s\n", m.Receipt, m.Body)
+		}
+		return nil
+	case "delete":
+		need(3)
+		if err := c.do("DELETE", "/api/v1/queues/"+url.PathEscape(args[1])+"/messages/"+url.PathEscape(args[2]), nil, nil); err != nil {
+			return err
+		}
+		fmt.Println("message deleted")
+		return nil
+	case "purge":
+		need(2)
+		if err := c.do("POST", "/api/v1/queues/"+url.PathEscape(args[1])+"/purge", nil, nil); err != nil {
+			return err
+		}
+		fmt.Println("queue purged")
 		return nil
 	}
 	usage(2)

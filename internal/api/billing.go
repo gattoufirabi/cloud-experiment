@@ -46,9 +46,9 @@ func (s *Server) billingPage(w http.ResponseWriter, r *http.Request) {
 		if err := tx.QueryRow(r.Context(), `
 			SELECT p.name, p.price_monthly_cents, p.price_vcpu_hour_cents::float8, p.price_gb_hour_cents::float8, p.price_gb_out_cents::float8,
 			       p.price_build_minute_cents::float8, p.price_storage_gb_month_cents::float8,
-			       p.price_fn_gb_second_cents::float8, p.price_fn_million_requests_cents::float8, o.created_at, o.billing_name, o.billing_address, o.billing_tax_id
+			       p.price_fn_gb_second_cents::float8, p.price_fn_million_requests_cents::float8, p.price_queue_million_requests_cents::float8, p.price_email_thousand_cents::float8, o.created_at, o.billing_name, o.billing_address, o.billing_tax_id
 			FROM orgs o JOIN plans p ON p.id = o.plan_id WHERE o.id = $1`, o.ID).
-			Scan(&planName, &prices.Monthly, &prices.VCPUHour, &prices.GBHour, &prices.GBOut, &prices.BuildMin, &prices.StorageGBMonth, &prices.FnGBSecond, &prices.FnMRequests, &created, &billName, &billAddr, &billTax); err != nil {
+			Scan(&planName, &prices.Monthly, &prices.VCPUHour, &prices.GBHour, &prices.GBOut, &prices.BuildMin, &prices.StorageGBMonth, &prices.FnGBSecond, &prices.FnMRequests, &prices.QueueMRequests, &prices.EmailThousand, &created, &billName, &billAddr, &billTax); err != nil {
 			return err
 		}
 		var err error
@@ -58,7 +58,7 @@ func (s *Server) billingPage(w http.ResponseWriter, r *http.Request) {
 		q, err := tx.Query(r.Context(), `
 			SELECT kind, (array_agg(name ORDER BY hour DESC))[1],
 			       sum(cpu_milli_minutes)::bigint, sum(mem_mb_minutes)::bigint, sum(egress_bytes)::bigint, sum(storage_bytes)::bigint,
-			       sum(fn_requests)::bigint, sum(fn_mb_ms)::bigint
+			       sum(fn_requests)::bigint, sum(fn_mb_ms)::bigint, sum(queue_requests)::bigint, sum(emails)::bigint
 			FROM usage_hourly WHERE hour >= $1 AND hour < $2
 			GROUP BY resource_id, kind ORDER BY 2`, start, end)
 		if err != nil {
@@ -67,7 +67,7 @@ func (s *Server) billingPage(w http.ResponseWriter, r *http.Request) {
 		for q.Next() {
 			var u billing.Usage
 			var row usageRow
-			if err := q.Scan(&row.Kind, &row.Name, &u.CPUMilliMinutes, &u.MemMBMinutes, &u.EgressBytes, &u.StorageByteHours, &u.FnRequests, &u.FnMBms); err != nil {
+			if err := q.Scan(&row.Kind, &row.Name, &u.CPUMilliMinutes, &u.MemMBMinutes, &u.EgressBytes, &u.StorageByteHours, &u.FnRequests, &u.FnMBms, &u.QueueRequests, &u.Emails); err != nil {
 				q.Close()
 				return err
 			}
@@ -75,6 +75,8 @@ func (s *Server) billingPage(w http.ResponseWriter, r *http.Request) {
 			total.StorageByteHours += u.StorageByteHours
 			total.FnRequests += u.FnRequests
 			total.FnMBms += u.FnMBms
+			total.QueueRequests += u.QueueRequests
+			total.Emails += u.Emails
 			total.CPUMilliMinutes += u.CPUMilliMinutes
 			total.MemMBMinutes += u.MemMBMinutes
 			total.EgressBytes += u.EgressBytes

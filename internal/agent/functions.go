@@ -63,6 +63,7 @@ type fnConfig struct {
 	ID, OrgID, ProjectID, Slug, ProjectSlug, OrgSlug, Runtime, Handler, CodeSHA string
 	MemoryMB, TimeoutSeconds                                                    int
 	Env                                                                         map[string]string
+	SecretVersions                                                              string // referenced secrets and their versions
 }
 
 func (f fnConfig) hash() string {
@@ -72,7 +73,7 @@ func (f fnConfig) hash() string {
 	}
 	sort.Strings(keys)
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s|%s|%s|%d|", f.Runtime, f.Handler, f.CodeSHA, f.MemoryMB)
+	fmt.Fprintf(&b, "%s|%s|%s|%d|%s|", f.Runtime, f.Handler, f.CodeSHA, f.MemoryMB, f.SecretVersions)
 	for _, k := range keys {
 		b.WriteString(k + "=" + f.Env[k] + "\x00")
 	}
@@ -161,9 +162,11 @@ func (a *Agent) loadFnConfig(ctx context.Context, id string) (fnConfig, error) {
 	var f fnConfig
 	var env []byte
 	err := a.pool.QueryRow(ctx, `
-		SELECT f.id, f.org_id, f.project_id, f.slug, p.slug, o.slug, f.runtime, f.handler, f.code_sha256, f.memory_mb, f.timeout_seconds, f.env
+		SELECT f.id, f.org_id, f.project_id, f.slug, p.slug, o.slug, f.runtime, f.handler, f.code_sha256, f.memory_mb, f.timeout_seconds, f.env,
+		       coalesce((SELECT string_agg(s.name || ':' || s.current_version, ',' ORDER BY s.name) FROM org_secrets s
+		                 WHERE s.org_id = f.org_id AND EXISTS (SELECT 1 FROM jsonb_each_text(f.env) e WHERE e.value = '${secret:' || s.name || '}')), '')
 		FROM functions f JOIN projects p ON p.id = f.project_id JOIN orgs o ON o.id = f.org_id WHERE f.id = $1`, id).
-		Scan(&f.ID, &f.OrgID, &f.ProjectID, &f.Slug, &f.ProjectSlug, &f.OrgSlug, &f.Runtime, &f.Handler, &f.CodeSHA, &f.MemoryMB, &f.TimeoutSeconds, &env)
+		Scan(&f.ID, &f.OrgID, &f.ProjectID, &f.Slug, &f.ProjectSlug, &f.OrgSlug, &f.Runtime, &f.Handler, &f.CodeSHA, &f.MemoryMB, &f.TimeoutSeconds, &env, &f.SecretVersions)
 	if err != nil {
 		return f, err
 	}
@@ -188,7 +191,7 @@ func (a *Agent) runInvocation(ctx context.Context, c claimed) {
 	f, err := a.loadFnConfig(ctx, c.FunctionID)
 	defer func() {
 		dur := int(time.Since(start).Milliseconds())
-		if c.Async {
+		if c.Async && c.Trigger != "queue" { // a queue trigger reads batchItemFailures
 			response = nil
 		}
 		_, uerr := a.pool.Exec(context.WithoutCancel(ctx), `
@@ -198,6 +201,9 @@ func (a *Agent) runInvocation(ctx context.Context, c claimed) {
 			a.log.Warn("record function invocation", "err", uerr)
 		}
 		_, _ = a.pool.Exec(context.WithoutCancel(ctx), `SELECT pg_notify('fn_done', $1)`, c.ID)
+		if c.Trigger == "queue" {
+			a.pokeQueues()
+		}
 		if f.ID != "" {
 			hour := time.Now().UTC().Truncate(time.Hour)
 			_, _ = a.pool.Exec(context.WithoutCancel(ctx), `
@@ -447,7 +453,7 @@ func (a *Agent) functionEnv(ctx context.Context, f fnConfig) ([]string, error) {
 	env = append(env, "_HANDLER="+f.Handler, "LAMBDA_TASK_ROOT=/var/task", "HOME=/tmp", "TZ=UTC",
 		"AWS_LAMBDA_FUNCTION_NAME="+f.Slug, "AWS_LAMBDA_FUNCTION_VERSION=$LATEST",
 		fmt.Sprintf("AWS_LAMBDA_FUNCTION_MEMORY_SIZE=%d", f.MemoryMB), "PLATFORM_FUNCTION="+f.ProjectSlug+"/"+f.Slug)
-	return dedupEnv(env), nil
+	return a.resolveSecretRefs(ctx, f.OrgID, dedupEnv(env))
 }
 
 // reapFunctions removes idle warm containers (scale to zero) and containers of

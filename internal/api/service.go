@@ -24,6 +24,7 @@ type serviceInfo struct {
 	Worker                                  bool
 	Env                                     map[string]string
 	Ports                                   []model.PublicPort
+	AutoMin, AutoMax, AutoCPU               int    // autoscaling (AutoMin 0 = off)
 	PreviewName, ParentSlug                 string // set for preview environments
 	Expires                                 *time.Time
 }
@@ -47,11 +48,12 @@ func (s *Server) loadService(r *http.Request, tx pgx.Tx, projectID string) (*ser
 	var sv serviceInfo
 	err := tx.QueryRow(r.Context(), `
 		SELECT s.id, s.slug, s.image, s.health_path, s.volume_path, s.port, s.cpu_millis, s.memory_mb, s.env,
-		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker, s.instances, s.ports
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker, s.instances, s.ports,
+		       s.autoscale_min, s.autoscale_max, s.autoscale_cpu
 		FROM services s LEFT JOIN services ps ON ps.id = s.preview_of
 		WHERE s.project_id = $1 AND s.slug = $2`, projectID, r.PathValue("service")).
 		Scan(&sv.ID, &sv.Slug, &sv.Image, &sv.HealthPath, &sv.VolumePath, &sv.Port, &sv.CPUMillis, &sv.MemoryMB, &sv.Env,
-			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker, &sv.Instances, &sv.Ports)
+			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker, &sv.Instances, &sv.Ports, &sv.AutoMin, &sv.AutoMax, &sv.AutoCPU)
 	if sv.Env == nil {
 		sv.Env = map[string]string{}
 	}
@@ -316,6 +318,26 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		if next.Worker && !strings.HasPrefix(next.HealthPath, "/") {
 			next.HealthPath = "/" // unused by workers
 		}
+		// Autoscaling: between min and max instances around a CPU target.
+		autoMin, autoMax, autoCPU := 0, 0, atoiDefault(r.PostFormValue("autoscale_cpu"), 70)
+		if r.PostFormValue("autoscale") == "1" && !sv.isPreview() {
+			autoMin, autoMax = atoi(r.PostFormValue("autoscale_min")), atoi(r.PostFormValue("autoscale_max"))
+			switch {
+			case autoMin < 1 || autoMax < autoMin || autoMax > 10:
+				formErr = "Autoscaling: from 1 to 10 instances, the minimum at most the maximum."
+			case autoCPU < 10 || autoCPU > 95:
+				formErr = "Autoscaling: a CPU target between 10 and 95%."
+			case next.VolumePath != "" || len(next.Ports) > 0:
+				formErr = "Autoscaling needs a service without a persistent folder or public ports (they run a single instance)."
+			}
+			if formErr != "" {
+				return nil
+			}
+			next.Instances = min(max(next.Count(), autoMin), autoMax)
+		}
+		if autoCPU < 10 || autoCPU > 95 {
+			autoCPU = 70
+		}
 		if next.Worker && !sv.Worker {
 			var n int
 			if err := tx.QueryRow(r.Context(), `SELECT count(*) FROM domains WHERE service_id = $1`, sv.ID).Scan(&n); err != nil {
@@ -334,7 +356,7 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			formErr = err.Error()
 			return nil
 		}
-		if err := s.checkInstances(r, tx, o, next.Count()); err != nil {
+		if err := s.checkInstances(r, tx, o, max(next.Count(), autoMax)); err != nil {
 			var qe quotaError
 			if errors.As(err, &qe) {
 				formErr = qe.Error()
@@ -342,12 +364,16 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
-		if err := s.checkQuota(r, tx, o, sv.ID, next.CPUMillis*next.Count(), next.MemoryMB*next.Count(), false); err != nil {
+		if err := s.checkQuota(r, tx, o, sv.ID, next.CPUMillis*max(next.Count(), autoMax), next.MemoryMB*max(next.Count(), autoMax), false); err != nil {
 			var qe quotaError
 			if errors.As(err, &qe) {
 				formErr = qe.Error()
 				return nil
 			}
+			return err
+		}
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET autoscale_min = $2, autoscale_max = $3, autoscale_cpu = $4 WHERE id = $1`,
+			sv.ID, autoMin, autoMax, autoCPU); err != nil {
 			return err
 		}
 		if next.Ports, err = s.allocatePorts(r, tx, o, sv.ID, next.Ports); err != nil {
