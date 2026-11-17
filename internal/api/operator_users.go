@@ -107,6 +107,7 @@ func (s *Server) renderOperatorUsers(w http.ResponseWriter, r *http.Request, sta
 			return
 		}
 	}
+	d["OpSection"] = "users"
 	d["Users"], d["Invites"], d["Orgs"], d["Plans"], d["Q"], d["Filter"] = users, invites, orgs, plans, q, filter
 	if _, ok := d["Mail"]; !ok {
 		d["Mail"] = platmail.Configured(s.cfg)
@@ -301,6 +302,7 @@ func (s *Server) renderOperatorUser(w http.ResponseWriter, r *http.Request, stat
 		return
 	}
 	d["U"], d["Memberships"], d["Sessions"], d["Events"], d["OtherOrgs"] = u, members, sessions, events, others
+	d["OpSection"] = "users"
 	d["Self"] = u.ID == sessionFrom(r).UserID
 	d["Roles"] = []string{"owner", "admin", "developer", "viewer"}
 	d["Mail"] = platmail.Configured(s.cfg)

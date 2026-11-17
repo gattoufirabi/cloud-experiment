@@ -1,0 +1,45 @@
+{{define "title"}}Settings · Operator{{end}}
+{{define "content"}}
+<div class="head"><h1>Platform settings</h1><span class="badge">operator</span></div>
+{{template "opnav" .}}
+<p class="lede">Change how the platform behaves without a restart. A setting left on "server value" uses the server's configuration (environment), shown next to it.</p>
+
+<form method="post" action="/operator/settings" class="stack">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+
+  <div class="section">
+    <h2>Announcement</h2>
+    <p class="small muted">Shown at the top of every console page, for maintenance windows or incidents. Leave empty to hide it.</p>
+    <label>Message<input name="banner_message" maxlength="300" value="{{.S.BannerMessage}}" placeholder="e.g. Maintenance on Sunday 02:00–03:00 UTC: deployments are paused."></label>
+    <label>Level<select name="banner_level">
+      <option value="info" {{if eq .S.BannerLevel "info"}}selected{{end}}>information</option>
+      <option value="warning" {{if eq .S.BannerLevel "warning"}}selected{{end}}>warning</option></select></label>
+  </div>
+
+  <div class="section">
+    <h2>Maintenance</h2>
+    <label class="check"><input type="checkbox" name="deploys_paused" value="1" {{if .S.DeploysPaused}}checked{{end}}> Pause deployments
+      <span class="hint">new deployments wait in the queue (running applications keep running) and start when you resume</span></label>
+  </div>
+
+  <div class="section">
+    <h2>Self-signup</h2>
+    <label>Sign-up page<select name="signup_enabled">
+      <option value="" {{if not (index .S.Overridden "signup_enabled")}}selected{{end}}>server value ({{if .Env.SignupEnabled}}open{{else}}closed{{end}})</option>
+      <option value="on" {{if and (index .S.Overridden "signup_enabled") .S.SignupEnabled}}selected{{end}}>open</option>
+      <option value="off" {{if and (index .S.Overridden "signup_enabled") (not .S.SignupEnabled)}}selected{{end}}>closed</option></select></label>
+    <label>Sign-ups accepted per day <span class="hint">empty: server value ({{.Env.SignupDailyLimit}})</span>
+      <input type="number" name="signup_daily_limit" min="0" max="100000" value="{{if index .S.Overridden "signup_daily_limit"}}{{.S.SignupDailyLimit}}{{end}}"></label>
+    <label>Trial length in days <span class="hint">empty: server value ({{.Env.SignupTrialDays}})</span>
+      <input type="number" name="signup_trial_days" min="1" max="365" value="{{if index .S.Overridden "signup_trial_days"}}{{.S.SignupTrialDays}}{{end}}"></label>
+    <label>Only these email domains may sign up <span class="hint">comma-separated; empty list: anyone</span>
+      <input name="signup_allowed_domains" value="{{if index .S.Overridden "signup_allowed_domains"}}{{join .S.SignupAllowed ", "}}{{end}}"></label>
+    <label class="check"><input type="checkbox" name="signup_allowed_domains_env" value="1" {{if not (index .S.Overridden "signup_allowed_domains")}}checked{{end}}> use the server value{{with .Env.SignupAllowed}} ({{.}}){{end}}</label>
+    <label>Refused email domains <span class="hint">added to the built-in list of disposable addresses</span>
+      <input name="signup_blocked_domains" value="{{if index .S.Overridden "signup_blocked_domains"}}{{join .S.SignupBlocked ", "}}{{end}}"></label>
+    <label class="check"><input type="checkbox" name="signup_blocked_domains_env" value="1" {{if not (index .S.Overridden "signup_blocked_domains")}}checked{{end}}> use the server value{{with .Env.SignupBlocked}} ({{.}}){{end}}</label>
+  </div>
+
+  <div class="inline"><button type="submit">Save settings</button></div>
+</form>
+{{end}}

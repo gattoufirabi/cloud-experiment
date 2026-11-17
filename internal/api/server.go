@@ -43,23 +43,24 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type Server struct {
-	cfg        config.Config
-	pool       *pgxpool.Pool
-	box        *secure.Box
-	pages      map[string]*template.Template
-	limiter    *rateLimiter
-	log        *slog.Logger
-	dummyHash  string
-	hc         *http.Client
-	regKey     *ecdsa.PrivateKey // signs registry tokens; nil when the registry is disabled
-	assetV     string            // content hash of static files, for cache busting
-	docs       map[string]docPage
-	wa         *webauthn.WebAuthn
-	ceremonies *ceremonyStore
-	pow        *powStore
-	fnWait     fnWaiters // requests waiting for a function's result
-	oidc       *oidc.Client
-	oidcOnce   sync.Once
+	cfg           config.Config
+	pool          *pgxpool.Pool
+	box           *secure.Box
+	pages         map[string]*template.Template
+	limiter       *rateLimiter
+	log           *slog.Logger
+	dummyHash     string
+	hc            *http.Client
+	regKey        *ecdsa.PrivateKey // signs registry tokens; nil when the registry is disabled
+	assetV        string            // content hash of static files, for cache busting
+	docs          map[string]docPage
+	wa            *webauthn.WebAuthn
+	settingsCache settingsCache
+	ceremonies    *ceremonyStore
+	pow           *powStore
+	fnWait        fnWaiters // requests waiting for a function's result
+	oidc          *oidc.Client
+	oidcOnce      sync.Once
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -231,6 +232,15 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /operator/nodes/{id}/drain", s.operatorOnly(s.operatorDrainNode))
 	m.HandleFunc("POST /operator/orgs/{slug}/cluster", s.operatorOnly(s.operatorOrgCluster))
 	m.HandleFunc("GET /operator/orgs/{slug}", s.operatorOnly(s.operatorOrgPage))
+	m.HandleFunc("GET /operator/settings", s.operatorOnly(s.operatorSettingsPage))
+	m.HandleFunc("POST /operator/settings", s.operatorOnly(s.operatorSaveSettings))
+	m.HandleFunc("GET /operator/plans", s.operatorOnly(s.operatorPlansPage))
+	m.HandleFunc("POST /operator/plans", s.operatorOnly(s.operatorCreatePlan))
+	m.HandleFunc("POST /operator/plans/{id}", s.operatorOnly(s.operatorUpdatePlan))
+	m.HandleFunc("POST /operator/plans/{id}/delete", s.operatorOnly(s.operatorDeletePlan))
+	m.HandleFunc("GET /operator/resources", s.operatorOnly(s.operatorResourcesPage))
+	m.HandleFunc("GET /operator/health", s.operatorOnly(s.operatorHealthPage))
+	m.HandleFunc("POST /operator/invoices/generate", s.operatorOnly(s.operatorGenerateInvoices))
 	m.HandleFunc("GET /operator/users", s.operatorOnly(s.operatorUsersPage))
 	m.HandleFunc("POST /operator/users", s.operatorOnly(s.operatorCreateUser))
 	m.HandleFunc("POST /operator/invites/{id}/revoke", s.operatorOnly(s.operatorRevokeInvite))
@@ -558,6 +568,8 @@ func parseTemplates() (map[string]*template.Template, error) {
 		"runtime":    runtimeLabel,
 		"list":       func(xs ...int) []int { return xs },
 		"contains":   strings.Contains,
+		"join":       strings.Join,
+		"strs":       func(xs ...string) []string { return xs },
 		"hoursOf":    func(sec int) int { return max(1, sec/3600) },
 		"int64":      func(i int) int64 { return int64(i) },
 		"ms":         itoaPtr,
@@ -613,7 +625,11 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, sta
 		d = data{}
 	}
 	d["V"] = s.assetV
-	d["SignupEnabled"] = s.cfg.SignupEnabled
+	ps := s.settings(r.Context())
+	d["SignupEnabled"] = ps.SignupEnabled
+	if ps.BannerMessage != "" {
+		d["Banner"], d["BannerLevel"] = ps.BannerMessage, ps.BannerLevel
+	}
 	s.addNav(r, d)
 	if sess := sessionFrom(r); sess != nil {
 		d["User"] = sess

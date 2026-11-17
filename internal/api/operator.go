@@ -129,7 +129,8 @@ func (s *Server) operatorPage(w http.ResponseWriter, r *http.Request) {
 		moves, _ = pgx.CollectRows(rows, pgx.RowToStructByPos[opMove])
 	}
 	s.render(w, r, "operator", http.StatusOK, data{"Overview": ov, "Orgs": orgs, "Invoices": invoices, "Events": events,
-		"Plans": plans, "Nodes": nodes, "Usage": usage, "Moves": moves, "MovesEnabled": s.cfg.MovesEnabled()})
+		"Plans": plans, "Nodes": nodes, "Usage": usage, "Moves": moves, "MovesEnabled": s.cfg.MovesEnabled(), "OpSection": "overview",
+		"LastMonth": time.Now().UTC().AddDate(0, 0, -time.Now().UTC().Day()).Format("2006-01")})
 }
 
 func (s *Server) operatorSetPlan(w http.ResponseWriter, r *http.Request) {
@@ -425,6 +426,6 @@ func (s *Server) operatorOrgPage(w http.ResponseWriter, r *http.Request) {
 	var cluster string
 	_ = s.pool.QueryRow(r.Context(), `SELECT cluster FROM operator_org_cluster($1)`, slug).Scan(&cluster)
 	_ = db.Audit(r.Context(), s.pool, "", sessionFrom(r).UserID, "operator.viewed_org", "org:"+slug, nil, clientIP(r))
-	s.render(w, r, "operator_org", http.StatusOK, data{"O": org, "Services": services, "Databases": dbs, "Domains": domains,
+	s.render(w, r, "operator_org", http.StatusOK, data{"OpSection": "overview", "O": org, "Services": services, "Databases": dbs, "Domains": domains,
 		"Incidents": incidents, "Usage": usage, "Cluster": cluster})
 }

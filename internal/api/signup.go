@@ -119,7 +119,7 @@ func (p *powStore) verify(ch, nonce string, minBits int) bool {
 // ---------- pages ----------
 
 func (s *Server) signupPage(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.SignupEnabled {
+	if !s.settings(r.Context()).SignupEnabled {
 		s.notFound(w, r)
 		return
 	}
@@ -128,14 +128,14 @@ func (s *Server) signupPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderSignup(w http.ResponseWriter, r *http.Request, status int, d data) {
 	d["Challenge"] = s.pow.challenge(s.cfg.SignupPowBits)
-	d["TrialDays"] = s.cfg.SignupTrialDays
+	d["TrialDays"] = s.settings(r.Context()).SignupTrialDays
 	s.render(w, r, "signup", status, d)
 }
 
 func emailDomain(email string) string { return email[strings.LastIndex(email, "@")+1:] }
 
 func (s *Server) signupSubmit(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.SignupEnabled {
+	if !s.settings(r.Context()).SignupEnabled {
 		s.notFound(w, r)
 		return
 	}
@@ -169,10 +169,10 @@ func (s *Server) signupSubmit(w http.ResponseWriter, r *http.Request) {
 	case err != nil || addr.Address != email || len(email) > 200 || !strings.Contains(emailDomain(email), "."):
 		again("Please enter a valid email address.")
 		return
-	case disposableDomains[emailDomain(email)] || contains(s.cfg.SignupBlockedDomains, emailDomain(email)):
+	case disposableDomains[emailDomain(email)] || contains(s.settings(r.Context()).SignupBlocked, emailDomain(email)):
 		again("Please use a permanent email address.")
 		return
-	case len(s.cfg.SignupAllowedDomains) > 0 && !contains(s.cfg.SignupAllowedDomains, emailDomain(email)):
+	case len(s.settings(r.Context()).SignupAllowed) > 0 && !contains(s.settings(r.Context()).SignupAllowed, emailDomain(email)):
 		again("Sign-up is limited to approved email domains.")
 		return
 	case name == "" || len(name) > 100:
@@ -205,7 +205,7 @@ func (s *Server) signupSubmit(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	if today >= s.cfg.SignupDailyLimit {
+	if today >= s.settings(r.Context()).SignupDailyLimit {
 		again("Sign-ups are paused for today; please try again tomorrow.")
 		return
 	}
@@ -300,14 +300,14 @@ func (s *Server) signupVerifySubmit(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := tx.QueryRow(r.Context(), `
 			INSERT INTO orgs (slug, name, plan_id, trial_ends_at) VALUES ($1, $2, 'trial', now() + make_interval(days => $3))
-			RETURNING id`, slug, orgName, s.cfg.SignupTrialDays).Scan(&orgID); err != nil {
+			RETURNING id`, slug, orgName, s.settings(r.Context()).SignupTrialDays).Scan(&orgID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(r.Context(), `INSERT INTO memberships (org_id, user_id, role) VALUES ($1, $2, 'owner')`, orgID, userID); err != nil {
 			return err
 		}
 		return db.Audit(r.Context(), tx, orgID, userID, "org.signup", "org:"+slug,
-			map[string]any{"plan": "trial", "trial_days": s.cfg.SignupTrialDays}, clientIP(r))
+			map[string]any{"plan": "trial", "trial_days": s.settings(r.Context()).SignupTrialDays}, clientIP(r))
 	})
 	switch {
 	case isUniqueViolation(err):

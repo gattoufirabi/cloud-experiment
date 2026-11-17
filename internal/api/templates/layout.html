@@ -2,7 +2,15 @@
 
 {{define "status"}}<span class="st st-{{.}}">{{.}}</span>{{end}}
 
-{{define "flash"}}{{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}{{with .Err}}<p class="flash err" role="alert">{{.}}</p>{{end}}{{end}}
+{{define "opnav"}}<nav aria-label="Admin panel"><ul class="opnav">
+  <li><a href="/operator" {{if eq .OpSection "overview"}}aria-current="page"{{end}}>Overview</a></li>
+  <li><a href="/operator/users" {{if eq .OpSection "users"}}aria-current="page"{{end}}>Users</a></li>
+  <li><a href="/operator/resources" {{if eq .OpSection "resources"}}aria-current="page"{{end}}>Resources</a></li>
+  <li><a href="/operator/plans" {{if eq .OpSection "plans"}}aria-current="page"{{end}}>Plans and prices</a></li>
+  <li><a href="/operator/health" {{if eq .OpSection "health"}}aria-current="page"{{end}}>Health</a></li>
+  <li><a href="/operator/settings" {{if eq .OpSection "settings"}}aria-current="page"{{end}}>Settings</a></li>
+</ul></nav>{{end}}
+{{define "flash"}}{{with .Banner}}<p class="flash banner {{$.BannerLevel}}" role="status">{{.}}</p>{{end}}{{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}{{with .Err}}<p class="flash err" role="alert">{{.}}</p>{{end}}{{end}}
 
 {{/* Project filter used by the lists of every area. */}}
 {{define "scope"}}

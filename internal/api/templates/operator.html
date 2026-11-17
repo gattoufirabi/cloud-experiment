@@ -1,6 +1,7 @@
 {{define "title"}}Operator{{end}}
 {{define "content"}}
-<div class="head"><h1>Operator console</h1><span class="badge">operator</span><a class="button-link right" href="/operator/users">Users</a></div>
+<div class="head"><h1>Operator console</h1><span class="badge">operator</span></div>
+{{template "opnav" .}}
 <p class="lede">The whole platform. Every change here is recorded in the audit log under your name.</p>
 
 <nav class="tabs" role="tablist" aria-label="Operator sections">
@@ -130,6 +131,14 @@
 </section>
 
 <section class="pane" id="op-invoices" role="tabpanel" aria-label="Invoices">
+  <div class="section">
+    <form method="post" action="/operator/invoices/generate" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Issue invoices for <input type="month" name="month" value="{{.LastMonth}}" required></label>
+      <button type="submit">Generate</button>
+    </form>
+    <p class="small muted">Invoices are issued automatically on the 1st of each month; organizations already invoiced for a month are skipped.</p>
+  </div>
   <div class="section">
     {{if .Invoices}}
     <div class="scroll-x">

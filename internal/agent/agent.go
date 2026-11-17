@@ -203,6 +203,10 @@ func (a *Agent) listen(ctx context.Context) {
 					var n *pgconn.Notification
 					n, err = conn.Conn().WaitForNotification(ctx)
 					if err == nil {
+						if month, ok := strings.CutPrefix(n.Payload, "invoices:"); ok {
+							go a.generateInvoices(ctx, month)
+							continue
+						}
 						switch n.Payload {
 						case "scan":
 							a.pokeScans()
@@ -284,6 +288,7 @@ func (a *Agent) claim(ctx context.Context) (job, bool, error) {
 			JOIN projects p ON p.id = s.project_id
 			JOIN orgs o ON o.id = d.org_id
 			WHERE d.status = 'pending' AND `+mineSQL+`
+			  AND NOT coalesce((SELECT deploys_paused FROM platform_settings WHERE id = 1), false)
 			ORDER BY d.created_at
 			LIMIT 1
 			FOR UPDATE OF d SKIP LOCKED`, a.mineArgs()...).Scan(&j.ID, &j.OrgID, &j.ServiceID, &j.ProjectID, &j.Revision, &spec, &j.Suspended, &j.OrgSlug, &j.ScanPolicy)

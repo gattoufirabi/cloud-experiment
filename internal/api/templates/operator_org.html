@@ -3,6 +3,7 @@
 <p class="small"><a href="/operator#op-orgs">← Operator console</a></p>
 <div class="head"><h1>{{.O.Name}}</h1><span class="badge">{{.O.PlanID}}</span>
   {{if .O.Suspended}}<span class="st st-failed">suspended · {{.O.SuspendReason}}</span>{{else}}<span class="st st-live">active</span>{{end}}</div>
+{{template "opnav" .}}
 <p class="lede">{{.O.Slug}} · owner {{.O.Owner}} · created {{datetime .O.Created}}{{with .O.TrialEnds}} · trial ends {{datetime .}}{{end}}</p>
 <form method="post" action="/operator/orgs/{{.O.Slug}}/cluster" class="inline">
   <input type="hidden" name="csrf" value="{{.CSRF}}">

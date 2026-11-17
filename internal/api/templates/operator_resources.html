@@ -1,0 +1,29 @@
+{{define "title"}}Resources · Operator{{end}}
+{{define "content"}}
+<div class="head"><h1>Resources</h1><span class="badge">operator</span></div>
+{{template "opnav" .}}
+<p class="lede">Every resource of every organization ({{.Total}}): names, sizes and states only, never contents, variables or logs.</p>
+<div class="section">
+  <form method="get" action="/operator/resources" class="inline">
+    <select name="kind" aria-label="Kind">
+      <option value="">All kinds</option>
+      {{range .Kinds}}<option value="{{.}}" {{if eq . $.Kind}}selected{{end}}>{{.}} ({{index $.Counts .}})</option>{{end}}
+    </select>
+    <input type="search" name="q" value="{{.Q}}" placeholder="organization, project or name" aria-label="Search">
+    <button type="submit">Filter</button>
+  </form>
+  {{if .Resources}}
+  <div class="scroll-x">
+  <table id="resources-table" class="resources">
+    <thead><tr><th>Kind</th><th>Organization</th><th>Project</th><th>Name</th><th>Size</th><th>State</th><th>Created</th></tr></thead>
+    <tbody>
+    {{range .Resources}}
+      <tr><td>{{.Kind}}</td><td><a href="/operator/orgs/{{.OrgSlug}}">{{.OrgSlug}}</a></td><td>{{.Project}}</td><td><strong>{{.Name}}</strong></td>
+        <td class="small">{{.Detail}}</td><td>{{if eq .Status "failed"}}<span class="error-text">failed</span>{{else}}{{.Status}}{{end}}</td><td class="nowrap">{{ago .Created}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">Nothing matches.</p>{{end}}
+</div>
+{{end}}

@@ -1,6 +1,7 @@
 {{define "title"}}Users · Operator{{end}}
 {{define "content"}}
 <div class="head"><h1>Users</h1><span class="badge">operator</span><a class="button-link right" href="#create">Invite a user</a></div>
+{{template "opnav" .}}
 <p class="lede"><a href="/operator">Operator console</a> › Users. Every account on the platform. New people join through a one-time invitation link: you never choose their password.</p>
 
 {{if .Link}}

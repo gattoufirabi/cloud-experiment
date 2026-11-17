@@ -539,7 +539,8 @@ check "function runs as an unprivileged user" "$(grep -o '"uid":65534' <<<"$OUT"
 HDRS=$(fn_api POST hello/invoke -D - -o /dev/null -d '{"boom": true}')
 check "handler error flagged like AWS Invoke" "$(grep -ci 'X-Platform-Function-Error: Unhandled' <<<"$HDRS")" 1
 check "error type recorded" "$(owner_sql "SELECT error_type FROM function_invocations i JOIN functions f ON f.id = i.function_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'hello' ORDER BY i.created_at DESC LIMIT 1")" RangeError
-check "timeout stops the run" "$(fn_api POST hello/invoke -d '{"sleep": 6000}' | grep -o 'Sandbox.Timedout')" Sandbox.Timedout
+TO_OUT=$(fn_api POST hello/invoke -d '{"sleep": 6000}' 2>&1)
+check "timeout stops the run" "$(grep -o 'Sandbox.Timedout' <<<"$TO_OUT" || echo "response: ${TO_OUT:0:300}")" Sandbox.Timedout
 check "function works again after a timeout" "$(fn_api POST hello/invoke -d '{"value": "again"}' | grep -o '"echo":"again"')" '"echo":"again"'
 check "[API] asynchronous invoke answers 202" "$(fn_api POST hello/invoke -o /dev/null -w '%{http_code}' -H 'X-Invocation-Type: Event' -d '{"value": "async"}')" 202
 check "asynchronous invocation runs" "$(for _ in $(seq 1 30); do [ "$(owner_sql "SELECT count(*) FROM function_invocations i JOIN functions f ON f.id = i.function_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'hello' AND i.async AND i.status = 'succeeded'")" -ge 1 ] && { echo yes; break; }; sleep 1; done)" yes
@@ -1317,6 +1318,47 @@ code_of ja -X POST "$BASE/operator/users/$UB/profile" -d csrf=$OPCSRF -d "name=O
 check "an email already in use is refused" "$(owner_sql "SELECT email FROM users WHERE id = '$UB'")" "owner@$B.test"
 NEWUID=$(owner_sql "INSERT INTO users (email, name, password_hash) VALUES ('gone-$RUN@example.test', 'Gone', 'x') RETURNING id")
 check "operator deletes an account" "$(code_of ja -X POST "$BASE/operator/users/$NEWUID/delete" -d csrf=$OPCSRF -d "confirm=gone-$RUN@example.test"):$(owner_sql "SELECT count(*) FROM users WHERE id = '$NEWUID'")" "303:0"
+
+section "Operator: admin panel (settings, plans, resources, health)"
+for p in settings plans resources health; do check "[B] /operator/$p hidden from non-operators (404)" "$(code_of jb "$BASE/operator/$p")" 404; done
+check "every admin page opens" "$(for p in settings plans resources health; do code_of ja "$BASE/operator/$p"; echo; done | sort -u | tr -d '\n')" 200
+SET_BASE=(-d csrf=$OPCSRF -d banner_level=warning -d signup_enabled= -d signup_daily_limit= -d signup_trial_days= -d signup_allowed_domains_env=1 -d signup_blocked_domains_env=1)
+check "announcement saved" "$(code_of ja -X POST "$BASE/operator/settings" "${SET_BASE[@]}" --data-urlencode "banner_message=Maintenance $RUN tonight")" 303
+check "the announcement shows on tenant pages" "$(sleep 11; c jb "$BASE/o/$B" | grep -c "Maintenance $RUN tonight" | sed 's/^[1-9][0-9]*$/yes/')" yes
+check "[A] deployments paused" "$(code_of ja -X POST "$BASE/operator/settings" "${SET_BASE[@]}" -d deploys_paused=1)" 303
+code_of ja -X POST "$BASE/o/$A/p/shop/s/web/deploy" -d csrf=$CSRF_A >/dev/null
+sleep 6
+check "a deployment waits while paused" "$(owner_sql "SELECT d.status FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'web' ORDER BY d.revision DESC LIMIT 1")" pending
+check "health shows the waiting deployment" "$(c ja "$BASE/operator/health" | grep -c 'Deployments are paused' | sed 's/^[1-9][0-9]*$/yes/')" yes
+code_of ja -X POST "$BASE/operator/settings" "${SET_BASE[@]}" >/dev/null
+check "resumed: the waiting deployment is picked up" "$(for _ in $(seq 1 30); do st=$(owner_sql "SELECT d.status FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'web' ORDER BY d.revision DESC LIMIT 1"); [ "$st" != pending ] && { echo picked; break; }; sleep 2; done)" picked
+check "the announcement is gone" "$(sleep 11; c jb "$BASE/o/$B" | grep -c "Maintenance $RUN tonight")" 0
+check "signup closed by the operator" "$(code_of ja -X POST "$BASE/operator/settings" -d csrf=$OPCSRF -d banner_level=info -d signup_enabled=off -d signup_allowed_domains_env=1 -d signup_blocked_domains_env=1):$(sleep 11; code_of jx "$BASE/signup")" "303:404"
+code_of ja -X POST "$BASE/operator/settings" -d csrf=$OPCSRF -d banner_level=info -d signup_allowed_domains_env=1 -d signup_blocked_domains_env=1 >/dev/null
+check "settings changes audited" "$(owner_sql "SELECT count(*) >= 4 FROM audit_events WHERE action = 'platform.settings_changed'")" t
+PLAN=e2e$RUN
+check "new plan copied from starter" "$(code_of ja -X POST "$BASE/operator/plans" -d csrf=$OPCSRF -d "id=$PLAN" -d from=starter):$(owner_sql "SELECT max_services = (SELECT max_services FROM plans WHERE id = 'starter') FROM plans WHERE id = '$PLAN'")" "303:t"
+PFORM=$(c ja "$BASE/operator/plans" | python -c '
+import sys, re, html
+page = sys.stdin.read()
+sec = page[page.index("id=\"plan-'"$PLAN"'\""):]
+sec = sec[:sec.index("</form>")]
+out = []
+for m in re.finditer(r"<input name=\"([a-z_]+)\" value=\"([^\"]*)\"", sec):
+    k, v = m.group(1), html.unescape(m.group(2))
+    if k == "max_services": v = "7"
+    if k == "price_monthly_cents": v = "1234"
+    out.append("%s=%s" % (k, v))
+print("&".join(out))')
+check "plan limits and prices saved" "$(code_of ja -X POST "$BASE/operator/plans/$PLAN" --data "csrf=$OPCSRF&$PFORM"):$(owner_sql "SELECT max_services || ':' || price_monthly_cents FROM plans WHERE id = '$PLAN'")" "303:7:1234"
+check "a negative limit is refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/operator/plans/$PLAN" --data "csrf=$OPCSRF&${PFORM/max_services=7/max_services=-1}" | grep -c 'err=')" 1
+check "a built-in plan cannot be deleted" "$(code_of ja -X POST "$BASE/operator/plans/starter/delete" -d csrf=$OPCSRF >/dev/null; owner_sql "SELECT count(*) FROM plans WHERE id = 'starter'")" 1
+check "an unused plan is deleted" "$(code_of ja -X POST "$BASE/operator/plans/$PLAN/delete" -d csrf=$OPCSRF):$(owner_sql "SELECT count(*) FROM plans WHERE id = '$PLAN'")" "303:0"
+RES=$(c ja "$BASE/operator/resources?q=$A")
+check "resources list A's services" "$(grep -c '<td>service</td>' <<<"$RES" | sed 's/^[1-9][0-9]*$/yes/')" yes
+if grep -q "tenant-a-secret\|API_KEY" <<<"$RES"; then bad "resources page leaks secrets"; else ok "resources page shows no secrets"; fi
+check "invoice generation requested from the panel" "$(code_of ja -X POST "$BASE/operator/invoices/generate" -d csrf=$OPCSRF -d "month=$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)")" 303
+check "a future month is refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/operator/invoices/generate" -d csrf=$OPCSRF -d "month=$(date -u -d '+1 month' +%Y-%m)" | grep -c 'err=')" 1
 
 section "Several servers (a second node on the same machine)"
 docker compose -f compose.dev.yml --profile multinode up -d agent2 >/dev/null 2>&1

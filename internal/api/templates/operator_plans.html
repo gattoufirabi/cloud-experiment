@@ -1,0 +1,51 @@
+{{define "title"}}Plans · Operator{{end}}
+{{define "content"}}
+<div class="head"><h1>Plans and prices</h1><span class="badge">operator</span><a class="button-link right" href="#create">New plan</a></div>
+{{template "opnav" .}}
+<p class="lede">Limits and prices of each plan. Prices are in {{.Currency}} cents. Limits apply to the next change an organization makes; prices to the next invoice. Every change is audited.</p>
+
+<nav class="tabs" role="tablist" aria-label="Plans">
+  {{range .Plans}}<a role="tab" href="#plan-{{.ID}}">{{.ID}} <span class="count">{{.Orgs}} org(s)</span></a>{{end}}
+  <a role="tab" href="#create">New plan</a>
+</nav>
+
+{{range $p := .Plans}}
+<section class="pane" id="plan-{{$p.ID}}" role="tabpanel" aria-label="Plan {{$p.ID}}">
+  <form method="post" action="/operator/plans/{{$p.ID}}" class="section">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <h2>{{$p.ID}} <span class="count">{{$p.Orgs}} organization(s)</span></h2>
+    {{range $g := (strs "Plan" "Prices" "Limits")}}
+    <h3>{{$g}}</h3>
+    <div class="grid-form">
+      {{range $.Fields}}{{if eq .Group $g}}
+        {{if eq .Kind "bool"}}
+        <label class="check"><input type="checkbox" name="{{.Col}}" value="1" {{if eq (index $p.Values .Col) "true"}}checked{{end}}> {{.Label}}</label>
+        {{else}}
+        <label>{{.Label}}<input name="{{.Col}}" value="{{index $p.Values .Col}}" {{if eq .Kind "text"}}maxlength="60"{{else}}inputmode="decimal"{{end}} required></label>
+        {{end}}
+      {{end}}{{end}}
+    </div>
+    {{end}}
+    <div class="inline"><button type="submit">Save {{$p.ID}}</button></div>
+  </form>
+  {{if and (eq $p.Orgs 0) (ne $p.ID "trial") (ne $p.ID "starter") (ne $p.ID "pro")}}
+  <form method="post" action="/operator/plans/{{$p.ID}}/delete" class="section inline" data-confirm="Delete the plan {{$p.ID}}?">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="danger" type="submit">Delete plan</button>
+  </form>
+  {{end}}
+</section>
+{{end}}
+
+<section class="pane" id="create" role="tabpanel" aria-label="New plan">
+  <div class="section">
+    <h2>New plan</h2>
+    <form method="post" action="/operator/plans" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="id" placeholder="plan ID, e.g. business" pattern="[a-z0-9][a-z0-9\-]{1,29}" required aria-label="Plan ID">
+      <label>copy of <select name="from">{{range .Plans}}<option value="{{.ID}}">{{.ID}}</option>{{end}}</select></label>
+      <button type="submit" class="arrow">Create</button>
+    </form>
+    <p class="small muted">The new plan starts with the limits and prices of the plan you copy; change them, then move organizations to it from the Organizations tab.</p>
+  </div>
+</section>
+{{end}}

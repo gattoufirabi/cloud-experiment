@@ -198,3 +198,21 @@ func (a *Agent) expirePreviews(ctx context.Context) {
 		a.poke()
 	}
 }
+
+// generateInvoices issues a past month's invoices when an operator asks from the admin
+// panel (organizations already invoiced for that month are skipped).
+func (a *Agent) generateInvoices(ctx context.Context, month string) {
+	if !a.isPrimary() {
+		return
+	}
+	m, err := time.Parse("2006-01", month)
+	if err != nil {
+		return
+	}
+	n, err := billing.Generate(ctx, a.pool, a.cfg, m)
+	if err != nil {
+		a.log.Warn("generate invoices", "month", month, "err", err)
+		return
+	}
+	a.log.Info("invoices issued on request", "month", month, "count", n)
+}

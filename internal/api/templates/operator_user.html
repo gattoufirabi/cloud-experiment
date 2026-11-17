@@ -3,6 +3,7 @@
 <div class="head"><h1>{{.U.Email}}</h1>
   {{if .U.Operator}}<span class="badge">operator</span>{{end}}
   {{if .U.Disabled}}<span class="error-text">disabled</span>{{else if .U.Locked}}<span class="error-text">locked out</span>{{end}}</div>
+{{template "opnav" .}}
 <p class="lede"><a href="/operator/users">Users</a> › {{.U.Name}} · created {{ago .U.Created}} · last sign-in {{with .U.LastLogin}}{{ago .}}{{else}}never{{end}}
   · two-step: {{if .U.TOTP}}authenticator app{{else if .U.SSOOnly}}single sign-on{{else}}not set up{{end}}{{if .U.Passkeys}} · {{.U.Passkeys}} passkey(s){{end}}</p>
 {{if .U.Disabled}}<p class="flash err">Disabled {{ago .U.Disabled}}{{with .U.DisabledReason}}: {{.}}{{end}}. The account cannot sign in; its organizations' API tokens keep working.</p>{{end}}
