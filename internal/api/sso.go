@@ -359,7 +359,7 @@ func (s *Server) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.startSession(w, r, userID, true); err != nil {
-		s.serverError(w, r, err)
+		s.sessionError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/o/"+orgSlug, http.StatusSeeOther)

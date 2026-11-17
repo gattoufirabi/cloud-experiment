@@ -1,0 +1,143 @@
+{{define "title"}}{{.U.Email}} · Users · Operator{{end}}
+{{define "content"}}
+<div class="head"><h1>{{.U.Email}}</h1>
+  {{if .U.Operator}}<span class="badge">operator</span>{{end}}
+  {{if .U.Disabled}}<span class="error-text">disabled</span>{{else if .U.Locked}}<span class="error-text">locked out</span>{{end}}</div>
+<p class="lede"><a href="/operator/users">Users</a> › {{.U.Name}} · created {{ago .U.Created}} · last sign-in {{with .U.LastLogin}}{{ago .}}{{else}}never{{end}}
+  · two-step: {{if .U.TOTP}}authenticator app{{else if .U.SSOOnly}}single sign-on{{else}}not set up{{end}}{{if .U.Passkeys}} · {{.U.Passkeys}} passkey(s){{end}}</p>
+{{if .U.Disabled}}<p class="flash err">Disabled {{ago .U.Disabled}}{{with .U.DisabledReason}}: {{.}}{{end}}. The account cannot sign in; its organizations' API tokens keep working.</p>{{end}}
+
+{{if .Link}}
+<div class="section panel" id="link">
+  <h2>Password reset link</h2>
+  <pre class="cmd wrap">{{.Link}}</pre>
+  <p class="small muted">Shown once. {{if .Mailed}}It was also emailed to {{.U.Email}}.{{else}}Send it to them privately, after checking who they are.{{end}} Valid 1 hour, works once.</p>
+</div>
+{{end}}
+
+<nav class="tabs" role="tablist" aria-label="User sections">
+  <a role="tab" href="#access">Access</a>
+  <a role="tab" href="#orgs">Organizations <span class="count">{{len .Memberships}}</span></a>
+  <a role="tab" href="#profile">Profile</a>
+  <a role="tab" href="#activity">Activity</a>
+  <a role="tab" href="#danger">Delete</a>
+</nav>
+
+<section class="pane" id="access" role="tabpanel" aria-label="Access">
+  <div class="section">
+    <h2>Sessions <span class="count">{{len .Sessions}}</span></h2>
+    {{if .Sessions}}
+    <table class="resources">
+      <thead><tr><th>Address</th><th>Two-step done</th><th>Started</th><th>Last seen</th></tr></thead>
+      <tbody>{{range .Sessions}}<tr><td>{{.IP}}</td><td>{{if .TOTPOK}}yes{{else}}no{{end}}</td><td class="nowrap">{{ago .Created}}</td><td class="nowrap">{{ago .LastSeen}}</td></tr>{{end}}</tbody>
+    </table>
+    {{else}}<p class="small muted">Not signed in anywhere.</p>{{end}}
+  </div>
+  <div class="section">
+    <h2>Actions</h2>
+    <div class="stack">
+      {{if not .Self}}
+      {{if .U.Disabled}}
+      <form method="post" action="/operator/users/{{.U.ID}}/disable" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="on" value="0"><button type="submit">Enable the account</button></form>
+      {{else}}
+      <form method="post" action="/operator/users/{{.U.ID}}/disable" class="inline" data-confirm="Disable {{.U.Email}}? They are signed out at once.">
+        <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="on" value="1">
+        <input name="reason" maxlength="200" placeholder="reason (kept in the audit log)" aria-label="Reason">
+        <button class="danger" type="submit">Disable the account</button></form>
+      {{end}}
+      <form method="post" action="/operator/users/{{.U.ID}}/signout" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Sign out everywhere</button></form>
+      {{end}}
+      {{if .U.Locked}}<form method="post" action="/operator/users/{{.U.ID}}/unlock" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Unlock (too many failed sign-ins)</button></form>{{end}}
+      <form method="post" action="/operator/users/{{.U.ID}}/reset-password" class="inline">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <label class="check"><input type="checkbox" name="send_email" value="1" {{if .Mail}}checked{{else}}disabled{{end}}> email it</label>
+        <button type="submit">Create a password reset link</button></form>
+      {{if not .Self}}
+      <form method="post" action="/operator/users/{{.U.ID}}/reset-2fa" class="inline" data-confirm="Reset two-step login of {{.U.Email}}? Check their identity first.">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <label class="check"><input type="checkbox" name="passkeys" value="1"> also remove passkeys</label>
+        <button type="submit">Reset two-step login</button></form>
+      {{end}}
+      {{if .U.Operator}}{{if not .Self}}
+      <form method="post" action="/operator/users/{{.U.ID}}/operator" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="on" value="0"><button type="submit">Revoke operator rights</button></form>
+      {{end}}{{else}}
+      <form method="post" action="/operator/users/{{.U.ID}}/operator" class="inline" data-confirm="Make {{.U.Email}} an operator of the whole platform?"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="on" value="1"><button type="submit">Make operator</button></form>
+      {{end}}
+    </div>
+    {{if .Self}}<p class="small muted">This is your own account: disabling, signing out, resetting two-step login, revoking your rights and deleting are done by another operator.</p>{{end}}
+  </div>
+</section>
+
+<section class="pane" id="orgs" role="tabpanel" aria-label="Organizations">
+  <div class="section">
+    {{if .Memberships}}
+    <table class="resources">
+      <thead><tr><th>Organization</th><th>Role</th><th>Since</th><th></th></tr></thead>
+      <tbody>
+      {{range .Memberships}}
+        <tr><td><a href="/operator/orgs/{{.OrgSlug}}">{{.OrgSlug}}</a> <span class="small muted">{{.OrgName}}</span></td>
+          <td><form method="post" action="/operator/users/{{$.U.ID}}/membership" class="inline flush">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="org" value="{{.OrgSlug}}"><input type="hidden" name="action" value="role">
+            <select name="role" aria-label="Role in {{.OrgSlug}}">{{$r := .Role}}{{range $x := $.Roles}}<option value="{{$x}}" {{if eq $x $r}}selected{{end}}>{{$x}}</option>{{end}}</select>
+            <button class="link" type="submit">save</button></form></td>
+          <td class="nowrap">{{ago .Created}}</td>
+          <td><form method="post" action="/operator/users/{{$.U.ID}}/membership" class="inline flush" data-confirm="Remove {{$.U.Email}} from {{.OrgSlug}}?">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="org" value="{{.OrgSlug}}"><input type="hidden" name="action" value="remove">
+            <button class="link" type="submit">remove</button></form></td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="small muted">Not a member of any organization.</p>{{end}}
+  </div>
+  {{if .OtherOrgs}}
+  <div class="section">
+    <h2>Add to an organization</h2>
+    <form method="post" action="/operator/users/{{.U.ID}}/membership" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="add">
+      <select name="org" aria-label="Organization">{{range .OtherOrgs}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+      <select name="role" aria-label="Role"><option value="owner">owner</option><option value="admin">admin</option><option value="developer" selected>developer</option><option value="viewer">viewer</option></select>
+      <button type="submit">Add</button>
+    </form>
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="profile" role="tabpanel" aria-label="Profile">
+  <div class="section">
+    <form method="post" action="/operator/users/{{.U.ID}}/profile" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Name<input name="name" value="{{.U.Name}}" maxlength="100" required></label>
+      <label>Email <span class="hint">the address they sign in with</span><input type="email" name="email" value="{{.U.Email}}" maxlength="254" required></label>
+      <div class="inline"><button type="submit">Save</button></div>
+    </form>
+  </div>
+</section>
+
+<section class="pane" id="activity" role="tabpanel" aria-label="Activity">
+  <div class="section">
+    {{if .Events}}
+    <div class="scroll-x">
+    <table class="resources">
+      <thead><tr><th>When</th><th>Organization</th><th>Action</th><th>Target</th><th>Address</th></tr></thead>
+      <tbody>{{range .Events}}<tr><td class="nowrap">{{ago .At}}</td><td>{{.OrgSlug}}</td><td><code>{{.Action}}</code></td><td class="small">{{.Target}}</td><td class="small">{{.IP}}</td></tr>{{end}}</tbody>
+    </table>
+    </div>
+    <p class="small muted">The last 100 events made by or about this account.</p>
+    {{else}}<p class="small muted">No activity recorded.</p>{{end}}
+  </div>
+</section>
+
+<section class="pane" id="danger" role="tabpanel" aria-label="Delete">
+  <div class="section">
+    <h2>Delete the account</h2>
+    {{if .Self}}<p class="small muted">Another operator can delete your account.</p>{{else}}
+    <p class="small muted">Removes the account, its sessions, passkeys and memberships. Refused while it is the only owner of an organization. The audit log keeps its past actions.</p>
+    <form method="post" action="/operator/users/{{.U.ID}}/delete" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="confirm" placeholder="type {{.U.Email}} to confirm" required aria-label="Confirm email">
+      <button class="danger" type="submit">Delete account</button>
+    </form>
+    {{end}}
+  </div>
+</section>
+{{end}}

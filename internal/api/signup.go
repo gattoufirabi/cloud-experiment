@@ -321,7 +321,7 @@ func (s *Server) signupVerifySubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.startSession(w, r, userID, false); err != nil {
-		s.serverError(w, r, err)
+		s.sessionError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/totp/setup", http.StatusSeeOther)

@@ -231,6 +231,19 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /operator/nodes/{id}/drain", s.operatorOnly(s.operatorDrainNode))
 	m.HandleFunc("POST /operator/orgs/{slug}/cluster", s.operatorOnly(s.operatorOrgCluster))
 	m.HandleFunc("GET /operator/orgs/{slug}", s.operatorOnly(s.operatorOrgPage))
+	m.HandleFunc("GET /operator/users", s.operatorOnly(s.operatorUsersPage))
+	m.HandleFunc("POST /operator/users", s.operatorOnly(s.operatorCreateUser))
+	m.HandleFunc("POST /operator/invites/{id}/revoke", s.operatorOnly(s.operatorRevokeInvite))
+	m.HandleFunc("GET /operator/users/{id}", s.operatorOnly(s.operatorUserPage))
+	m.HandleFunc("POST /operator/users/{id}/disable", s.operatorOnly(s.operatorUserDisable))
+	m.HandleFunc("POST /operator/users/{id}/signout", s.operatorOnly(s.operatorUserSignout))
+	m.HandleFunc("POST /operator/users/{id}/unlock", s.operatorOnly(s.operatorUserUnlock))
+	m.HandleFunc("POST /operator/users/{id}/reset-password", s.operatorOnly(s.operatorUserResetPassword))
+	m.HandleFunc("POST /operator/users/{id}/reset-2fa", s.operatorOnly(s.operatorUserReset2FA))
+	m.HandleFunc("POST /operator/users/{id}/profile", s.operatorOnly(s.operatorUserProfile))
+	m.HandleFunc("POST /operator/users/{id}/operator", s.operatorOnly(s.operatorUserOperator))
+	m.HandleFunc("POST /operator/users/{id}/membership", s.operatorOnly(s.operatorUserMembership))
+	m.HandleFunc("POST /operator/users/{id}/delete", s.operatorOnly(s.operatorUserDelete))
 	m.HandleFunc("GET /o/{org}/billing", s.auth(authFull, s.billingPage))
 	m.HandleFunc("POST /o/{org}/billing/details", s.auth(authFull, s.billingDetails))
 	m.HandleFunc("GET /o/{org}/invoices/{number}", s.auth(authFull, s.invoicePage))
@@ -398,7 +411,7 @@ func (s *Server) loadSession(r *http.Request) *session {
 	err = s.pool.QueryRow(r.Context(), `
 		UPDATE sessions se SET last_seen = now()
 		FROM users u
-		WHERE se.token_hash = $1 AND u.id = se.user_id
+		WHERE se.token_hash = $1 AND u.id = se.user_id AND u.disabled_at IS NULL
 		  AND se.expires_at > now() AND se.last_seen > now() - interval '2 hours'
 		RETURNING se.user_id, u.email, u.name, se.csrf, se.totp_ok, u.totp_enabled, u.is_operator`, sess.TokenHash).
 		Scan(&sess.UserID, &sess.Email, &sess.Name, &sess.CSRF, &sess.TOTPOK, &sess.TOTPEnabled, &sess.IsOperator)
@@ -453,18 +466,34 @@ func (s *Server) validCSRF(r *http.Request, sess *session) bool {
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID string, totpOK bool) error {
 	token := secure.NewToken()
-	_, err := s.pool.Exec(r.Context(), `
+	// A disabled account gets no session, whatever the way it signed in.
+	tag, err := s.pool.Exec(r.Context(), `
 		INSERT INTO sessions (token_hash, user_id, csrf, totp_ok, ip, expires_at)
-		VALUES ($1, $2, $3, $4, $5, now() + interval '12 hours')`,
+		SELECT $1, id, $3, $4, $5, now() + interval '12 hours' FROM users WHERE id = $2 AND disabled_at IS NULL`,
 		secure.HashToken(token), userID, secure.NewToken(), totpOK, clientIP(r))
 	if err != nil {
 		return err
 	}
+	if tag.RowsAffected() == 0 {
+		return errAccountDisabled
+	}
+	_, _ = s.pool.Exec(r.Context(), `UPDATE users SET last_login_at = now() WHERE id = $1`, userID)
 	http.SetCookie(w, &http.Cookie{
 		Name: s.cookieName(), Value: token, Path: "/", MaxAge: 12 * 3600,
 		HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteLaxMode,
 	})
 	return nil
+}
+
+var errAccountDisabled = errors.New("account disabled")
+
+// sessionError answers a failed startSession: a clear message for a disabled account.
+func (s *Server) sessionError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errAccountDisabled) {
+		s.render(w, r, "login", http.StatusForbidden, data{"Err": "This account is disabled. Contact the platform's support."})
+		return
+	}
+	s.serverError(w, r, err)
 }
 
 func (s *Server) clearCookie(w http.ResponseWriter) {

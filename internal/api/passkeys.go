@@ -341,6 +341,10 @@ func (s *Server) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.startSession(w, r, userID, true); err != nil {
+		if errors.Is(err, errAccountDisabled) {
+			apiError(w, http.StatusForbidden, "this account is disabled")
+			return
+		}
 		apiError(w, http.StatusInternalServerError, "internal error")
 		return
 	}

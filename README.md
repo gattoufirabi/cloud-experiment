@@ -54,13 +54,14 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Email alert channel**, trial reminder email, build minutes on invoices, dark mode | done, tested |
 | **Several servers (Phase 4)**: worker nodes join over WireGuard (`node-bundle.sh` + `deploy.sh --worker`), projects placed by free memory and cluster, cordon/drain, apps routed by the primary's proxy | done, tested with two nodes on one machine; **not yet on two real servers** |
 | **Operator visibility**: live node health (CPU, memory, disk, platform services), per-organization usage and resources, never secrets, env values, logs or data | done, tested |
+| **Operator user management** (`/operator/users`): search and filter accounts, invite into existing or new organizations, disable/enable, sign out everywhere, unlock, password reset links, two-step reset, profile edit, memberships and roles, operator rights, delete; all audited, never the operator setting a password | done, tested |
 | **Built-in docs** at `/docs/user` and `/docs/admin` (public, filled with this installation's addresses), linked from the header, the login page and a help link on every console tab | done |
 | Console design: sidebar pane + tabs, monochrome style | done |
 | **Alerts**: service down/recovered, CPU and memory thresholds, failed deploys and backups, critical CVEs in running images; ntfy push and signed webhooks per organization | done, tested |
 | gVisor sandbox for tenant containers | done, verified on a Debian 12 server (Phase 0 gate) |
 | Host firewall for tenant networks, isolation test (Phase 0 gate) | done, gate PASSED on a real server via `host/deploy.sh` |
 
-The end-to-end test (`scripts/e2e-dev.sh`) runs 630 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds, self-signup, the operator console and a second node (placement, proxying, zero-downtime drain). Unit tests: `go test ./...` (outbound request guard).
+The end-to-end test (`scripts/e2e-dev.sh`) runs 655 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds, self-signup, the operator console and a second node (placement, proxying, zero-downtime drain). Unit tests: `go test ./...` (outbound request guard).
 
 **Not built yet** (next phases in ARCHITECTURE.md): multi-node: moving projects with persistent data automatically, control plane on two nodes (database replica); hard filesystem disk quotas (XFS project quotas).
 

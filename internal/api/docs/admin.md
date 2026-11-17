@@ -88,9 +88,13 @@ Operators can manage the platform from the browser at `/operator`: a live overvi
 
 - **Nodes:** each server's CPU load, memory, disk, containers, versions, the health of every platform service, the projects and resources placed on it; cordon, drain, set its cluster.
 - **Usage:** every organization's allocated and measured CPU and memory, CPU- and memory-hours, network out, build minutes and disk this month. Each organization's page lists its services, databases, domains and incidents (titles) with the node they run on.
+- **Users** (`/operator/users`): every account with its organizations, two-step login, status and last sign-in; search and filter (operators, disabled, locked out, without two-step login).
+  - **Invite a user** into an existing organization with a role, or into a new organization they will own (with its plan). The person gets a one-time link (shown once, and emailed when a mail server is configured) and chooses their own password; someone who already has an account is added at once. Pending invitations can be revoked.
+  - On a user's page: **disable** (signed out at once, cannot sign in by any means; the reason is kept) and enable, **sign out everywhere**, **unlock** after too many failed sign-ins, create a **password reset link**, **reset two-step login** (optionally removing passkeys), edit the name and sign-in email, add to an organization, change a role or remove a membership (an organization always keeps one owner), grant or revoke **operator** rights (operators need two-step login), and **delete** an account that is not the only owner of an organization. The Activity tab lists the last 100 events made by or about the account.
+  - An operator cannot disable, sign out, reset or delete their own account, nor revoke their own rights: another operator does it.
 - **No intrusion:** operator pages never show secrets, environment values, log lines or stored data, and operators cannot act inside a client's applications. Opening an organization's page is itself recorded in the audit log.
 - Give access with `make-operator --email person@example.com` (remove it with `--undo`). The person needs an account first and a full two-step login session; everyone else gets "not found".
-- Every change made here is audited under the operator's name. Rarer tasks (invites, prices, password and two-step resets, invoices by month) stay on the command line below.
+- Every change made here is audited under the operator's name. Rarer tasks (prices, invoices by month) stay on the command line below.
 
 ## Operator commands
 

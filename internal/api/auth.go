@@ -64,7 +64,7 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.startSession(w, r, id, false); err != nil {
-		s.serverError(w, r, err)
+		s.sessionError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/totp/verify", http.StatusSeeOther)
@@ -209,7 +209,7 @@ func (s *Server) checkTOTP(w http.ResponseWriter, r *http.Request, enrolling boo
 		return
 	}
 	if err := s.startSession(w, r, sess.UserID, true); err != nil {
-		s.serverError(w, r, err)
+		s.sessionError(w, r, err)
 		return
 	}
 	action := "login.success"
@@ -325,7 +325,7 @@ func (s *Server) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.startSession(w, r, userID, false); err != nil {
-		s.serverError(w, r, err)
+		s.sessionError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)

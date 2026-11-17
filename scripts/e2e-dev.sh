@@ -1284,6 +1284,40 @@ if echo "$APAGE" | grep -q "tenant-a-secret\|GREETING=hello\|API_KEY"; then bad 
 check "measured CPU and memory recorded per service" "$(owner_sql "SELECT count(*) > 0 FROM service_stats st JOIN orgs o ON o.id = st.org_id WHERE o.slug = '$A' AND st.mem_mb > 0")" t
 check "operator visits audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'operator.viewed_org'")" t
 
+section "Operator: user management"
+check "[B] the users page is hidden from non-operators (404)" "$(code_of jb "$BASE/operator/users")" 404
+check "the users page finds an account by email" "$(c ja "$BASE/operator/users?q=owner@$B.test" | grep -c "owner@$B.test" | sed 's/^[1-9][0-9]*$/yes/')" yes
+NEWU="newbie-$RUN@example.test"; NEWO="nw$RUN"
+UPAGE=$(c ja -X POST "$BASE/operator/users" -d csrf=$OPCSRF --data-urlencode "email=$NEWU" -d org_mode=new -d "new_slug=$NEWO" -d "new_name=Newbie $RUN" -d plan=starter)
+ULINK=$(grep -o "$BASE/invite/[A-Za-z0-9_-]*" <<<"$UPAGE" | head -1)
+check "invitation into a new organization: link shown once" "$([ -n "$ULINK" ] && echo yes)" yes
+check "the organization was created on the chosen plan with an owner invitation" "$(owner_sql "SELECT o.plan_id || ':' || i.role FROM orgs o JOIN invites i ON i.org_id = o.id WHERE o.slug = '$NEWO' AND i.email = '$NEWU'")" "starter:owner"
+check "the invitation is pending in the list" "$(c ja "$BASE/operator/users" | grep -c "$NEWU" | sed 's/^[1-9][0-9]*$/yes/')" yes
+check "the invitation link opens" "$(code_of jx "$ULINK")" 200
+UB=$(owner_sql "SELECT id FROM users WHERE email = 'owner@$B.test'")
+check "an existing account is added to the organization directly" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/operator/users" -d csrf=$OPCSRF --data-urlencode "email=owner@$B.test" -d org_mode=existing -d "org_slug=$NEWO" -d role=viewer | grep -c "/operator/users/$UB"):$(owner_sql "SELECT m.role FROM memberships m JOIN orgs o ON o.id = m.org_id WHERE o.slug = '$NEWO' AND m.user_id = '$UB'")" "1:viewer"
+check "the user page lists memberships and activity" "$(c ja "$BASE/operator/users/$UB" | grep -o -e "/operator/orgs/$B\"" -e "/operator/orgs/$NEWO\"" -e 'member.added_by_operator' | sort -u | wc -l | tr -d ' ')" 3
+code_of ja -X POST "$BASE/operator/users/$UB/membership" -d csrf=$OPCSRF -d "org=$NEWO" -d action=role -d role=developer >/dev/null
+check "operator changes the role" "$(owner_sql "SELECT m.role FROM memberships m JOIN orgs o ON o.id = m.org_id WHERE o.slug = '$NEWO' AND m.user_id = '$UB'")" developer
+check "the only owner cannot be removed" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/operator/users/$UB/membership" -d csrf=$OPCSRF -d "org=$B" -d action=remove | grep -c 'only+owner')" 1
+code_of ja -X POST "$BASE/operator/users/$UB/membership" -d csrf=$OPCSRF -d "org=$NEWO" -d action=remove >/dev/null
+check "operator removes the membership" "$(owner_sql "SELECT count(*) FROM memberships m JOIN orgs o ON o.id = m.org_id WHERE o.slug = '$NEWO' AND m.user_id = '$UB'")" 0
+code_of ja -X POST "$BASE/operator/users/$UB/disable" -d csrf=$OPCSRF -d on=1 -d "reason=e2e check" >/dev/null
+check "a disabled account is signed out at once" "$(code_of jb "$BASE/o/$B")" 303
+check "and cannot sign in, even with the right password" "$(c jdis -o /dev/null -w '%{http_code}' -X POST "$BASE/login" --data-urlencode "email=owner@$B.test" --data-urlencode "password=correct-horse-battery-$B")" 403
+code_of ja -X POST "$BASE/operator/users/$UB/disable" -d csrf=$OPCSRF -d on=0 >/dev/null
+check "enabled again: the password works" "$(c jdis -o /dev/null -w '%{redirect_url}' -X POST "$BASE/login" --data-urlencode "email=owner@$B.test" --data-urlencode "password=correct-horse-battery-$B")" "$BASE/totp/verify"
+check "password reset link created by the operator" "$(c ja -X POST "$BASE/operator/users/$UB/reset-password" -d csrf=$OPCSRF | grep -c "$BASE/password/reset/" | sed 's/^[1-9][0-9]*$/yes/')" yes
+check "two-step login reset" "$(code_of ja -X POST "$BASE/operator/users/$UB/reset-2fa" -d csrf=$OPCSRF):$(owner_sql "SELECT totp_enabled FROM users WHERE id = '$UB'")" "303:f"
+UA=$(owner_sql "SELECT id FROM users WHERE email = 'owner@$A.test'")
+check "an operator cannot disable their own account" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/operator/users/$UA/disable" -d csrf=$OPCSRF -d on=1 | grep -c 'own+account'):$(owner_sql "SELECT disabled_at IS NULL FROM users WHERE id = '$UA'")" "1:t"
+check "operator rights need two-step login" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/operator/users/$UB/operator" -d csrf=$OPCSRF -d on=1 | grep -c 'two-step'):$(owner_sql "SELECT is_operator FROM users WHERE id = '$UB'")" "1:f"
+check "user management actions audited" "$(owner_sql "SELECT count(DISTINCT action) FROM audit_events WHERE target = 'user:$UB' AND action IN ('user.disabled', 'user.enabled', 'user.password_reset_by_operator', 'totp.reset_by_operator', 'member.role_changed_by_operator')")" 5
+code_of ja -X POST "$BASE/operator/users/$UB/profile" -d csrf=$OPCSRF -d "name=Owner of $B" --data-urlencode "email=owner@$A.test" >/dev/null
+check "an email already in use is refused" "$(owner_sql "SELECT email FROM users WHERE id = '$UB'")" "owner@$B.test"
+NEWUID=$(owner_sql "INSERT INTO users (email, name, password_hash) VALUES ('gone-$RUN@example.test', 'Gone', 'x') RETURNING id")
+check "operator deletes an account" "$(code_of ja -X POST "$BASE/operator/users/$NEWUID/delete" -d csrf=$OPCSRF -d "confirm=gone-$RUN@example.test"):$(owner_sql "SELECT count(*) FROM users WHERE id = '$NEWUID'")" "303:0"
+
 section "Several servers (a second node on the same machine)"
 docker compose -f compose.dev.yml --profile multinode up -d agent2 >/dev/null 2>&1
 for _ in $(seq 1 40); do [ "$(owner_sql "SELECT count(*) FROM nodes WHERE id = 'node-2' AND last_seen > now() - interval '1 minute'")" = 1 ] && break; sleep 2; done
