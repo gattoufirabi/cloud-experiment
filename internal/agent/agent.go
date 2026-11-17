@@ -54,6 +54,8 @@ type Agent struct {
 	diskWake    chan struct{}
 	jobWake     chan struct{}
 	storageWake chan struct{}
+	fnWake      chan struct{}
+	fn          *fnState
 	alertHTTP   *http.Client
 	probeFails  map[string]int
 	attached    map[string]bool // project networks the proxy and agent are known to be on
@@ -126,6 +128,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 		diskWake:    make(chan struct{}, 1),
 		jobWake:     make(chan struct{}, 1),
 		storageWake: make(chan struct{}, 1),
+		fnWake:      make(chan struct{}, 1),
+		fn:          newFnState(),
 		alertHTTP:   newAlertHTTP(cfg.AlertAllowPrivate),
 		probeFails:  map[string]int{},
 		attached:    map[string]bool{},
@@ -156,6 +160,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.nodeLoop(ctx)
 	go a.jobLoop(ctx)
 	go a.storageLoop(ctx)
+	go a.fnLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)
@@ -202,6 +207,8 @@ func (a *Agent) listen(ctx context.Context) {
 							a.pokeDisk()
 						case "storage":
 							a.pokeStorage()
+						case "fn":
+							a.pokeFn()
 						default:
 							a.poke()
 						}

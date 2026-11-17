@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"platform/internal/functions"
 	"platform/internal/garage"
 	"platform/internal/model"
 )
@@ -148,6 +149,46 @@ func TestStoragePagesRender(t *testing.T) {
 	for _, want := range []string{"key=docs%2fa%20b.txt", "prefix=docs%2fsub%2f", "2.0 KB", "https://acme-uploads.web.apps.test/", "shop/web", "Delete bucket"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("bucket page lacks %q", want)
+		}
+	}
+}
+
+// The functions list and the function page (code, test result, configuration, monitor) render.
+func TestFunctionPagesRender(t *testing.T) {
+	pages, err := parseTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	org, proj := &orgInfo{Slug: "acme", Name: "Acme", Role: "owner"}, &projectInfo{Slug: "shop", Name: "Shop"}
+	var b strings.Builder
+	if err := pages["functions"].ExecuteTemplate(&b, "content", data{"Org": org, "CanEdit": true, "Runtimes": functions.Runtimes,
+		"Projects":  []projectOption{{"shop", "Shop"}},
+		"Functions": []functionRow{{Project: "shop", ProjectName: "Shop", Slug: "resize", Runtime: "nodejs22", MemoryMB: 128, URLEnabled: true, Invocations: 3, Errors: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"/o/acme/p/shop/f/resize", "Node.js 22", `value="python3.13"`} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("functions page lacks %q", want)
+		}
+	}
+	b.Reset()
+	dur := 12
+	f := &functionInfo{Slug: "resize", Runtime: "nodejs22", Handler: "index.handler", MemoryMB: 256, TimeoutSeconds: 10, Concurrency: 5,
+		Env: map[string]string{"A": "1"}, URLEnabled: true, URLAuth: "token", HasToken: true, Schedule: "0 3 * * *"}
+	inv := &invocation{ID: "abc", Status: "failed", ErrorType: "TypeError", Error: "boom", Log: "line", DurationMS: &dur, Cold: true,
+		Response: []byte(`{"ok":false,"errorType":"TypeError"}`)}
+	if err := pages["function"].ExecuteTemplate(&b, "content", data{"Org": org, "Project": proj, "Function": f, "Path": "/o/acme/p/shop/f/resize",
+		"MainFile": "index.mjs", "Source": "export const handler = 1", "Files": []string{"index.mjs", "lib.mjs"}, "Editable": true, "CodeSize": 900,
+		"URL": "https://resize-shop-acme.fn.apps.test/", "CanEdit": true, "TestEvent": "{}", "TestResult": inv, "NewToken": "fnt_x",
+		"Invocations": []invocation{*inv}, "Stats": struct {
+			Count, Errors, Cold int
+			AvgMS               *float64
+		}{3, 1, 1, nil}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"export const handler = 1", "TypeError", "cold start", "fnt_x", "A=1", "resize-shop-acme.fn.apps.test", `value="256" selected`, "lib.mjs"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("function page lacks %q", want)
 		}
 	}
 }

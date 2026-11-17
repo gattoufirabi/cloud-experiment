@@ -219,6 +219,28 @@ Managed PostgreSQL, MySQL, MariaDB and Redis run next to your services, on the p
 - **Redis memory:** Redis uses at most 80% of the memory you give it and then refuses new writes instead of evicting keys, so size it for your data.
 - **Plans:** Starter includes 1 managed database, Pro includes 5 (all engines together).
 
+## Functions
+
+Functions run your code on demand, without a server to keep running, like AWS Lambda: code you write for Lambda runs here unchanged. Open **Functions** in the Services menu.
+
+1. **Create a function** (developers): choose a project, a name such as `resize-image` and a runtime: **Node.js 22** or **Python 3.13**. It starts with a working example.
+2. **Write the code** on the **Code** tab and click **Deploy**, or upload a **zip archive** with your files and dependencies (`node_modules`, Python packages), up to 10 MB zipped and 50 MB unzipped. The handler is `file.function`: `index.handler` for `export const handler = async (event, context) => { … }` in `index.mjs` (or `exports.handler` in `index.js`), `lambda_function.lambda_handler` for `def lambda_handler(event, context):` in `lambda_function.py`.
+3. **Test it** on the **Test** tab with a JSON event: you see the result, everything the function printed, the duration and whether it was a cold start.
+
+Ways to call a function:
+
+- **Function URL** (Configuration tab): an HTTPS endpoint, `https://<function>-<project>-<organization>.fn.{{apps}}/`. Requests and responses use the AWS Lambda function URL format (payload 2.0): the event has `rawPath`, `rawQueryString`, `headers`, `queryStringParameters`, `cookies`, `requestContext.http.method` and `body` (base64 for binary bodies, `isBase64Encoded` tells); return `{"statusCode": 200, "headers": {…}, "body": "…"}`, or any other value to answer it as JSON. Choose **anyone** (public) or **callers with the token** (sent in the `X-Function-Token` header; create it on the same tab).
+- **Schedule**: a cron expression in UTC (at most once a minute); the event is a "Scheduled Event" with the time.
+- **API and CLI**: `platformctl fn invoke shop/resize-image --event '{"key": "a.jpg"}'`, or `POST /api/v1/projects/{project}/functions/{fn}/invoke` with the event as the body; add `X-Invocation-Type: Event` to queue it without waiting.
+
+How it runs:
+
+- Each function runs in a sandbox on its project's private network: it reaches the project's databases (use their connection URLs as variables) and your buckets. **Environment variables** are set on the Configuration tab (`NAME=value`, one per line); shared project variables are added too.
+- **Memory** 128 to 2048 MB (CPU grows with memory), **timeout** 1 to 300 seconds, **concurrency** 1 to 50 invocations at the same time; beyond four times the concurrency waiting, calls are refused (HTTP 429), as when AWS Lambda throttles.
+- The first call after a while starts a fresh sandbox (a **cold start**, about a second; the very first call of a runtime also downloads it). The sandbox then stays warm for 10 minutes after the last call: warm calls take a few milliseconds. Do not keep state in memory between calls; use a database or a bucket.
+- Events and responses are limited to 6 MB. Invocations, their logs and errors are kept 7 days (**Monitor** tab; `platformctl fn logs`).
+- **Billing:** per million requests and per GB-second (memory × run time), at your plan's prices.
+
 ## Object storage
 
 S3-compatible buckets for files, uploads, backups and static websites, on the organization's **Storage** page. Any S3 tool works: the AWS CLI and SDKs, rclone, Cyberduck, restic.
@@ -394,6 +416,11 @@ platformctl deploy shop/web --image {{registry}}/<organization>/web:1.4.2 --wait
 | `platformctl job list <project>/<service>` | Lists the service's scheduled jobs, their last run and next run. |
 | `platformctl job run <project>/<service> JOB [--wait]` | Runs a job now; `--wait` prints its output and exits with an error if it fails. |
 | `platformctl job logs <project>/<service> JOB` | Prints the output of the job's last run. |
+| `platformctl fn list <project>` | Lists the project's functions. |
+| `platformctl fn deploy <project>/<fn> --file index.mjs` (or `--zip code.zip`, `--runtime`, `--handler`) | Creates or updates a function. |
+| `platformctl fn invoke <project>/<fn> [--event JSON\|-] [--async]` | Runs it, prints its log on standard error and its result on standard output; exits with an error if the function failed. |
+| `platformctl fn logs <project>/<fn>` | Recent invocations with status, duration and log. |
+| `platformctl fn delete <project>/<fn>` | Deletes a function. |
 | `platformctl bucket list` | Lists buckets with their usage, the S3 endpoint and region. |
 | `platformctl bucket create NAME [--quota MB]` | Creates bucket `<organization>-NAME`. |
 | `platformctl bucket delete NAME` | Deletes a bucket and all its objects (admin token). |
@@ -425,6 +452,11 @@ The same operations are available over HTTP with `Authorization: Bearer <token>`
 | `DELETE /api/v1/projects/{project}/services/{service}/jobs/{job}` | developer |
 | `POST /api/v1/projects/{project}/services/{service}/jobs/{job}/run` | developer |
 | `GET /api/v1/projects/{project}/services/{service}/jobs/{job}/runs` and `…/runs/{id}` (with the log) | viewer |
+| `GET /api/v1/projects/{project}/functions` | viewer |
+| `PUT /api/v1/projects/{project}/functions/{fn}` with `{"runtime": "nodejs22", "code": "…"}` or `{"zip_base64": "…"}`, and `handler`, `memory_mb`, `timeout_seconds`, `concurrency`, `env`, `url_enabled`, `url_auth`, `schedule`, `schedule_enabled` | developer |
+| `POST /api/v1/projects/{project}/functions/{fn}/invoke` with the event as the body (`X-Invocation-Type: Event` for asynchronous, `X-Log-Type: Tail` for the log in `X-Platform-Log-Result`) | developer |
+| `GET /api/v1/projects/{project}/functions/{fn}/invocations` | viewer |
+| `DELETE /api/v1/projects/{project}/functions/{fn}` | developer |
 | `GET /api/v1/buckets` | viewer |
 | `POST /api/v1/buckets` with `{"name": "uploads", "quota_mb": 1024}` | developer |
 | `DELETE /api/v1/buckets/{name}` | admin |
@@ -451,6 +483,7 @@ Admins and owners find **Billing** in the organization's tabs.
 - **Billing details:** the company name, address and tax ID printed on your invoices. Changes apply to the next invoices, not to ones already issued.
 - **Builds from git** are billed per build minute (shown on the Billing page with your plan's price).
 - **Object storage** is billed per GB-month of data stored in your buckets (measured every hour).
+- **Functions** are billed per million requests and per GB-second (memory × run time of each invocation).
 - **Paying:** follow the payment instructions you received from the platform operator; an invoice shows **paid** once the operator has recorded your payment.
 
 ## Team members and roles

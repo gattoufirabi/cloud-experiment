@@ -1,0 +1,142 @@
+{{define "title"}}{{.Function.Slug}} · Functions · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>{{.Function.Slug}}</h1><span class="badge">{{.Function.RuntimeName}}</span></div>
+<p class="lede">{{.Function.MemoryMB}} MB · timeout {{.Function.TimeoutSeconds}} s · up to {{.Function.Concurrency}} at once · handler <code>{{.Function.Handler}}</code></p>
+
+{{with .NewToken}}
+<div class="panel strong">
+  <h2>Function URL token</h2>
+  <p class="small">Copy it now: it will not be shown again. Callers send it in the <code>X-Function-Token</code> header.</p>
+  <code class="select wrap">{{.}}</code>
+</div>
+{{end}}
+
+<nav class="tabs" role="tablist" aria-label="Function sections" data-default="{{.Tab}}">
+  <a role="tab" href="#code">Code</a>
+  <a role="tab" href="#test">Test</a>
+  <a role="tab" href="#configuration">Configuration</a>
+  <a role="tab" href="#monitor">Monitor</a>
+</nav>
+
+<section class="pane" id="code" role="tabpanel" aria-label="Code">
+  <p class="help"><a href="/docs/user#functions" target="_blank" rel="noopener">Guide: functions ↗</a></p>
+  <div class="section">
+    <div class="table-tools"><h2><code>{{.MainFile}}</code></h2><span class="muted small">{{len .Files}} file{{if ne (len .Files) 1}}s{{end}} · {{bytes (int64 .CodeSize)}} zipped</span></div>
+    {{if .Editable}}
+    <form method="post" action="{{.Path}}/code">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <textarea name="code" class="code-editor" rows="22" spellcheck="false" aria-label="Source of {{.MainFile}}" {{if not .CanEdit}}readonly{{end}}>{{.Source}}</textarea>
+      {{if .CanEdit}}<div class="inline"><button type="submit">Deploy</button><span class="small muted">Saved code runs on the next invocation.</span></div>{{end}}
+    </form>
+    {{else}}<p class="small muted">The handler's file is too large or not text to edit here. Upload a new archive below.</p>{{end}}
+    {{if gt (len .Files) 1}}<details><summary class="small">All files</summary><ul class="small">{{range .Files}}<li><code>{{.}}</code></li>{{end}}</ul></details>{{end}}
+  </div>
+  {{if .CanEdit}}
+  <div class="section">
+    <h2>Upload a zip archive</h2>
+    <p class="small muted">Replaces all the code: your files and their dependencies (for example <code>node_modules</code> or Python packages), up to 10 MB zipped and 50 MB unzipped. The handler's file must be at the top level, or match the handler path.</p>
+    <form method="post" action="{{.Path}}/code" enctype="multipart/form-data" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="file" name="zip" accept=".zip,application/zip" required aria-label="Code archive">
+      <button type="submit" class="secondary">Upload and deploy</button>
+    </form>
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="test" role="tabpanel" aria-label="Test">
+  <div class="section">
+    <h2>Test event</h2>
+    {{with .TestError}}<p class="flash err">{{.}}</p>{{end}}
+    <form method="post" action="{{.Path}}/test">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <textarea name="event" class="code-editor" rows="8" spellcheck="false" aria-label="Event JSON">{{.TestEvent}}</textarea>
+      {{if .CanEdit}}<div class="inline"><button type="submit">Test</button><span class="small muted">Runs the deployed code with this JSON event.</span></div>{{end}}
+    </form>
+  </div>
+  {{with .TestResult}}
+  <div class="section">
+    <h2>Result: {{template "status" (jobStatus .Status)}}</h2>
+    <p class="small muted">{{with .DurationMS}}{{.}} ms{{end}}{{if .Cold}} · cold start (a new sandbox was started){{end}} · request <code>{{.ID}}</code></p>
+    {{if .ErrorType}}<p class="error-text"><strong>{{.ErrorType}}</strong>: {{.Error}}</p>{{end}}
+    {{with .Pretty}}<pre class="log">{{.}}</pre>{{end}}
+    <h3>Log</h3>
+    {{if .Log}}<pre class="log">{{.Log}}</pre>{{else}}<p class="small muted">The function printed nothing.</p>{{end}}
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="configuration" role="tabpanel" aria-label="Configuration">
+  <div class="section">
+    <h2>Function URL</h2>
+    <p class="small">{{if .Function.URLEnabled}}<a href="{{.URL}}" target="_blank" rel="noopener"><code>{{.URL}}</code></a>{{else}}<code class="muted">{{.URL}}</code> <span class="muted">(off)</span>{{end}}</p>
+    <p class="small muted">An HTTPS endpoint for browsers, webhooks and apps. Requests and responses use the AWS Lambda function URL format (payload 2.0): your handler gets <code>rawPath</code>, <code>headers</code>, <code>queryStringParameters</code> and <code>body</code>, and returns <code>{statusCode, headers, body}</code>.</p>
+    {{if and .CanEdit (eq .Function.URLAuth "token")}}
+    <form method="post" action="{{.Path}}/token" class="inline" data-confirm="Create a new token? The current one stops working.">
+      <input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary small">{{if .Function.HasToken}}Replace the token{{else}}Create a token{{end}}</button>
+    </form>{{end}}
+  </div>
+  <div class="section">
+    <h2>Settings</h2>
+    <form method="post" action="{{.Path}}/settings" class="form-grid">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <fieldset {{if not .CanEdit}}disabled{{end}}>
+      <label>Memory <span class="hint">MB; CPU grows with it</span>
+        <select name="memory_mb">{{range $m := list 128 256 512 1024 1536 2048}}<option value="{{$m}}" {{if eq $m $.Function.MemoryMB}}selected{{end}}>{{$m}} MB</option>{{end}}</select></label>
+      <label>Timeout <span class="hint">seconds, 1 to 300</span><input type="number" name="timeout_seconds" min="1" max="300" value="{{.Function.TimeoutSeconds}}" required></label>
+      <label>Concurrency <span class="hint">invocations running at once, 1 to 50</span><input type="number" name="concurrency" min="1" max="50" value="{{.Function.Concurrency}}" required></label>
+      <label>Handler <span class="hint">file.function</span><input name="handler" value="{{.Function.Handler}}" required></label>
+      <label class="check wide"><input type="checkbox" name="url_enabled" value="1" {{if .Function.URLEnabled}}checked{{end}}> Function URL
+        <span class="hint">an HTTPS endpoint at {{.URL}}</span></label>
+      <label>Who may call the URL
+        <select name="url_auth"><option value="none" {{if eq .Function.URLAuth "none"}}selected{{end}}>anyone (public)</option><option value="token" {{if eq .Function.URLAuth "token"}}selected{{end}}>callers with the token</option></select></label>
+      <label>Schedule <span class="hint">cron, UTC, e.g. */15 * * * *</span><input name="schedule" value="{{.Function.Schedule}}" placeholder="0 3 * * *"></label>
+      <label class="check"><input type="checkbox" name="schedule_enabled" value="1" {{if .Function.ScheduleEnabled}}checked{{end}}> run on the schedule
+        {{if and .Function.ScheduleEnabled .Function.NextRun}}<span class="hint">next run {{datetime .Function.NextRun}}</span>{{end}}</label>
+      <label class="wide">Environment variables <span class="hint">NAME=value, one per line; shared project variables are added too</span>
+        <textarea name="env" rows="5" spellcheck="false" class="code-editor">{{.Function.EnvText}}</textarea></label>
+      <div class="wide"><button type="submit">Save configuration</button></div>
+      </fieldset>
+    </form>
+  </div>
+  {{if .CanEdit}}
+  <div class="section">
+    <h2>Delete function</h2>
+    <form method="post" action="{{.Path}}/delete" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="confirm" placeholder="type {{.Function.Slug}} to confirm" required aria-label="Confirm function name">
+      <button class="danger" type="submit">Delete function</button>
+    </form>
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="monitor" role="tabpanel" aria-label="Monitor">
+  {{with .Stats}}
+  <div class="stats">
+    <div class="stat"><span>Invocations (24 h)</span><b>{{.Count}}</b></div>
+    <div class="stat {{if .Errors}}bad{{end}}"><span>Errors</span><b>{{.Errors}}</b></div>
+    <div class="stat"><span>Average duration</span><b>{{with .AvgMS}}{{printf "%.0f" .}} ms{{else}}–{{end}}</b></div>
+    <div class="stat"><span>Cold starts</span><b>{{.Cold}}</b></div>
+  </div>
+  {{end}}
+  <div class="section">
+    <h2>Recent invocations</h2>
+    {{if .Invocations}}
+    <div class="scroll-x">
+    <table class="resources">
+      <thead><tr><th>When</th><th>Trigger</th><th>Status</th><th class="num">Duration</th><th>Details</th></tr></thead>
+      <tbody>
+      {{range .Invocations}}
+        <tr><td class="nowrap">{{ago .Created}}</td><td>{{.Trigger}}</td><td>{{template "status" (jobStatus .Status)}}{{if .Cold}} <span class="badge">cold</span>{{end}}</td>
+          <td class="num nowrap">{{with .DurationMS}}{{.}} ms{{end}}</td>
+          <td>{{if .ErrorType}}<span class="error-text">{{.ErrorType}}: {{.Error}}</span>{{end}}
+            {{if .Log}}<details><summary class="small">log</summary><pre class="log">{{.Log}}</pre></details>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}<p class="small muted">No invocations yet. Use the Test tab, the function URL or the API.</p>{{end}}
+  </div>
+</section>
+{{end}}

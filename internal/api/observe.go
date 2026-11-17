@@ -180,6 +180,16 @@ func (s *Server) tlsAsk(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid host", http.StatusBadRequest)
 		return
 	}
+	// Function URL: <function>-<project>-<org>.fn.<apps domain>.
+	if label, found := strings.CutSuffix(host, ".fn."+s.cfg.AppsDomain); found && !strings.Contains(label, ".") {
+		var n int
+		if err := s.pool.QueryRow(r.Context(), `SELECT count(*) FROM function_by_host($1)`, label).Scan(&n); err == nil && n > 0 {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Error(w, "unknown host", http.StatusNotFound)
+		return
+	}
 	if s.cfg.StorageEnabled() {
 		if host == hostOnly(s.cfg.S3Host) {
 			w.WriteHeader(http.StatusOK)

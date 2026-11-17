@@ -22,6 +22,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Vulnerability scanning** (Trivy): every push, every deploy (cached 24 h per image), nightly rescan of running images; report per service | done, tested |
 | Scan policy per organization: `warn` (default) or `block-critical` | done, tested |
 | **Per-client backups** (restic) of each service's persistent folder: nightly + on demand, retention, self-service restore with a safety snapshot | done, tested |
+| **Functions (Lambda-style)**: Node.js 22 and Python 3.13 handlers in the AWS Lambda format, code editor or zip, function URLs (Lambda payload 2.0, public or token), schedules, synchronous and asynchronous invoke over the API and CLI, warm sandboxes with scale to zero, concurrency limits, logs and metrics, GB-second billing | done, tested |
 | **Cloud-style console**: Services menu with pinned favorites, global search, per-product areas (Compute, Databases, Storage, Domains, Registry, Monitoring, IAM, Billing) with lists across projects, a remembered project filter, breadcrumbs, project overview of all resources | done, tested |
 | **Object storage (S3-compatible, Garage)**: per-organization buckets with quotas, access keys scoped per bucket (read / read-write), console object browser, presigned downloads, public website buckets with HTTPS, one-click `AWS_*` secrets for a service, usage billed per GB-month, REST API and CLI | done, tested |
 | **Managed PostgreSQL** (16 or 17), **MySQL 8.4, MariaDB 11.4 and Redis 7**: per-project private database, resources counted against the plan, one-click `DATABASE_URL` secret, consistent backups (`pg_dump` / `mysqldump` / Redis snapshot) with self-service restore | done, tested |
@@ -51,7 +52,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | gVisor sandbox for tenant containers | done, verified on a Debian 12 server (Phase 0 gate) |
 | Host firewall for tenant networks, isolation test (Phase 0 gate) | done, gate PASSED on a real server via `host/deploy.sh` |
 
-The end-to-end test (`scripts/e2e-dev.sh`) runs 396 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds, self-signup, the operator console and a second node (placement, proxying, zero-downtime drain). Unit tests: `go test ./...` (outbound request guard).
+The end-to-end test (`scripts/e2e-dev.sh`) runs 528 checks, including cross-tenant attempts on the console, database, network, registry, backups and alert channels, databases, the API, status pages, passkeys, traffic protection, invoicing, previews, git builds, self-signup, the operator console and a second node (placement, proxying, zero-downtime drain). Unit tests: `go test ./...` (outbound request guard).
 
 **Not built yet** (next phases in ARCHITECTURE.md): multi-node: moving projects with persistent data automatically, control plane on two nodes (database replica); hard filesystem disk quotas (XFS project quotas).
 

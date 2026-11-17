@@ -12,16 +12,30 @@
     <input type="search" data-filter="services-table" placeholder="Find services by name, project or image" aria-label="Find services">
   </div>
   {{if .Services}}
+  {{if .CanEdit}}
+  <form method="post" action="{{.Org.Path}}/compute/actions" id="bulk" class="bulkbar" data-bulk="services-table">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <span class="bulk-count" aria-live="polite">Select services to act on them</span>
+    <select name="action" aria-label="Action">
+      <option value="">Actions</option>
+      <option value="redeploy">Redeploy with current settings</option>
+      <option value="delete">Delete</option>
+    </select>
+    <input name="confirm" placeholder="type delete to confirm" size="18" aria-label="Type delete to confirm deletion">
+    <button type="submit" class="secondary small">Apply</button>
+  </form>
+  {{end}}
   <div class="scroll-x">
   <table id="services-table" class="resources">
-    <thead><tr><th>Name</th><th>Project</th><th>Type</th><th>Status</th><th>Image</th><th class="num">Instances</th><th>Last deployment</th></tr></thead>
+    <thead><tr>{{if .CanEdit}}<th class="sel"><input type="checkbox" data-select-all="services-table" aria-label="Select all services"></th>{{end}}<th>Name</th><th>Project</th><th>Type</th><th>Status</th><th>Image</th><th class="num">Instances</th><th>Last deployment</th></tr></thead>
     <tbody>
     {{range .Services}}
-      <tr><td><a href="{{$.Org.Path}}/p/{{.Project}}/s/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
+      <tr>{{if $.CanEdit}}<td class="sel"><input type="checkbox" name="sel" value="{{.Project}}/{{.Slug}}" form="bulk" aria-label="Select {{.Project}}/{{.Slug}}"></td>{{end}}
+        <td><a href="{{$.Org.Path}}/p/{{.Project}}/s/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
         <td><a href="{{$.Org.Path}}/p/{{.Project}}">{{.ProjectName}}</a></td>
         <td>{{if .Worker}}worker{{else}}web{{end}}</td>
         <td>{{template "status" .Status}}</td>
-        <td><code class="trunc" title="{{.Image}}">{{.Image}}</code></td>
+        <td><code class="trunc" title="{{.Image}}">{{if .Image}}{{.Image}}{{else}}not set{{end}}</code></td>
         <td class="num">{{.Instances}}</td>
         <td class="nowrap">{{with .Updated}}{{ago .}}{{else}}<span class="muted">never</span>{{end}}</td></tr>
     {{end}}
@@ -35,12 +49,32 @@
 <div class="section" id="create">
   <h2>Create service</h2>
   {{if .Projects}}
-  <p class="small muted">Give it a name and an image; you set resources, variables, domains and instances on its page before or after the first deployment.</p>
   <form method="post" action="{{.Org.Path}}/compute" class="form-grid">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <h3 class="wide step">1. Name</h3>
     <label>Project<select name="project" required>{{range .Projects}}<option value="{{.Slug}}" {{if eq .Slug $.Scope}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
     <label>Service name <span class="hint">2 to 20 lowercase letters, digits and dashes</span><input name="slug" placeholder="e.g. web" pattern="[a-z0-9][a-z0-9\-]{1,19}" required></label>
-    <label class="wide">Container image <span class="hint">public image or one of your registry; leave empty to build from git later</span><input name="image" placeholder="e.g. nginx:1.27-alpine"></label>
+
+    <h3 class="wide step">2. Source</h3>
+    <label class="wide">Container image <span class="hint">from any registry or yours; leave empty to build from a git repository later (on the service's Builds tab)</span><input name="image" placeholder="e.g. nginx:1.27-alpine or ghcr.io/acme/api:1.4"></label>
+
+    <h3 class="wide step">3. Type and network</h3>
+    <fieldset class="wide choice"><legend>Type</legend>
+      <label class="option"><input type="radio" name="kind" value="web" checked> <strong>Web service</strong> <span class="hint">public HTTPS address, health checks on the port</span></label>
+      <label class="option"><input type="radio" name="kind" value="worker"> <strong>Worker</strong> <span class="hint">background process, no address</span></label>
+    </fieldset>
+    <label>Port <span class="hint">the port your app listens on (web)</span><input type="number" name="port" min="1" max="65535" value="8080"></label>
+    <label>Health check path <span class="hint">web; answered with 2xx/3xx when ready</span><input name="health_path" value="/"></label>
+
+    <h3 class="wide step">4. Resources</h3>
+    <label>CPU <span class="hint">millicores (1000 = one core)</span><input type="number" name="cpu_millis" min="50" max="8000" step="50" value="250"></label>
+    <label>Memory <span class="hint">MB</span><input type="number" name="memory_mb" min="32" max="16384" step="32" value="256"></label>
+    <label>Instances <span class="hint">1 to 10, behind the proxy</span><input type="number" name="instances" min="1" max="10" value="1"></label>
+
+    <h3 class="wide step">5. Environment</h3>
+    <label class="wide">Variables <span class="hint">NAME=value, one per line; add secrets on the service page afterwards</span><textarea name="env" rows="4" class="code-editor" spellcheck="false" placeholder="LOG_LEVEL=info"></textarea></label>
+
+    <label class="check wide"><input type="checkbox" name="deploy" value="1" checked> Deploy now <span class="hint">needs an image</span></label>
     <div class="wide"><button type="submit" class="arrow">Create service</button></div>
   </form>
   {{else}}<p class="small muted">Create a <a href="{{.Org.Path}}/projects#create">project</a> first.</p>{{end}}

@@ -20,8 +20,9 @@ import (
 )
 
 type Client struct {
-	hc   *http.Client
-	base string
+	hc     *http.Client
+	base   string
+	socket string
 }
 
 func New(socket string) *Client {
@@ -31,7 +32,7 @@ func New(socket string) *Client {
 			return d.DialContext(ctx, "unix", socket)
 		},
 	}
-	return &Client{hc: &http.Client{Transport: tr}, base: "http://docker/v1.43"}
+	return &Client{hc: &http.Client{Transport: tr}, base: "http://docker/v1.43", socket: socket}
 }
 
 type APIError struct {
@@ -323,10 +324,11 @@ func (c *Client) ContainerInspect(ctx context.Context, id string) (*ContainerInf
 }
 
 type ContainerSummary struct {
-	ID     string            `json:"Id"`
-	Names  []string          `json:"Names"`
-	Labels map[string]string `json:"Labels"`
-	State  string            `json:"State"`
+	ID      string            `json:"Id"`
+	Names   []string          `json:"Names"`
+	Labels  map[string]string `json:"Labels"`
+	State   string            `json:"State"`
+	Created int64             `json:"Created"`
 }
 
 func (c *Client) ContainerList(ctx context.Context, label string) ([]ContainerSummary, error) {
@@ -548,4 +550,83 @@ func readMux(r io.Reader) ([]byte, []byte, error) {
 type PortBinding struct {
 	HostIP   string `json:"HostIp"`
 	HostPort string `json:"HostPort"`
+}
+
+// ContainerPutArchive extracts a tar archive into a container at path. Use it before
+// the container starts: a running gVisor sandbox does not see files added afterwards.
+func (c *Client) ContainerPutArchive(ctx context.Context, id, path string, tarball []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.base+"/containers/"+url.PathEscape(id)+"/archive?"+url.Values{"path": {path}}.Encode(), bytes.NewReader(tarball))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-tar")
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return &APIError{Status: resp.StatusCode, Message: strings.TrimSpace(string(msg))}
+	}
+	return nil
+}
+
+// ContainerExecStdin runs cmd in a container with stdin as its standard input and
+// returns stdout, stderr and the exit code. The context bounds the whole run.
+func (c *Client) ContainerExecStdin(ctx context.Context, id string, cmd, env []string, workdir string, stdin []byte) ([]byte, []byte, int, error) {
+	var created struct {
+		ID string `json:"Id"`
+	}
+	if err := c.call(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/exec", nil, map[string]any{
+		"AttachStdin": true, "AttachStdout": true, "AttachStderr": true, "Cmd": cmd, "Env": env, "WorkingDir": workdir,
+	}, &created); err != nil {
+		return nil, nil, -1, err
+	}
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", c.socket)
+	if err != nil {
+		return nil, nil, -1, err
+	}
+	defer conn.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	body := `{"Detach":false,"Tty":false}`
+	path := strings.TrimPrefix(c.base, "http://docker") + "/exec/" + url.PathEscape(created.ID) + "/start"
+	head := "POST " + path + " HTTP/1.1\r\nHost: docker\r\nContent-Type: application/json\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n"
+	if _, err := fmt.Fprintf(conn, "%sContent-Length: %d\r\n\r\n%s", head, len(body), body); err != nil {
+		return nil, nil, -1, err
+	}
+	br := bufio.NewReaderSize(conn, 64<<10)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		return nil, nil, -1, err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols && resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, nil, -1, &APIError{Status: resp.StatusCode, Message: strings.TrimSpace(string(msg))}
+	}
+	go func() { // feed stdin, then signal end of input
+		_, _ = conn.Write(stdin)
+		if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+	}()
+	stdout, stderr, err := readMux(br)
+	if err != nil && ctx.Err() == nil {
+		return stdout, stderr, -1, err
+	}
+	if ctx.Err() != nil {
+		return stdout, stderr, -1, ctx.Err()
+	}
+	var info struct {
+		ExitCode int `json:"ExitCode"`
+	}
+	if err := c.call(context.WithoutCancel(ctx), http.MethodGet, "/exec/"+url.PathEscape(created.ID)+"/json", nil, nil, &info); err != nil {
+		return stdout, stderr, -1, err
+	}
+	return stdout, stderr, info.ExitCode, nil
 }

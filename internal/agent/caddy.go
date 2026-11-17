@@ -189,6 +189,13 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 			"terminal": true,
 		})
 	}
+	// Function URLs: <function>-<project>-<org>.fn.<apps domain>, answered by the API's
+	// function gateway.
+	rs = append(rs, obj{
+		"match":    []any{obj{"host": []string{"*.fn." + cfg.AppsDomain}}},
+		"handle":   []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.APIUpstream}}}},
+		"terminal": true,
+	})
 	if cfg.StorageEnabled() {
 		// S3 API (path-style requests; no body limit, uploads stream through).
 		rs = append(rs, obj{

@@ -39,6 +39,9 @@ var products = []product{
 	{ID: "compute", Name: "Compute", Short: "Compute", Group: "Compute", Path: "/compute",
 		Description: "Run containers as web services and workers, with instances, jobs and previews",
 		Nav:         []navItem{{"Services", "/compute", false}, {"Scheduled jobs", "/compute/jobs", false}, {"Previews", "/compute/previews", false}}},
+	{ID: "functions", Name: "Functions", Short: "Functions", Group: "Compute", Path: "/functions",
+		Description: "Run code on demand without servers: function URLs, schedules and API calls",
+		Nav:         []navItem{{"Functions", "/functions", false}}},
 	{ID: "databases", Name: "Databases", Short: "Databases", Group: "Data", Path: "/databases",
 		Description: "Managed PostgreSQL, MySQL, MariaDB and Redis with nightly backups",
 		Nav:         []navItem{{"Databases", "/databases", false}}},
@@ -64,7 +67,7 @@ var products = []product{
 		Nav:         []navItem{{"Usage and invoices", "/billing", true}}},
 }
 
-var defaultPins = []string{"compute", "databases", "storage", "monitoring"}
+var defaultPins = []string{"compute", "functions", "databases", "storage", "monitoring"}
 
 func productByID(id string) *product {
 	for i := range products {
@@ -91,6 +94,8 @@ func areaOf(orgPath, path string) string {
 				return "compute"
 			case "d":
 				return "databases"
+			case "f":
+				return "functions"
 			}
 		}
 		return "projects"
@@ -438,16 +443,11 @@ func (s *Server) domainsPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "domains", http.StatusOK, data{"Org": o, "Domains": rows, "Scope": scope, "MaxDomains": maxDomains, "AppsDomain": s.cfg.AppsDomain})
 }
 
-// createDatabaseIn and createServiceIn create a resource in the project chosen in the
-// form (the area pages are not inside a project).
+// createDatabaseIn creates a database in the project chosen in the form (the area
+// pages are not inside a project).
 func (s *Server) createDatabaseIn(w http.ResponseWriter, r *http.Request) {
 	r.SetPathValue("project", r.PostFormValue("project"))
 	s.createDatabase(w, r)
-}
-
-func (s *Server) createServiceIn(w http.ResponseWriter, r *http.Request) {
-	r.SetPathValue("project", r.PostFormValue("project"))
-	s.createService(w, r)
 }
 
 // ---------- search ----------
@@ -483,6 +483,9 @@ func (s *Server) searchPage(w http.ResponseWriter, r *http.Request) {
 				SELECT 'Database', d.slug, p.slug || ' · ' || d.engine || ' ' || d.version, '/p/' || p.slug || '/d/' || d.slug
 				FROM databases d JOIN projects p ON p.id = d.project_id WHERE lower(d.slug) LIKE $1 OR lower(d.engine) LIKE $1
 				UNION ALL
+				SELECT 'Function', f.slug, p.slug || ' · ' || f.runtime, '/p/' || p.slug || '/f/' || f.slug
+				FROM functions f JOIN projects p ON p.id = f.project_id WHERE lower(f.slug) LIKE $1
+				UNION ALL
 				SELECT 'Bucket', b.name, b.full_name, '/storage/b/' || b.name FROM buckets b WHERE lower(b.full_name) LIKE $1
 				UNION ALL
 				SELECT 'Domain', dm.hostname, p.slug || '/' || s.slug, '/p/' || p.slug || '/s/' || s.slug || '#domains'
@@ -513,6 +516,7 @@ var iconPaths = map[string]string{
 	"domains":    `<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>`,
 	"registry":   `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>`,
 	"monitoring": `<path d="M3 12h4l3-8 4 16 3-8h4"/>`,
+	"functions":  `<path d="M6 4h3l8 16"/><path d="M12.5 11L7 20"/>`,
 	"iam":        `<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18.5 14.8c1.6.8 2.6 2.4 3 5.2"/>`,
 	"billing":    `<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/>`,
 	"grid":       `<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/>`,
@@ -618,6 +622,10 @@ func crumbsFor(d data) []crumb {
 	case d["Database"] != nil:
 		if db, ok := d["Database"].(*databaseInfo); ok && db != nil {
 			out = append(out, crumb{db.Slug, ""})
+		}
+	case d["Function"] != nil:
+		if f, ok := d["Function"].(*functionInfo); ok && f != nil {
+			out = append(out, crumb{f.Slug, ""})
 		}
 	case d["Bucket"] != nil:
 		if b, ok := d["Bucket"].(*bucketInfo); ok && b != nil {

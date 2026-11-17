@@ -17,6 +17,7 @@ type navProject struct {
 	Slug, Name string
 	Services   []navService
 	Databases  []navService
+	Functions  []navService
 }
 
 func (s *Server) loadNav(r *http.Request, o *orgInfo) []navProject {
@@ -64,7 +65,26 @@ func (s *Server) loadNav(r *http.Request, o *orgInfo) []navProject {
 				}
 			}
 		}
-		return drows.Err()
+		if err := drows.Err(); err != nil {
+			return err
+		}
+		frows, err := tx.Query(r.Context(), `SELECT p.slug, f.slug FROM functions f JOIN projects p ON p.id = f.project_id ORDER BY f.slug`)
+		if err != nil {
+			return err
+		}
+		defer frows.Close()
+		for frows.Next() {
+			var ps, fs string
+			if err := frows.Scan(&ps, &fs); err != nil {
+				return err
+			}
+			for i := range out {
+				if out[i].Slug == ps {
+					out[i].Functions = append(out[i].Functions, navService{Slug: fs})
+				}
+			}
+		}
+		return frows.Err()
 	})
 	return out
 }
@@ -80,6 +100,7 @@ func (s *Server) addNav(r *http.Request, d data) {
 	d["CurProject"] = r.PathValue("project")
 	d["CurService"] = r.PathValue("service")
 	d["CurDB"] = r.PathValue("db")
+	d["CurFn"] = r.PathValue("fn")
 	d["RegistryHostNav"] = s.cfg.RegistryHost != ""
 	d["StorageNav"] = s.cfg.StorageEnabled()
 	s.addConsole(r, d, o)

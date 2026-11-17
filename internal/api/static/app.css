@@ -510,3 +510,15 @@ label.option:has(input:checked) { border-color: var(--primary); background: var(
   .org-name { max-width: 110px; }
   .services-menu > summary span { display: none; }
 }
+
+/* function code editor */
+textarea.code-editor { width: 100%; font: 13px/1.5 var(--mono); tab-size: 2; white-space: pre; overflow: auto; background: var(--surface-2); }
+
+/* bulk actions above resource tables */
+.bulkbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 10px; margin: 0 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); font-size: 14px; }
+.bulkbar select, .bulkbar input { min-height: 34px; width: auto; }
+.bulk-count { color: var(--text-3); margin-right: auto; }
+.bulkbar.has-sel .bulk-count { color: var(--text); font-weight: 600; }
+th.sel, td.sel { width: 36px; padding-right: 0; }
+h3.step { margin: 8px 0 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 15px; color: var(--text-2); }
+h3.step:first-of-type { border-top: 0; padding-top: 0; }

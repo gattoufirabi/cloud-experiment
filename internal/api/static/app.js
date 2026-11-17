@@ -335,3 +335,23 @@ document.querySelectorAll("input[data-filter]").forEach((input) => {
     table.querySelectorAll("tbody tr").forEach((tr) => tr.classList.toggle("filtered-out", q !== "" && !tr.textContent.toLowerCase().includes(q)));
   });
 });
+
+// Bulk actions: "select all" checkboxes and the count of selected rows.
+document.querySelectorAll("input[data-select-all]").forEach((all) => {
+  const table = document.getElementById(all.dataset.selectAll);
+  all.addEventListener("change", () => {
+    table.querySelectorAll("tbody tr:not(.filtered-out) input[name=sel]").forEach((c) => { c.checked = all.checked; });
+    table.dispatchEvent(new Event("selchange"));
+  });
+});
+document.querySelectorAll("form[data-bulk]").forEach((form) => {
+  const table = document.getElementById(form.dataset.bulk);
+  const label = form.querySelector(".bulk-count");
+  const update = () => {
+    const n = table.querySelectorAll("input[name=sel]:checked").length;
+    label.textContent = n ? n + " selected" : "Select services to act on them";
+    form.classList.toggle("has-sel", n > 0);
+  };
+  table.addEventListener("change", update);
+  table.addEventListener("selchange", update);
+});

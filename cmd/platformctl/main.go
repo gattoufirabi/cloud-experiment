@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -29,6 +30,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -106,6 +108,8 @@ func main() {
 		err = c.buckets(args)
 	case "key":
 		err = c.storageKeys(args)
+	case "fn":
+		err = c.functions(args)
 	default:
 		usage(2)
 	}
@@ -146,6 +150,13 @@ func usage(code int) {
   key list                                 S3 access keys and the buckets they reach
   key create NAME BUCKET=read|write...     create an access key; prints its secret once
   key delete ID|ACCESS_KEY_ID              delete an access key
+  fn list <project>                        functions of a project
+  fn deploy <project>/<fn> --file F|--zip Z [--runtime nodejs22|python3.13] [--handler H]
+                                           create or update a function from a source file or a zip
+  fn invoke <project>/<fn> [--event JSON|-] [--async]
+                                           run it and print the result (event from stdin with -)
+  fn logs <project>/<fn>                   recent invocations with their status and logs
+  fn delete <project>/<fn>                 delete a function
 
 environment: PLATFORM_URL (console address), PLATFORM_TOKEN (API token "pla_...")`)
 	os.Exit(code)
@@ -823,6 +834,174 @@ func (c *client) storageKeys(args []string) error {
 			return err
 		}
 		fmt.Println("access key deleted")
+		return nil
+	}
+	usage(2)
+	return nil
+}
+
+func (c *client) functions(args []string) error {
+	if len(args) < 2 {
+		usage(2)
+	}
+	switch args[0] {
+	case "list":
+		var fs []struct {
+			Name, Runtime, Handler, URL string
+			MemoryMB                    int `json:"memory_mb"`
+		}
+		if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(args[1])+"/functions", nil, &fs); err != nil {
+			return err
+		}
+		var rows [][]string
+		for _, f := range fs {
+			rows = append(rows, []string{f.Name, f.Runtime, f.Handler, fmt.Sprintf("%d MB", f.MemoryMB), f.URL})
+		}
+		table("NAME\tRUNTIME\tHANDLER\tMEMORY\tURL", rows)
+		return nil
+	case "deploy":
+		p, f := target(args[1:2])
+		fl := flag.NewFlagSet("deploy", flag.ExitOnError)
+		file := fl.String("file", "", "source file (becomes the handler's file)")
+		zipPath := fl.String("zip", "", "zip archive with the code")
+		rt := fl.String("runtime", "", "nodejs22 or python3.13 (new functions)")
+		handler := fl.String("handler", "", "file.function")
+		_ = fl.Parse(args[2:])
+		body := map[string]any{}
+		switch {
+		case *zipPath != "":
+			b, err := os.ReadFile(*zipPath)
+			if err != nil {
+				return err
+			}
+			body["zip_base64"] = base64.StdEncoding.EncodeToString(b)
+		case *file != "":
+			b, err := os.ReadFile(*file)
+			if err != nil {
+				return err
+			}
+			body["code"] = string(b)
+			base := filepath.Base(*file)
+			body["filename"] = base
+			if *handler == "" {
+				ext := filepath.Ext(base)
+				fn := "handler"
+				if ext == ".py" {
+					fn = "lambda_handler"
+				}
+				*handler = strings.TrimSuffix(base, ext) + "." + fn
+			}
+		default:
+			return errors.New("give --file or --zip")
+		}
+		if *rt != "" {
+			body["runtime"] = *rt
+		} else if strings.HasSuffix(*file, ".py") {
+			body["runtime"] = "python3.13"
+		}
+		if *handler != "" {
+			body["handler"] = *handler
+		}
+		var out struct {
+			Name, URL  string
+			CodeSHA256 string `json:"code_sha256"`
+		}
+		if err := c.do("PUT", "/api/v1/projects/"+url.PathEscape(p)+"/functions/"+url.PathEscape(f), body, &out); err != nil {
+			return err
+		}
+		fmt.Printf("function %s/%s deployed (code %s)\n", p, out.Name, out.CodeSHA256[:12])
+		if out.URL != "" {
+			fmt.Println("url:", out.URL)
+		}
+		return nil
+	case "invoke":
+		p, f := target(args[1:2])
+		fl := flag.NewFlagSet("invoke", flag.ExitOnError)
+		event := fl.String("event", "{}", "event JSON, or - to read it from standard input")
+		async := fl.Bool("async", false, "queue the invocation and return at once")
+		_ = fl.Parse(args[2:])
+		ev := []byte(*event)
+		if *event == "-" {
+			b, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return err
+			}
+			ev = b
+		}
+		req, err := http.NewRequest("POST", c.base+"/api/v1/projects/"+url.PathEscape(p)+"/functions/"+url.PathEscape(f)+"/invoke", bytes.NewReader(ev))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Log-Type", "Tail")
+		if *async {
+			req.Header.Set("X-Invocation-Type", "Event")
+		}
+		hc := *c.hc
+		hc.Timeout = 7 * time.Minute
+		resp, err := hc.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		if resp.StatusCode >= 300 {
+			return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(out)))
+		}
+		if l := resp.Header.Get("X-Platform-Log-Result"); l != "" {
+			if b, err := base64.StdEncoding.DecodeString(l); err == nil && len(b) > 0 {
+				fmt.Fprint(os.Stderr, string(b))
+				if !bytes.HasSuffix(b, []byte("\n")) {
+					fmt.Fprintln(os.Stderr)
+				}
+			}
+		}
+		fmt.Println(strings.TrimSpace(string(out)))
+		if resp.Header.Get("X-Platform-Function-Error") != "" {
+			os.Exit(1)
+		}
+		return nil
+	case "logs":
+		p, f := target(args[1:2])
+		var invs []struct {
+			ID, Trigger, Status, Log, Error string
+			ErrorType                       string    `json:"error_type"`
+			DurationMS                      *int      `json:"duration_ms"`
+			Cold                            bool      `json:"cold"`
+			Created                         time.Time `json:"created_at"`
+		}
+		if err := c.do("GET", "/api/v1/projects/"+url.PathEscape(p)+"/functions/"+url.PathEscape(f)+"/invocations", nil, &invs); err != nil {
+			return err
+		}
+		for i := len(invs) - 1; i >= 0; i-- {
+			v := invs[i]
+			d := ""
+			if v.DurationMS != nil {
+				d = fmt.Sprintf(" %d ms", *v.DurationMS)
+			}
+			cold := ""
+			if v.Cold {
+				cold = " (cold)"
+			}
+			fmt.Printf("== %s %s %s%s%s %s\n", v.Created.Local().Format("2006-01-02 15:04:05"), v.Trigger, v.Status, d, cold, v.ID)
+			if v.ErrorType != "" {
+				fmt.Printf("   %s: %s\n", v.ErrorType, v.Error)
+			}
+			if v.Log != "" {
+				fmt.Print(v.Log)
+				if !strings.HasSuffix(v.Log, "\n") {
+					fmt.Println()
+				}
+			}
+		}
+		return nil
+	case "delete":
+		p, f := target(args[1:2])
+		if err := c.do("DELETE", "/api/v1/projects/"+url.PathEscape(p)+"/functions/"+url.PathEscape(f), nil, nil); err != nil {
+			return err
+		}
+		fmt.Println("function deleted")
 		return nil
 	}
 	usage(2)

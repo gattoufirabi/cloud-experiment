@@ -449,9 +449,10 @@ check "unknown product cannot be pinned (404)" "$(code_of ja -X POST "$BASE/o/$A
 COMPUTE=$(c ja "$BASE/o/$A/compute")
 if grep -q "/o/$A/p/shop/s/web\"" <<<"$COMPUTE" && grep -q "/o/$A/p/shop/s/files\"" <<<"$COMPUTE"; then ok "compute lists the services of every project"; else bad "compute list incomplete"; fi
 code_of ja "$BASE/o/$A/scope?project=nope-project&back=/o/$A/compute" >/dev/null
-check "project filter narrows the compute list" "$(c ja "$BASE/o/$A/compute" | grep -c "/o/$A/p/shop/s/web\"")" 0
+svc_table() { c ja "$BASE/o/$A/compute" | sed -n '/id="services-table"/,/<\/table>/p'; }
+check "project filter narrows the compute list" "$(svc_table | grep -c "/o/$A/p/shop/s/web\"")" 0
 code_of ja "$BASE/o/$A/scope?project=&back=/o/$A/compute" >/dev/null
-check "clearing the project filter shows everything again" "$(c ja "$BASE/o/$A/compute" | grep -c "/o/$A/p/shop/s/web\"")" 1
+check "clearing the project filter shows everything again" "$(svc_table | grep -c "/o/$A/p/shop/s/web\"")" 1
 check "filter redirect stays inside the organization" "$(c ja -o /dev/null -w '%{redirect_url}' "$BASE/o/$A/scope?project=shop&back=https://evil.example/")" "$BASE/o/$A"
 code_of ja "$BASE/o/$A/scope?project=&back=/o/$A" >/dev/null
 if grep -q "/o/$A/p/shop/s/web\"" <<<"$(c ja "$BASE/o/$A/search?q=web")"; then ok "search finds a service"; else bad "search misses the service"; fi
@@ -462,10 +463,84 @@ check "area database recorded in the chosen project" "$(owner_sql "SELECT p.slug
 if grep -q "/o/$A/p/shop/d/areadb\"" <<<"$(c ja "$BASE/o/$A/databases")"; then ok "databases area lists it"; else bad "databases area misses it"; fi
 code_of ja -X POST "$BASE/o/$A/p/shop/d/areadb/delete" -d csrf=$CSRF_A -d confirm=areadb >/dev/null
 check "[B->A] B cannot create a database in A's project (404)" "$(code_of jb -X POST "$BASE/o/$A/databases" -d csrf=$CSRF_B -d project=shop -d slug=evil -d engine=redis:7)" 404
+admin set-plan --slug "$A" --plan pro >/dev/null   # room for two more services
 check "[A] service created from the Compute area" "$(code_of ja -X POST "$BASE/o/$A/compute" -d csrf=$CSRF_A -d project=shop -d slug=area-svc -d image=nginx:1.27-alpine)" 303
 check "area service recorded in the chosen project" "$(owner_sql "SELECT count(*) FROM services s JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND p.slug = 'shop' AND s.slug = 'area-svc'")" 1
-code_of ja -X POST "$BASE/o/$A/p/shop/s/area-svc/delete" -d csrf=$CSRF_A -d confirm=area-svc >/dev/null
+check "[A] full create form: worker with 2 instances and variables, deployed" "$(code_of ja -X POST "$BASE/o/$A/compute" -d csrf=$CSRF_A -d project=shop -d slug=area-wkr -d image=nginx:1.27-alpine -d kind=worker -d cpu_millis=100 -d memory_mb=64 -d instances=2 --data-urlencode $'env=MODE=batch
+LEVEL=2' -d deploy=1)" 303
+check "create form stored type, instances and variables" "$(owner_sql "SELECT s.worker || ':' || s.instances || ':' || (s.env->>'MODE') FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'area-wkr'")" "true:2:batch"
+check "create form started the first deployment" "$(owner_sql "SELECT count(*) FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'area-wkr'")" 1
+if grep -q "err=Instances\|err=.*instances\|err=" <<<"$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/compute" -d csrf=$CSRF_A -d project=shop -d slug=area-bad -d image=nginx:1.27-alpine -d instances=50)"; then ok "create form refuses too many instances"; else bad "create form accepted 50 instances"; fi
+check "[A] bulk redeploy of two services" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=redeploy -d sel=shop/area-svc -d sel=shop/area-wkr | grep -c 'msg=Redeploying+2')" 1
+check "bulk delete needs the typed confirmation" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d sel=shop/area-wkr | grep -c 'err=')" 1
+check "[B->A] B's bulk action cannot touch A's services" "$(code_of jb -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_B -d action=delete -d confirm=delete -d sel=shop/area-wkr)" 404
+check "[A] bulk delete of two services" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/area-svc -d sel=shop/area-wkr | grep -c 'msg=Deleted+2')" 1
+check "bulk-deleted services are gone" "$(owner_sql "SELECT count(*) FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug IN ('area-svc', 'area-wkr')")" 0
+admin set-plan --slug "$A" --plan starter >/dev/null
 if grep -q 'aria-label="Breadcrumb"' <<<"$(c ja "$BASE/o/$A/p/shop/s/web")"; then ok "resource pages show a breadcrumb"; else bad "breadcrumb missing"; fi
+
+echo "== Functions"
+FN=$BASE/o/$A/p/shop/f
+fn_api() { local m=$1 path=$2; shift 2; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/projects/shop/functions/$path" "$@"; }
+check "[A] function created in the console" "$(code_of ja -X POST "$BASE/o/$A/functions" -d csrf=$CSRF_A -d project=shop -d slug=hello -d runtime=nodejs22)" 303
+check "invalid function name refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/functions" -d csrf=$CSRF_A -d project=shop -d slug=Bad_Name -d runtime=nodejs22 | grep -c 'err=')" 1
+PAGE=$(c ja -X POST "$FN/hello/test" -d csrf=$CSRF_A --data-urlencode 'event={"rawPath":"/e2e"}')
+if grep -q "st-succeeded" <<<"$PAGE" && grep -q "Hello from hello" <<<"$PAGE"; then ok "[A] console test runs the starter code"; else bad "console test failed: $(grep -o 'error-text">[^<]*' <<<"$PAGE" | head -1)"; fi
+check "[B->A] B cannot open A's function (404)" "$(code_of jb "$FN/hello")" 404
+check "[B->A] B cannot test A's function (404)" "$(code_of jb -X POST "$FN/hello/test" -d csrf=$CSRF_B -d 'event={}')" 404
+check "[B->A API] B's token cannot invoke A's function (404)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_B" -X POST -d '{}' "$BASE/api/v1/projects/shop/functions/hello/invoke")" 404
+CODE='export const handler = async (event, context) => {
+  if (event.boom || event.queryStringParameters?.boom) throw new RangeError("e2e boom");
+  if (event.sleep) await new Promise((r) => setTimeout(r, event.sleep));
+  console.log("e2e log line", context.awsRequestId);
+  return { echo: event.value ?? null, env: process.env.E2E_VAR ?? null, shared: process.env.SHARED_TOKEN ? "set" : null, uid: process.getuid(), method: event.requestContext?.http?.method ?? null, body: event.body ?? null };
+};'
+PUT_BODY=$(printf '%s' "$CODE" | python -c 'import json,sys; print(json.dumps({"code": sys.stdin.read(), "env": {"E2E_VAR": "from-env"}, "timeout_seconds": 3}))')
+check "[API] function code deployed with PUT" "$(fn_api PUT hello -o /dev/null -w '%{http_code}' -d "$PUT_BODY")" 200
+OUT=$(fn_api POST hello/invoke -d '{"value": 42}')
+check "[API] synchronous invoke returns the result" "$(grep -o '"echo":42' <<<"$OUT")" '"echo":42'
+check "function sees its environment variable" "$(grep -o '"env":"from-env"' <<<"$OUT")" '"env":"from-env"'
+check "function runs as an unprivileged user" "$(grep -o '"uid":65534' <<<"$OUT")" '"uid":65534'
+HDRS=$(fn_api POST hello/invoke -D - -o /dev/null -d '{"boom": true}')
+check "handler error flagged like AWS Invoke" "$(grep -ci 'X-Platform-Function-Error: Unhandled' <<<"$HDRS")" 1
+check "error type recorded" "$(owner_sql "SELECT error_type FROM function_invocations i JOIN functions f ON f.id = i.function_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'hello' ORDER BY i.created_at DESC LIMIT 1")" RangeError
+check "timeout stops the run" "$(fn_api POST hello/invoke -d '{"sleep": 6000}' | grep -o 'Sandbox.Timedout')" Sandbox.Timedout
+check "function works again after a timeout" "$(fn_api POST hello/invoke -d '{"value": "again"}' | grep -o '"echo":"again"')" '"echo":"again"'
+check "[API] asynchronous invoke answers 202" "$(fn_api POST hello/invoke -o /dev/null -w '%{http_code}' -H 'X-Invocation-Type: Event' -d '{"value": "async"}')" 202
+check "asynchronous invocation runs" "$(for _ in $(seq 1 30); do [ "$(owner_sql "SELECT count(*) FROM function_invocations i JOIN functions f ON f.id = i.function_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'hello' AND i.async AND i.status = 'succeeded'")" -ge 1 ] && { echo yes; break; }; sleep 1; done)" yes
+check "invocation logs captured" "$(fn_api GET hello/invocations | grep -c 'e2e log line')" 1
+if grep -q '"echo":"cli"' <<<"$(pctl fn invoke shop/hello --event '{"value":"cli"}' 2>/dev/null)"; then ok "[CLI] platformctl fn invoke"; else bad "[CLI] fn invoke failed"; fi
+if pctl fn invoke shop/hello --event '{"boom":true}' >/dev/null 2>&1; then bad "[CLI] failed invocation exited 0"; else ok "[CLI] failed invocation exits with an error"; fi
+printf 'def lambda_handler(event, context):\n    return {"py": True, "name": context.function_name}\n' > "$TMP/handler.py"
+if grep -q "deployed" <<<"$(pctl fn deploy shop/pyfn --file "$TMP/handler.py")"; then ok "[CLI] platformctl fn deploy creates a Python function"; else bad "[CLI] fn deploy failed"; fi
+check "Python function answers" "$(fn_api POST pyfn/invoke -d '{}' | grep -o '"name": "pyfn"\|"name":"pyfn"' | head -1 | tr -d ' ')" '"name":"pyfn"'
+
+FN_HOST=hello-shop-$A.fn.apps.localhost
+fn_url() { curl -sS --resolve "$FN_HOST:$PORT:127.0.0.1" "$@"; }
+check "function URL off by default (404)" "$(fn_url -o /dev/null -w '%{http_code}' "http://$FN_HOST:$PORT/")" 404
+fn_api PUT hello -o /dev/null -d '{"url_enabled": true, "url_auth": "none"}'
+check "function URL answers GET" "$(fn_url "http://$FN_HOST:$PORT/x?y=1" | grep -o '"method":"GET"')" '"method":"GET"'
+check "function URL passes the request body" "$(fn_url -X POST -H 'Content-Type: text/plain' -d 'hello-body' "http://$FN_HOST:$PORT/" | grep -o '"body":"hello-body"')" '"body":"hello-body"'
+check "handler error on the URL answers 502" "$(fn_url -o /dev/null -w '%{http_code}' "http://$FN_HOST:$PORT/?boom=1")" 502
+check "[A] URL switched to token callers" "$(code_of ja -X POST "$FN/hello/settings" -d csrf=$CSRF_A -d memory_mb=128 -d timeout_seconds=3 -d concurrency=5 -d handler=index.handler -d url_enabled=1 -d url_auth=token --data-urlencode 'env=E2E_VAR=from-env')" 303
+check "function URL without the token refused (403)" "$(fn_url -o /dev/null -w '%{http_code}' "http://$FN_HOST:$PORT/")" 403
+FN_TOKEN=$(c ja -X POST "$FN/hello/token" -d csrf=$CSRF_A | grep -o 'fnt_[A-Za-z0-9_-]*' | head -1)
+check "function URL with the token answers" "$(fn_url -o /dev/null -w '%{http_code}' -H "X-Function-Token: $FN_TOKEN" "http://$FN_HOST:$PORT/")" 200
+check "function URL with a wrong token refused (403)" "$(fn_url -o /dev/null -w '%{http_code}' -H "X-Function-Token: fnt_wrong" "http://$FN_HOST:$PORT/")" 403
+check "token not stored in clear" "$(owner_sql "SELECT count(*) FROM functions WHERE url_token_hash = convert_to('$FN_TOKEN', 'UTF8')")" 0
+check "[B] B's own function URL cannot reach A's function" "$(curl -sS --resolve "hello-shop-$B.fn.apps.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' "http://hello-shop-$B.fn.apps.localhost:$PORT/")" 404
+
+fn_api PUT hello -o /dev/null -d '{"schedule": "* * * * *", "schedule_enabled": true}'
+check "scheduled invocation runs within two minutes" "$(for _ in $(seq 1 75); do [ "$(owner_sql "SELECT count(*) FROM function_invocations i JOIN functions f ON f.id = i.function_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'hello' AND i.trigger = 'schedule' AND i.status <> 'queued'")" -ge 1 ] && { echo yes; break; }; sleep 2; done)" yes
+fn_api PUT hello -o /dev/null -d '{"schedule_enabled": false}'
+check "function usage metered for invoices" "$(owner_sql "SELECT sum(fn_requests) > 0 AND sum(fn_mb_ms) > 0 FROM usage_hourly u JOIN orgs o ON o.id = u.org_id WHERE o.slug = '$A' AND u.kind = 'function'")" t
+if grep -q "/o/$A/p/shop/f/hello\"" <<<"$(c ja "$BASE/o/$A/functions")"; then ok "functions area lists the function"; else bad "functions area misses it"; fi
+if grep -q "Recent invocations" <<<"$(c ja "$FN/hello")"; then ok "function page shows invocations"; else bad "function page broken"; fi
+check "[A] function deleted" "$(code_of ja -X POST "$FN/hello/delete" -d csrf=$CSRF_A -d confirm=hello)" 303
+check "deleted function's URL gone (404)" "$(fn_url -o /dev/null -w '%{http_code}' -H "X-Function-Token: $FN_TOKEN" "http://$FN_HOST:$PORT/")" 404
+pctl fn delete shop/pyfn >/dev/null 2>&1
+ORG_A_ID=$(owner_sql "SELECT id FROM orgs WHERE slug = '$A'")
+check "function containers removed after deletion" "$(for _ in $(seq 1 45); do [ "$(docker ps -aq --filter label=platform.function --filter "label=platform.org=$ORG_A_ID" | wc -l)" = 0 ] && { echo yes; break; }; sleep 2; done)" yes
 
 TOK_ID=$(owner_sql "SELECT t.id FROM api_tokens t JOIN orgs o ON o.id = t.org_id WHERE o.slug = '$A' AND t.name = 'ci'")
 code_of ja -X POST "$BASE/o/$A/api-tokens/$TOK_ID/delete" -d csrf=$CSRF_A >/dev/null
@@ -864,7 +939,7 @@ docker unpause "$CID_F" >/dev/null
 ST=""; for _ in $(seq 1 30); do ST=$(incident_status files service_down); [ "$ST" = resolved ] && break; sleep 2; done
 check "[A] recovery detected: incident resolved" "$ST" resolved
 check "[A] resolved alert pushed" "$(ntfy_has "alerts-$A" "Resolved: Service down")" yes
-if c ja "$BASE/o/$A" | grep -q "Service down"; then ok "[A] incident listed in the console"; else bad "[A] incident missing from the console"; fi
+if grep -q "Service down" <<<"$(c ja "$BASE/o/$A/monitoring")"; then ok "[A] incident listed in the console"; else bad "[A] incident missing from the console"; fi
 
 code_of ja -X POST "$BASE$SVC_A/settings" -d csrf=$CSRF_A -d "image=nginx:no-such-tag-$RUN" -d port=80 -d health_path=%2F \
   -d cpu_millis=250 -d memory_mb=128 -d volume_path= -d env= -d deploy=1 >/dev/null

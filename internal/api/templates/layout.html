@@ -26,7 +26,7 @@
 <nav aria-label="{{.Name}}">
   {{range $.AreaNav}}<a href="{{$.Org.Path}}{{.Path}}" class="{{if eq .Path $.CurPath}}cur{{end}}">{{.Label}}</a>{{end}}
 </nav>
-{{if eq .ID "projects" "compute" "databases"}}
+{{if eq .ID "projects" "compute" "databases" "functions"}}
 <div class="side-h">Resources by project</div>
 {{template "tree" $}}
 {{end}}
@@ -41,9 +41,10 @@
 {{range $p := .Nav}}
 <div class="side-proj">
   <a href="{{$.Org.Path}}/p/{{$p.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (not $.CurService) (not $.CurDB)}}cur{{end}}">{{$p.Name}}</a>
-  {{if or $p.Services $p.Databases}}<ul>
+  {{if or $p.Services $p.Databases $p.Functions}}<ul>
     {{range $p.Services}}<li><a href="{{$.Org.Path}}/p/{{$p.Slug}}/s/{{.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (eq .Slug $.CurService)}}cur{{end}}" title="{{.Slug}}: {{.Status}}"><span class="glyph g-{{.Status}}" aria-hidden="true"></span>{{.Slug}}</a></li>{{end}}
     {{range $p.Databases}}<li><a href="{{$.Org.Path}}/p/{{$p.Slug}}/d/{{.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (eq .Slug $.CurDB)}}cur{{end}}" title="database {{.Slug}}: {{.Status}}"><span class="glyph g-{{.Status}}" aria-hidden="true"></span>{{.Slug}} <span class="db-tag">db</span></a></li>{{end}}
+    {{range $p.Functions}}<li><a href="{{$.Org.Path}}/p/{{$p.Slug}}/f/{{.Slug}}" class="{{if and (eq $p.Slug $.CurProject) (eq .Slug $.CurFn)}}cur{{end}}" title="function {{.Slug}}"><span class="glyph g-none" aria-hidden="true"></span>{{.Slug}} <span class="db-tag">fn</span></a></li>{{end}}
   </ul>{{end}}
 </div>
 {{else}}

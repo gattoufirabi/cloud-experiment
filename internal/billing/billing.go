@@ -33,6 +33,8 @@ type Prices struct {
 	GBOut          float64 // cents per GB of network out
 	BuildMin       float64 // cents per build minute
 	StorageGBMonth float64 // cents per GB-month of object storage
+	FnGBSecond     float64 // cents per GB-second of function run time
+	FnMRequests    float64 // cents per million function requests
 }
 
 type Usage struct {
@@ -41,6 +43,8 @@ type Usage struct {
 	EgressBytes      int64
 	BuildSeconds     int64
 	StorageByteHours int64 // sum of hourly samples of stored bytes
+	FnRequests       int64
+	FnMBms           int64 // memory (MB) x run time (ms) of function invocations
 }
 
 func (u Usage) VCPUHours() float64       { return float64(u.CPUMilliMinutes) / 1000 / 60 }
@@ -48,6 +52,8 @@ func (u Usage) GBHours() float64         { return float64(u.MemMBMinutes) / 1024
 func (u Usage) GBOut() float64           { return float64(u.EgressBytes) / 1e9 }
 func (u Usage) BuildMinutes() float64    { return float64(u.BuildSeconds) / 60 }
 func (u Usage) StorageGBMonths() float64 { return float64(u.StorageByteHours) / 1e9 / 730 }
+func (u Usage) FnGBSeconds() float64     { return float64(u.FnMBms) / 1024 / 1000 }
+func (u Usage) FnMRequests() float64     { return float64(u.FnRequests) / 1e6 }
 
 type Line struct {
 	Description string
@@ -78,6 +84,8 @@ func Lines(planName string, p Prices, u Usage, fraction float64) []Line {
 	add("Network out", "GB", u.GBOut(), p.GBOut)
 	add("Builds from git", "build minute", u.BuildMinutes(), p.BuildMin)
 	add("Object storage", "GB-month", u.StorageGBMonths(), p.StorageGBMonth)
+	add("Function requests", "million requests", u.FnMRequests(), p.FnMRequests)
+	add("Function run time", "GB-second", u.FnGBSeconds(), p.FnGBSecond)
 	return out
 }
 
@@ -140,7 +148,8 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, month 
 	rows, err := pool.Query(ctx, `
 		SELECT o.id, o.name, o.billing_name, o.billing_address, o.billing_tax_id, p.name, o.created_at,
 		       p.price_monthly_cents, p.price_vcpu_hour_cents::float8, p.price_gb_hour_cents::float8, p.price_gb_out_cents::float8,
-		       p.price_build_minute_cents::float8, p.price_storage_gb_month_cents::float8
+		       p.price_build_minute_cents::float8, p.price_storage_gb_month_cents::float8,
+		       p.price_fn_gb_second_cents::float8, p.price_fn_million_requests_cents::float8
 		FROM orgs o JOIN plans p ON p.id = o.plan_id
 		WHERE o.created_at < $2
 		  AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.org_id = o.id AND i.period_start = $1::date)
@@ -151,7 +160,7 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, month 
 	orgs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (orgRow, error) {
 		var o orgRow
 		err := r.Scan(&o.ID, &o.Name, &o.BillName, &o.BillAddr, &o.BillTax, &o.Plan, &o.Created,
-			&o.P.Monthly, &o.P.VCPUHour, &o.P.GBHour, &o.P.GBOut, &o.P.BuildMin, &o.P.StorageGBMonth)
+			&o.P.Monthly, &o.P.VCPUHour, &o.P.GBHour, &o.P.GBOut, &o.P.BuildMin, &o.P.StorageGBMonth, &o.P.FnGBSecond, &o.P.FnMRequests)
 		return o, err
 	})
 	if err != nil {
@@ -162,9 +171,9 @@ func Generate(ctx context.Context, pool *pgxpool.Pool, cfg config.Config, month 
 		var u Usage
 		if err := pool.QueryRow(ctx, `
 			SELECT coalesce(sum(cpu_milli_minutes), 0)::bigint, coalesce(sum(mem_mb_minutes), 0)::bigint, coalesce(sum(egress_bytes), 0)::bigint,
-			       coalesce(sum(storage_bytes), 0)::bigint
+			       coalesce(sum(storage_bytes), 0)::bigint, coalesce(sum(fn_requests), 0)::bigint, coalesce(sum(fn_mb_ms), 0)::bigint
 			FROM usage_hourly WHERE org_id = $1 AND hour >= $2 AND hour < $3`, o.ID, start, end).
-			Scan(&u.CPUMilliMinutes, &u.MemMBMinutes, &u.EgressBytes, &u.StorageByteHours); err != nil {
+			Scan(&u.CPUMilliMinutes, &u.MemMBMinutes, &u.EgressBytes, &u.StorageByteHours, &u.FnRequests, &u.FnMBms); err != nil {
 			return created, err
 		}
 		if u.BuildSeconds, err = BuildSeconds(ctx, pool, o.ID, start, end); err != nil {

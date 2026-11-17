@@ -1,0 +1,51 @@
+{{define "title"}}Functions · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>Functions</h1>
+  {{if .CanEdit}}<a class="button-link right" href="#create">Create function</a>{{end}}
+</div>
+<p class="lede">Code that runs on demand, without a server to manage: call it through its URL, the API or a schedule. You pay only while it runs{{if .Scope}}. Project <strong>{{.Scope}}</strong>{{end}}.</p>
+<p class="help"><a href="/docs/user#functions" target="_blank" rel="noopener">Guide: functions ↗</a></p>
+
+<div class="section">
+  <div class="table-tools">
+    <h2>Functions <span class="count">{{len .Functions}}</span></h2>
+    <input type="search" data-filter="functions-table" placeholder="Find functions" aria-label="Find functions">
+  </div>
+  {{if .Functions}}
+  <div class="scroll-x">
+  <table id="functions-table" class="resources">
+    <thead><tr><th>Name</th><th>Project</th><th>Runtime</th><th>Memory</th><th>Triggers</th><th class="num">Invocations (24 h)</th><th class="num">Errors</th><th>Last change</th></tr></thead>
+    <tbody>
+    {{range .Functions}}
+      <tr><td><a href="{{$.Org.Path}}/p/{{.Project}}/f/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
+        <td><a href="{{$.Org.Path}}/p/{{.Project}}">{{.ProjectName}}</a></td>
+        <td>{{runtime .Runtime}}</td><td>{{.MemoryMB}} MB</td>
+        <td>{{if .URLEnabled}}<span class="badge">URL</span>{{end}} {{if .ScheduleEnabled}}<span class="badge">schedule</span>{{end}}{{if not (or .URLEnabled .ScheduleEnabled)}}<span class="muted">API only</span>{{end}}</td>
+        <td class="num">{{.Invocations}}</td><td class="num">{{if .Errors}}<span class="st st-failed">{{.Errors}}</span>{{else}}0{{end}}</td>
+        <td class="nowrap">{{ago .Updated}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">No functions {{if .Scope}}in this project{{else}}yet{{end}}. A function is a handler, such as <code>export const handler = async (event) =&gt; …</code>, run in a sandbox each time it is called.</p>{{end}}
+</div>
+
+{{if .CanEdit}}
+<div class="section" id="create">
+  <h2>Create function</h2>
+  {{if .Projects}}
+  <p class="small muted">It starts with a working example you can edit in the browser or replace with a zip archive. It runs on its project's private network, next to the project's databases.</p>
+  <form method="post" action="{{.Org.Path}}/functions" class="form-grid">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Project<select name="project" required>{{range .Projects}}<option value="{{.Slug}}" {{if eq .Slug $.Scope}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
+    <label>Function name <span class="hint">2 to 20 lowercase letters, digits and dashes</span><input name="slug" placeholder="e.g. resize-image" pattern="[a-z0-9][a-z0-9\-]{1,19}" required></label>
+    <fieldset class="wide choice"><legend>Runtime</legend>
+      {{range $i, $r := .Runtimes}}<label class="option"><input type="radio" name="runtime" value="{{$r.ID}}" {{if eq $i 0}}checked{{end}}> <strong>{{$r.Name}}</strong></label>{{end}}
+    </fieldset>
+    <div class="wide"><button type="submit" class="arrow">Create function</button></div>
+  </form>
+  {{else}}<p class="small muted">Create a <a href="{{.Org.Path}}/projects#create">project</a> first.</p>{{end}}
+</div>
+{{end}}
+{{end}}

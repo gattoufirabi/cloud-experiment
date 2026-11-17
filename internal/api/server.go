@@ -56,6 +56,7 @@ type Server struct {
 	wa         *webauthn.WebAuthn
 	ceremonies *ceremonyStore
 	pow        *powStore
+	fnWait     fnWaiters // requests waiting for a function's result
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -103,6 +104,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	internal := &http.Server{Addr: cfg.InternalAddr, Handler: s.internalRoutes(), ReadHeaderTimeout: 5 * time.Second}
 
 	go s.housekeeping(ctx)
+	go s.listenFnDone(ctx)
 	errc := make(chan error, 2)
 	go func() { errc <- public.ListenAndServe() }()
 	go func() { errc <- internal.ListenAndServe() }()
@@ -173,12 +175,22 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /o/{org}/registry", s.auth(authFull, s.orgArea("registry", "viewer")))
 	m.HandleFunc("GET /o/{org}/monitoring", s.auth(authFull, s.orgArea("monitoring", "viewer")))
 	m.HandleFunc("GET /o/{org}/compute", s.auth(authFull, s.computePage))
-	m.HandleFunc("POST /o/{org}/compute", s.auth(authFull, s.createServiceIn))
+	m.HandleFunc("POST /o/{org}/compute", s.auth(authFull, s.createServiceFull))
+	m.HandleFunc("POST /o/{org}/compute/actions", s.auth(authFull, s.computeActions))
 	m.HandleFunc("GET /o/{org}/compute/jobs", s.auth(authFull, s.computeJobsPage))
 	m.HandleFunc("GET /o/{org}/compute/previews", s.auth(authFull, s.computePreviewsPage))
 	m.HandleFunc("GET /o/{org}/databases", s.auth(authFull, s.databasesPage))
 	m.HandleFunc("POST /o/{org}/databases", s.auth(authFull, s.createDatabaseIn))
 	m.HandleFunc("GET /o/{org}/domains", s.auth(authFull, s.domainsPage))
+	m.HandleFunc("GET /o/{org}/functions", s.auth(authFull, s.functionsPage))
+	m.HandleFunc("POST /o/{org}/functions", s.auth(authFull, s.createFunction))
+	const fnp = "/o/{org}/p/{project}/f/{fn}"
+	m.HandleFunc("GET "+fnp, s.auth(authFull, s.functionPage))
+	m.HandleFunc("POST "+fnp+"/code", s.auth(authFull, s.saveFunctionCode))
+	m.HandleFunc("POST "+fnp+"/test", s.auth(authFull, s.testFunction))
+	m.HandleFunc("POST "+fnp+"/settings", s.auth(authFull, s.functionSettings))
+	m.HandleFunc("POST "+fnp+"/token", s.auth(authFull, s.newFunctionToken))
+	m.HandleFunc("POST "+fnp+"/delete", s.auth(authFull, s.deleteFunction))
 	m.HandleFunc("GET /o/{org}/audit", s.auth(authFull, s.auditPage))
 	m.HandleFunc("GET /operator", s.operatorOnly(s.operatorPage))
 	m.HandleFunc("POST /operator/orgs/{slug}/plan", s.operatorOnly(s.operatorSetPlan))
@@ -266,7 +278,7 @@ func (s *Server) routes() http.Handler {
 
 	s.apiRoutes(m)
 	s.passkeyRoutes(m)
-	return s.secureHeaders(m)
+	return s.functionHosts(s.secureHeaders(m))
 }
 
 func assetVersion() string {
@@ -302,8 +314,13 @@ func (s *Server) secureHeaders(next http.Handler) http.Handler {
 		}
 		if r.Method == http.MethodPost {
 			limit := int64(1 << 20)
-			if strings.HasSuffix(r.URL.Path, "/objects/upload") { // console uploads to a bucket
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/objects/upload"): // console uploads to a bucket
 				limit = maxUploadBytes + 1<<20
+			case strings.HasSuffix(r.URL.Path, "/code"): // function code archive
+				limit = 11 << 20
+			case strings.HasSuffix(r.URL.Path, "/invoke"): // function event
+				limit = 7 << 20
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
@@ -478,6 +495,10 @@ func parseTemplates() (map[string]*template.Template, error) {
 		"engineName": engineName,
 		"bytes":      humanBytes,
 		"icon":       icon,
+		"runtime":    runtimeLabel,
+		"list":       func(xs ...int) []int { return xs },
+		"int64":      func(i int) int64 { return int64(i) },
+		"ms":         itoaPtr,
 		"dbStatus": func(s string) string {
 			if s == "running" {
 				return "live"
