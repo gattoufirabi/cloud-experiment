@@ -11,6 +11,9 @@ PASS=0; FAIL=0
 ok()   { echo "  PASS  $*"; PASS=$((PASS+1)); }
 bad()  { echo "  FAIL  $*"; FAIL=$((FAIL+1)); }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected $3, got $2)"; fi; }
+# until_is <expected> <seconds> <command...>: runs the command every second until it prints
+# <expected> (or the time is up) and prints its last output; replaces fixed sleeps
+until_is() { local want=$1 n=$2 out=; shift 2; for _ in $(seq 1 "$n"); do out=$("$@"); [ "$out" = "$want" ] && break; sleep 1; done; echo "$out"; }
 # section "name": prints how long the previous section took (to find the slow parts)
 T0=$(date +%s); SEC_T=$T0; SEC_N=setup
 section() { local now; now=$(date +%s); echo "   ($SEC_N: $((now - SEC_T)) s)"; SEC_N=$1; SEC_T=$now; echo "== $1"; }
@@ -349,6 +352,31 @@ code_of ja -X POST "$BASE/o/$A/p/shop/d/mongo/backups/restore/$MSNAP" -d csrf=$C
 check "[A] MongoDB restore completes (mongorestore)" "$(my_wait_job mongo restore)" done
 check "[A] MongoDB documents are back to the snapshot" "$(mongo_js 'db.notes.findOne().t')" "$MARK-g1"
 code_of ja -X POST "$BASE/o/$A/p/shop/d/mongo/delete" -d csrf=$CSRF_A -d confirm=mongo >/dev/null
+
+section "Managed Kafka (streaming)"
+check "[A] Kafka created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=events -d engine=kafka:3.9)" 303
+st=; for _ in $(seq 1 120); do st=$(my_db events status); [ "$st" = running ] || [ "$st" = failed ] && break; sleep 2; done
+check "[A] Kafka broker running" "$st" running
+KCID=$(my_db events container_id)
+KHOST=$(owner_sql "SELECT 'pd-' || left(replace(d.id::text, '-', ''), 12) FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'events'")
+KPAGE=$(c ja "$BASE/o/$A/p/shop/d/events")
+KURL=$(grep -o 'kafka://[^<]*' <<<"$KPAGE" | head -1 | sed 's/&amp;/\&/g')
+check "[A] the page shows the bootstrap server and a kafka:// URL with SASL settings" "$(grep -c "$KHOST:9092" <<<"$KPAGE" | sed 's/^[1-9][0-9]*$/yes/'):$(grep -c 'sasl.mechanism=PLAIN' <<<"$KURL")" "yes:1"
+KUSER=$(sed -E 's|kafka://([^:]+):.*|\1|' <<<"$KURL"); KPASS=$(sed -E 's|kafka://[^:]+:([^@]+)@.*|\1|' <<<"$KURL")
+if dx exec "$CID_F" sh -c "echo | nc -w 3 $KHOST 9092" >/dev/null 2>&1; then ok "[A] service in the same project reaches Kafka"; else bad "[A] service cannot reach Kafka"; fi
+if dx exec "$CID_B" sh -c "echo | nc -w 3 $KHOST 9092" >/dev/null 2>&1; then bad "[B->A] B's service reached A's Kafka"; else ok "[B->A] B's service cannot reach A's Kafka"; fi
+KNET=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$KCID")
+KIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$KCID")
+kclient() { # kclient <password> <shell commands>: a Kafka client container on the project network
+  MSYS_NO_PATHCONV=1 docker run --rm --network "$KNET" --add-host "$KHOST:$KIP" -e "KU=$KUSER" -e "KP=$1" --entrypoint bash apache/kafka:3.9.1 -c \
+    'printf "%s\n" security.protocol=SASL_PLAINTEXT sasl.mechanism=PLAIN "sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username=\"$KU\" password=\"$KP\";" > /tmp/c.properties; '"$2" 2>&1 | tr -d '\r'; }
+check "[A] a message is produced and consumed with the database's credentials" "$(kclient "$KPASS" "echo order-$RUN | /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server $KHOST:9092 --producer.config /tmp/c.properties --topic orders >/dev/null 2>&1; /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server $KHOST:9092 --consumer.config /tmp/c.properties --topic orders --from-beginning --max-messages 1 --timeout-ms 40000 2>/dev/null" | grep -c "order-$RUN")" 1
+check "[A] a wrong password is refused" "$(kclient wrong "timeout 40 /opt/kafka/bin/kafka-topics.sh --bootstrap-server $KHOST:9092 --command-config /tmp/c.properties --list" | grep -ci 'authentication failed' | sed 's/^[1-9][0-9]*$/yes/')" yes
+check "[A] Kafka has no backups (refused, and not scheduled)" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/shop/d/events/backups" -d csrf=$CSRF_A | grep -c 'err='):$(owner_sql "SELECT backup_enabled FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'events'")" "1:f"
+code_of ja -X POST "$BASE/o/$A/p/shop/d/events/attach" -d csrf=$CSRF_A -d service=files -d name=KAFKA_URL >/dev/null
+check "[A] KAFKA_URL stored as a secret of a service" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name = 'KAFKA_URL'")" 1
+code_of ja -X POST "$BASE/o/$A/p/shop/d/events/delete" -d csrf=$CSRF_A -d confirm=events >/dev/null
+check "[A] Kafka deleted with its container" "$(for _ in $(seq 1 30); do docker inspect "$KCID" >/dev/null 2>&1 || { echo gone; break; }; sleep 2; done)" gone
 code_of ja -X POST "$BASE/o/$A/p/shop/s/files/secrets/MONGODB_URI/delete" -d csrf=$CSRF_A >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
@@ -1526,16 +1554,17 @@ for p in settings plans resources health; do check "[B] /operator/$p hidden from
 check "every admin page opens" "$(for p in settings plans resources health; do code_of ja "$BASE/operator/$p"; echo; done | sort -u | tr -d '\n')" 200
 SET_BASE=(-d csrf=$OPCSRF -d banner_level=warning -d signup_enabled= -d signup_daily_limit= -d signup_trial_days= -d signup_allowed_domains_env=1 -d signup_blocked_domains_env=1)
 check "announcement saved" "$(code_of ja -X POST "$BASE/operator/settings" "${SET_BASE[@]}" --data-urlencode "banner_message=Maintenance $RUN tonight")" 303
-check "the announcement shows on tenant pages" "$(sleep 11; c jb "$BASE/o/$B" | grep -c "Maintenance $RUN tonight" | sed 's/^[1-9][0-9]*$/yes/')" yes
+banner_n() { c jb "$BASE/o/$B" | grep -c "Maintenance $RUN tonight" | sed 's/^[1-9][0-9]*$/yes/'; }
+check "the announcement shows on tenant pages" "$(until_is yes 15 banner_n)" yes
 check "[A] deployments paused" "$(code_of ja -X POST "$BASE/operator/settings" "${SET_BASE[@]}" -d deploys_paused=1)" 303
 code_of ja -X POST "$BASE/o/$A/p/shop/s/web/deploy" -d csrf=$CSRF_A >/dev/null
-sleep 6
+sleep 4
 check "a deployment waits while paused" "$(owner_sql "SELECT d.status FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'web' ORDER BY d.revision DESC LIMIT 1")" pending
 check "health shows the waiting deployment" "$(c ja "$BASE/operator/health" | grep -c 'Deployments are paused' | sed 's/^[1-9][0-9]*$/yes/')" yes
 code_of ja -X POST "$BASE/operator/settings" "${SET_BASE[@]}" >/dev/null
 check "resumed: the waiting deployment is picked up" "$(for _ in $(seq 1 30); do st=$(owner_sql "SELECT d.status FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'web' ORDER BY d.revision DESC LIMIT 1"); [ "$st" != pending ] && { echo picked; break; }; sleep 2; done)" picked
-check "the announcement is gone" "$(sleep 11; c jb "$BASE/o/$B" | grep -c "Maintenance $RUN tonight")" 0
-check "signup closed by the operator" "$(code_of ja -X POST "$BASE/operator/settings" -d csrf=$OPCSRF -d banner_level=info -d signup_enabled=off -d signup_allowed_domains_env=1 -d signup_blocked_domains_env=1):$(sleep 11; code_of jx "$BASE/signup")" "303:404"
+check "the announcement is gone" "$(until_is 0 15 banner_n)" 0
+check "signup closed by the operator" "$(code_of ja -X POST "$BASE/operator/settings" -d csrf=$OPCSRF -d banner_level=info -d signup_enabled=off -d signup_allowed_domains_env=1 -d signup_blocked_domains_env=1):$(until_is 404 15 code_of jx "$BASE/signup")" "303:404"
 code_of ja -X POST "$BASE/operator/settings" -d csrf=$OPCSRF -d banner_level=info -d signup_allowed_domains_env=1 -d signup_blocked_domains_env=1 >/dev/null
 check "settings changes audited" "$(owner_sql "SELECT count(*) >= 4 FROM audit_events WHERE action = 'platform.settings_changed'")" t
 PLAN=e2e$RUN
@@ -1651,6 +1680,83 @@ check "[A] domain added from the Domains page" "$(code_of ja -X POST "$BASE/o/$A
 check "[bulk] domain removed from the list" "$(code_of ja -X POST "$BASE/o/$A/domains/actions" -d csrf=$CSRF_A -d action=remove -d confirm=delete -d sel=bulk-$RUN.example.test):$(owner_sql "SELECT count(*) FROM domains WHERE org_id = '$ORG_A' AND hostname = 'bulk-$RUN.example.test'")" "303:0"
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+section "Cost reports and budgets"
+# 1000 vCPU-hours this hour in project shop: 10.00 at the starter plan's 1 cent per vCPU-hour
+owner_sql "INSERT INTO usage_hourly (org_id, resource_id, kind, name, hour, cpu_milli_minutes) VALUES ('$ORG_A', gen_random_uuid(), 'service', 'shop/e2e-cost-$RUN', date_trunc('hour', now()), 60000000)" >/dev/null
+admin set-plan --slug "$A" --plan starter >/dev/null
+check "the billing page shows the cost by project" "$(c ja "$BASE/o/$A/billing" | grep -c -e "id=\"costs-table\"" -e "/o/$A/p/shop\">shop</a>")" 2
+TOK_ADM=$(new_api_token ja "$A" "$CSRF_A" finance admin)
+COSTS=$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_ADM" "$BASE/api/v1/costs")
+check "[API] cost report per project (before tax, with a forecast)" "$(python -c 'import json,sys; d=json.load(sys.stdin); p={r["project"]: r for r in d["projects"]}; s=p.get("shop", {}); print(s.get("month_to_date_cents", 0) >= 1000, s.get("forecast_cents", 0) >= s.get("month_to_date_cents", 0), d["before_tax"])' <<<"$COSTS" | tr -d '\r')" "True True True"
+check "[API] costs need the admin role (403 for a developer token)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/costs")" 403
+check "invalid budgets refused (no limit, threshold above 500%)" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/billing/budgets" -d csrf=$CSRF_A -d project=shop -d limit=abc | grep -c 'err='):$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/billing/budgets" -d csrf=$CSRF_A -d project=shop -d limit=5 -d thresholds=50,900 | grep -c 'err=')" "1:1"
+check "[A] budget of 5.00 for project shop saved" "$(code_of ja -X POST "$BASE/o/$A/billing/budgets" -d csrf=$CSRF_A -d project=shop -d limit=5 -d "thresholds=50, 80, 100" -d forecast=1)" 303
+BQ="SELECT b.level || ':' || (SELECT count(*) FROM alert_incidents i WHERE i.budget_id = b.id AND i.status = 'firing' AND i.kind = 'budget') FROM budgets b JOIN projects p ON p.id = b.project_id WHERE b.org_id = '$ORG_A' AND p.slug = 'shop'"
+check "spending above the limit opens a budget incident (100% reached)" "$(until_is 100:1 40 owner_sql "$BQ")" 100:1
+check "the incident says how much was spent" "$(owner_sql "SELECT count(*) FROM alert_incidents i JOIN budgets b ON b.id = i.budget_id WHERE b.org_id = '$ORG_A' AND i.status = 'firing' AND i.summary LIKE '%project shop: 100% reached%'")" 1
+check "the budget shows its spending on the page" "$(c ja "$BASE/o/$A/billing" | grep -A3 'project <strong>shop</strong>' | grep -c 'error-text small">[0-9]*%')" 1
+owner_sql "SELECT pg_notify('deployments', 'budgets')" >/dev/null; sleep 2
+check "a crossed threshold notifies only once per month" "$(owner_sql "SELECT count(*) FROM alert_incidents i JOIN budgets b ON b.id = i.budget_id WHERE b.org_id = '$ORG_A' AND i.kind = 'budget'")" 1
+check "[API] budgets listed; B does not see A's" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_ADM" "$BASE/api/v1/budgets" | grep -c '"project":"shop"'):$(owner_sql "SELECT count(*) FROM budgets WHERE org_id = '$ORG_B'")" "1:0"
+check "[API] organization budget created" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_ADM" -H 'Content-Type: application/json' -d '{"limit_cents": 100000000, "thresholds": [90]}' "$BASE/api/v1/budgets")" 201
+BID=$(owner_sql "SELECT id FROM budgets WHERE org_id = '$ORG_A' AND project_id IS NULL")
+check "[B->A] B cannot delete A's budget" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/billing/budgets/$BID/delete" -d csrf=$CSRF_B | grep -c 'not+found\|not%20found'):$(owner_sql "SELECT count(*) FROM budgets WHERE id = '$BID'")" "1:1"
+check "[API] budget deleted" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOK_ADM" "$BASE/api/v1/budgets/$BID")" 204
+check "budget changes audited" "$(owner_sql "SELECT count(*) >= 3 FROM audit_events WHERE org_id = '$ORG_A' AND action IN ('budget.saved', 'budget.deleted')")" t
+owner_sql "DELETE FROM budgets WHERE org_id = '$ORG_A'; DELETE FROM usage_hourly WHERE name = 'shop/e2e-cost-$RUN'" >/dev/null
+
+section "Private network between projects"
+admin set-plan --slug "$A" --plan pro >/dev/null
+for pj in front back lone; do code_of ja -X POST "$BASE/o/$A/projects" -d csrf=$CSRF_A -d slug=$pj -d name=$pj >/dev/null; done
+pn_svc() { # pn_svc <project> <service>: an nginx service, deployed
+  code_of ja -X POST "$BASE/o/$A/p/$1/services" -d csrf=$CSRF_A -d slug=$2 -d image=nginx:1.27-alpine >/dev/null
+  code_of ja -X POST "$BASE/o/$A/p/$1/s/$2/settings" -d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=80 -d health_path=%2F \
+    -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d deploy=1 >/dev/null; }
+pn_svc back api; pn_svc front caller; pn_svc lone solo
+check "[A] three projects with a service each are live" "$(wait_status ja /o/$A/p/back/s/api):$(wait_status ja /o/$A/p/front/s/caller):$(wait_status ja /o/$A/p/lone/s/solo)" "live:live:live"
+pn_cid() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = '$1' AND s.slug = '$2' AND d.status = 'live'"; }
+pn_get() { dx exec "$(pn_cid "$1" "$2")" wget -qO- -T 5 "$3" 2>&1 | grep -q 'Welcome to nginx' && echo 1 || echo 0; }
+check "a service reaches another of its own project by its private name" "$(until_is 1 30 pn_get back api http://api.back.internal/)" 1
+check "before connecting, front does not know back's names" "$(dx exec "$(pn_cid front caller)" grep -c 'api.back.internal' /etc/hosts)" 0
+check "[A admin] front connected to back" "$(code_of ja -X POST "$BASE/o/$A/p/front/connections" -d csrf=$CSRF_A -d project=back)" 303
+check "both projects redeploy to learn the names" "$(for _ in $(seq 1 60); do c1=$(pn_cid front caller); [ -n "$c1" ] && dx exec "$c1" grep -q 'api.back.internal' /etc/hosts 2>/dev/null && { echo yes; break; }; sleep 2; done)" yes
+check "front reaches back's service over the private network" "$(until_is 1 30 pn_get front caller http://api.back.internal/)" 1
+check "and back reaches front (connections go both ways)" "$(until_is 1 45 pn_get back api http://caller.front.internal/)" 1
+LONE_CADDY=$(dx exec "$(pn_cid lone solo)" sh -c "grep ' console.localhost' /etc/hosts | awk '{print \$1}'" | tr -d '\r')
+check "an unconnected project is refused even through the proxy address" "$(dx exec "$(pn_cid lone solo)" wget -qO- -T 5 --header 'Host: api.back.internal' "http://$LONE_CADDY/" 2>&1 | grep -q 'Welcome to nginx' && echo 1 || echo 0)" 0
+B_CID=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$B' AND d.status = 'live' LIMIT 1")
+B_CADDY=$(dx exec "$B_CID" sh -c "grep ' console.localhost' /etc/hosts | awk '{print \$1}'" 2>/dev/null | tr -d '\r')
+check "[B->A] another organization cannot use A's private names" "$(dx exec "$B_CID" wget -qO- -T 5 --header 'Host: api.back.internal' "http://$B_CADDY/" 2>&1 | grep -q 'Welcome to nginx' && echo 1 || echo 0)" 0
+check "the internet cannot use the private names" "$(curl -s --resolve "api.back.internal:$PORT:127.0.0.1" "http://api.back.internal:$PORT/" | grep -q 'Welcome to nginx' && echo 1 || echo 0)" 0
+check "[API] connections listed with their names" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/front/connections" | grep -c '"api.back.internal"')" 1
+check "[API] only admins connect projects (403 for a developer token)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' -d '{"project":"lone"}' "$BASE/api/v1/projects/front/connections")" 403
+check "[B->A] B cannot connect to A's project" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/p/shop/connections" -d csrf=$CSRF_B -d project=back | grep -c 'not+found\|not%20found')" 1
+check "[A admin] disconnected" "$(code_of ja -X POST "$BASE/o/$A/p/front/connections" -d csrf=$CSRF_A -d project=back -d remove=1):$(owner_sql "SELECT count(*) FROM project_peerings WHERE org_id = '$ORG_A'")" "303:0"
+check "after disconnecting, front no longer reaches back" "$(for _ in $(seq 1 60); do c1=$(pn_cid front caller); [ -n "$c1" ] && ! dx exec "$c1" grep -q 'api.back.internal' /etc/hosts 2>/dev/null && { echo yes; break; }; sleep 2; done)" yes
+check "connections audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE org_id = '$ORG_A' AND action IN ('project.connected', 'project.disconnected')")" 2
+for pj in front back lone; do code_of ja -X POST "$BASE/o/$A/p/$pj/delete" -d csrf=$CSRF_A -d confirm=$pj >/dev/null; done
+admin set-plan --slug "$A" --plan starter >/dev/null
+
+section "Scheduled scaling"
+admin set-plan --slug "$A" --plan pro >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=sched -d image=nginx:1.27-alpine >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/shop/s/sched/settings" -d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=80 -d health_path=%2F \
+  -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d deploy=1 >/dev/null
+check "[A] service to schedule is live" "$(wait_status ja /o/$A/p/shop/s/sched)" live
+sched_err() { c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/shop/s/sched/schedules" -d csrf=$CSRF_A "$@" | grep -c 'err='; }
+check "invalid schedules refused (bad cron, more often than every 15 minutes, 11 instances)" "$(sched_err -d 'cron=99 * * * *' -d instances=2):$(sched_err -d 'cron=*/5 * * * *' -d instances=2):$(sched_err -d 'cron=0 8 * * *' -d instances=11)" "1:1:1"
+check "[A] schedule added (2 instances on 1 January)" "$(code_of ja -X POST "$BASE/o/$A/p/shop/s/sched/schedules" -d csrf=$CSRF_A -d 'cron=0 0 1 1 *' -d instances=2 -d label=e2e)" 303
+check "[API] schedules listed" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/shop/services/sched/schedules" | grep -c '"cron":"0 0 1 1 \*"')" 1
+check "[B->A] B cannot add a schedule to A's service (404)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_B" -H 'Content-Type: application/json' -d '{"cron":"0 9 * * *","instances":3}' "$BASE/api/v1/projects/shop/services/sched/schedules" -X POST):$(owner_sql "SELECT count(*) FROM scaling_schedules sc JOIN services s ON s.id = sc.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'sched'")" "404:1"
+owner_sql "UPDATE scaling_schedules SET created_at = now() - interval '400 days' WHERE label = 'e2e'" >/dev/null   # its last 1 January is now due
+SQ="SELECT s.instances || ':' || coalesce((SELECT jsonb_array_length(d.instances) FROM deployments d WHERE d.service_id = s.id AND d.status = 'live'), 0) FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'sched'"
+check "the due schedule scales the service to 2 running instances" "$(until_is 2:2 150 owner_sql "$SQ")" 2:2
+check "applied once, recorded and audited" "$(owner_sql "SELECT last_run IS NOT NULL AND last_error = '' FROM scaling_schedules WHERE label = 'e2e'"):$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'service.scheduled_scaling' AND target = 'service:shop/sched'")" "t:1"
+check "the service page lists the schedule" "$(c ja "$BASE/o/$A/p/shop/s/sched" | grep -c 'id="schedules-table"')" 1
+check "[API] schedule deleted" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/shop/services/sched/schedules/$(owner_sql "SELECT id FROM scaling_schedules WHERE label = 'e2e'")")" 204
+code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/sched >/dev/null
+admin set-plan --slug "$A" --plan starter >/dev/null
+
 section "Several servers (a second node on the same machine)"
 docker compose -f compose.dev.yml --profile multinode up -d agent2 >/dev/null 2>&1
 for _ in $(seq 1 40); do [ "$(owner_sql "SELECT count(*) FROM nodes WHERE id = 'node-2' AND last_seen > now() - interval '1 minute'")" = 1 ] && break; sleep 2; done
@@ -1692,6 +1798,27 @@ check "move audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE actio
 code_of ja -X POST "$BASE/o/$A/p/vault/delete" -d csrf=$CSRF_A -d confirm=vault >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 check "drain audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'operator.node_drain' AND target = 'node:node-2' AND created_at > now() - interval '10 minutes'")" 1
+# Node failover: node-2 stops reporting; the primary cordons it and redeploys its stateless project.
+admin set-plan --slug "$A" --plan pro >/dev/null
+code_of ja -X POST "$BASE/operator/nodes/node-2" -d csrf=$OPCSRF -d cluster=default >/dev/null
+code_of ja -X POST "$BASE/operator/nodes/$PRIMARY" -d csrf=$OPCSRF -d cordoned=1 -d cluster=default >/dev/null
+code_of ja -X POST "$BASE/o/$A/projects" -d csrf=$CSRF_A -d slug=fover -d name=Failover >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/fover/services" -d csrf=$CSRF_A -d slug=web -d image=nginx:1.27-alpine >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/fover/s/web/settings" -d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=80 -d health_path=%2F \
+  -d cpu_millis=100 -d memory_mb=64 -d volume_path= -d env= -d deploy=1 >/dev/null
+check "[A] stateless project running on node-2" "$(wait_status ja /o/$A/p/fover/s/web):$(owner_sql "SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover'")" "live:node-2"
+FOVER_CID=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover' AND d.status = 'live'")
+code_of ja -X POST "$BASE/operator/nodes/$PRIMARY" -d csrf=$OPCSRF -d cluster=default >/dev/null
+docker compose -f compose.dev.yml --profile multinode stop agent2 >/dev/null 2>&1
+owner_sql "UPDATE nodes SET last_seen = now() - interval '10 minutes' WHERE id = 'node-2'" >/dev/null   # silent for 10 minutes
+check "the silent node is failed over: cordoned, its project placed on the primary" "$(until_is "t:$PRIMARY" 90 owner_sql "SELECT (SELECT cordoned AND failed_over_at IS NOT NULL FROM nodes WHERE id = 'node-2') || ':' || coalesce((SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover'), '')")" "t:$PRIMARY"
+FOVER_HOST=web-fover-$A.apps.localhost
+check "the app is redeployed on the primary and answers" "$(for _ in $(seq 1 60); do [ "$(owner_sql "SELECT upstream FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover' AND d.status = 'live'")" = "" ] && curl -s --resolve "$FOVER_HOST:$PORT:127.0.0.1" "http://$FOVER_HOST:$PORT/" | grep -q 'Welcome to nginx' && { echo yes; break; }; sleep 2; done)" yes
+check "failover audited and the operator notified" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'node.failed_over' AND target = 'node:node-2'" | sed 's/^[1-9][0-9]*$/yes/'):$(ntfy_has platform-operator "Node node-2 failed over")" "yes:yes"
+docker compose -f compose.dev.yml --profile multinode start agent2 >/dev/null 2>&1
+check "when node-2 comes back, it removes its old container" "$(for _ in $(seq 1 45); do docker inspect "$FOVER_CID" >/dev/null 2>&1 || { echo gone; break; }; sleep 2; done)" gone
+code_of ja -X POST "$BASE/o/$A/p/fover/delete" -d csrf=$CSRF_A -d confirm=fover >/dev/null
+admin set-plan --slug "$A" --plan starter >/dev/null
 docker compose -f compose.dev.yml --profile multinode rm -sf agent2 >/dev/null 2>&1
 owner_sql "DELETE FROM nodes WHERE id = 'node-2'" >/dev/null
 

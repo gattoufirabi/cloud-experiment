@@ -17,6 +17,7 @@ var Engines = []Engine{
 	{"mariadb", "11.4", "MariaDB", 3306, "mysql"},
 	{"mongodb", "8.0", "MongoDB", 27017, "mongodb"},
 	{"redis", "7", "Redis", 6379, "redis"},
+	{"kafka", "3.9", "Apache Kafka", 9092, "kafka"},
 }
 
 // FindEngine returns the engine for "id:version" (as sent by the console form).
@@ -38,6 +39,9 @@ func EngineInfo(id string) Engine {
 	}
 	return Engines[0]
 }
+
+// Streaming reports whether the engine is a message stream (no nightly backups).
+func Streaming(id string) bool { return id == "kafka" }
 
 // MySQLFamily reports whether the engine speaks the MySQL protocol (MySQL, MariaDB).
 func MySQLFamily(id string) bool { return id == "mysql" || id == "mariadb" }

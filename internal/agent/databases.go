@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -31,8 +32,22 @@ type managedDB struct {
 }
 
 func dbContainerName(id string) string { return "pd-" + model.Compact(id)[:12] }
-func dbDataVolume(id string) string    { return "pvdb-" + model.Compact(id) }
-func dbDumpVolume(id string) string    { return "pbdb-" + model.Compact(id) }
+
+// kafkaImageTag pins the Apache Kafka image (Apache License 2.0).
+const kafkaImageTag = "3.9.1"
+
+// kafkaClusterID is the KRaft cluster ID: the database ID's 16 bytes, base64url without
+// padding (22 characters), so it stays the same across restarts.
+func kafkaClusterID(id string) string {
+	b, err := hex.DecodeString(model.Compact(id))
+	if err != nil || len(b) != 16 {
+		sum := sha256.Sum256([]byte(id))
+		b = sum[:16]
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+func dbDataVolume(id string) string { return "pvdb-" + model.Compact(id) }
+func dbDumpVolume(id string) string { return "pbdb-" + model.Compact(id) }
 
 func (d managedDB) specHash() string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d|%d|%s|%s", d.Engine, d.Version, d.CPUMillis, d.MemoryMB, d.DBName, d.Username)))
@@ -184,6 +199,28 @@ func engineConfig(d managedDB, password string) (image string, cmd, env []string
 			[]string{"MONGO_INITDB_ROOT_USERNAME=" + d.Username, "MONGO_INITDB_ROOT_PASSWORD=" + password, "MONGO_INITDB_DATABASE=" + d.DBName},
 			"/data/db"
 	}
+	if d.Engine == "kafka" {
+		// One KRaft node (broker and controller). Clients authenticate with SASL/PLAIN as
+		// the database's user; the controller listens on the container's loopback only.
+		// The broker advertises the database's host name, which services of the project
+		// resolve to its private address. The JVM heap gets 40% of the memory.
+		heap := max(128, d.MemoryMB*4/10)
+		jaas := fmt.Sprintf(`org.apache.kafka.common.security.plain.PlainLoginModule required username="%s" password="%s" user_%s="%s";`,
+			d.Username, password, d.Username, password)
+		return "apache/kafka:" + kafkaImageTag, nil, []string{
+			"KAFKA_OPTS=-Dplatform.managed=true", // the image requires it when SASL is on (the credentials are below)
+			"CLUSTER_ID=" + kafkaClusterID(d.ID), "KAFKA_NODE_ID=1", "KAFKA_PROCESS_ROLES=broker,controller",
+			"KAFKA_LISTENERS=SASL_PLAINTEXT://:9092,CONTROLLER://127.0.0.1:9093",
+			"KAFKA_ADVERTISED_LISTENERS=SASL_PLAINTEXT://" + dbContainerName(d.ID) + ":9092",
+			"KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER", "KAFKA_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:9093",
+			"KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,SASL_PLAINTEXT:SASL_PLAINTEXT",
+			"KAFKA_INTER_BROKER_LISTENER_NAME=SASL_PLAINTEXT", "KAFKA_SASL_ENABLED_MECHANISMS=PLAIN",
+			"KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL=PLAIN", "KAFKA_LISTENER_NAME_SASL__PLAINTEXT_PLAIN_SASL_JAAS_CONFIG=" + jaas,
+			"KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1", "KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1",
+			"KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1", "KAFKA_AUTO_CREATE_TOPICS_ENABLE=true", "KAFKA_LOG_RETENTION_HOURS=168",
+			"KAFKA_LOG_DIRS=/var/lib/kafka/data", fmt.Sprintf("KAFKA_HEAP_OPTS=-Xmx%dm -Xms%dm", heap, heap),
+		}, "/var/lib/kafka/data"
+	}
 	if d.Engine == "redis" {
 		// RDB snapshots only (no append-only file) so a restore is one file; a memory cap
 		// below the container limit makes a full cache refuse writes instead of being killed.
@@ -284,12 +321,15 @@ func readyCmd(d managedDB) []string {
 	if d.Engine == "mongodb" {
 		return mongoShell("mongosh --quiet " + mongoAuth + ` --eval "db.runCommand({ping: 1}).ok" | grep -q 1`)
 	}
+	if d.Engine == "kafka" { // the client port opens once the broker has started
+		return []string{"nc", "-z", "127.0.0.1", "9092"}
+	}
 	return []string{"pg_isready", "-U", d.Username, "-d", d.DBName, "-h", "127.0.0.1"}
 }
 
 func (a *Agent) waitReady(ctx context.Context, id string, d managedDB) error {
 	limit := 90 * time.Second
-	if model.MySQLFamily(d.Engine) || d.Engine == "mongodb" { // the first start initialises the data directory
+	if model.MySQLFamily(d.Engine) || d.Engine == "mongodb" || d.Engine == "kafka" { // the first start initialises the data directory
 		limit = 180 * time.Second
 	}
 	deadline := time.Now().Add(limit)
@@ -332,6 +372,9 @@ func (a *Agent) backupDatabase(ctx context.Context, j backupJob, tag string) (st
 	d, err := a.dbForBackup(ctx, j.DatabaseID)
 	if err != nil {
 		return "", err
+	}
+	if model.Streaming(d.Engine) {
+		return "", errors.New("Kafka has no backups: topics are a stream, kept for 7 days")
 	}
 	cmd := []string{"pg_dump", "-U", d.Username, "-d", d.DBName, "-h", "127.0.0.1", "-Fc", "-f", "/backup/db.dump"}
 	tool := "pg_dump"

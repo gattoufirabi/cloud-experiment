@@ -18,6 +18,52 @@
   <p class="small muted">Prices of plan {{.PlanName}}: {{money .Prices.Monthly .Currency}} per month, {{unitprice .Prices.VCPUHour}} {{.Currency}} per vCPU-hour, {{unitprice .Prices.GBHour}} {{.Currency}} per GB-hour of memory, {{unitprice .Prices.GBOut}} {{.Currency}} per GB of network out, {{unitprice .Prices.BuildMin}} {{.Currency}} per build minute. Resources are billed while they run, at the size you allocated, not the share they used.</p>
 </div>
 
+<div class="section" id="costs">
+  <h2>Cost by project</h2>
+  <p class="small muted">Usage priced at your plan's prices, before tax. The forecast assumes the rest of the month continues at the same pace. Object storage, queues, email and the plan fee belong to the whole organization.</p>
+  {{if .Costs.Projects}}
+  <div class="scroll-x">
+  <table id="costs-table">
+    <thead><tr><th>Project</th><th class="num">{{month .Month}} so far</th><th class="num">Forecast for the month</th><th class="num">Last month</th></tr></thead>
+    <tbody>
+    {{range .Costs.Projects}}<tr><td>{{if .Project}}<a href="{{$.Org.Path}}/p/{{.Project}}">{{.Project}}</a>{{else}}<span class="muted">Organization-wide</span>{{end}}</td><td class="num">{{money .Cents $.Currency}}</td><td class="num">{{money .Forecast $.Currency}}</td><td class="num">{{money .LastMonth $.Currency}}</td></tr>
+    {{end}}<tr><td><strong>Total</strong></td><td class="num"><strong>{{money .Costs.Total .Currency}}</strong></td><td class="num"><strong>{{money .Costs.Forecast .Currency}}</strong></td><td class="num">{{money .Costs.LastMonth .Currency}}</td></tr>
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="muted">Nothing used yet this month.</p>{{end}}
+</div>
+
+<div class="section" id="budgets">
+  <h2>Budgets</h2>
+  <p class="small muted">A monthly limit for the organization or one project, checked every hour. When spending first crosses a threshold (or the forecast passes the limit), your <a href="{{.Org.Path}}/monitoring#alerts">alert channels</a> are notified (event <code>budget</code>). Nothing is stopped: a budget only warns.</p>
+  {{if .Budgets}}
+  <div class="scroll-x">
+  <table id="budgets-table">
+    <thead><tr><th>Scope</th><th class="num">Monthly limit</th><th class="num">Spent</th><th class="num">Forecast</th><th>Alerts at</th><th></th></tr></thead>
+    <tbody>
+    {{range .Budgets}}<tr><td>{{if .Project}}project <strong>{{.Project}}</strong>{{else}}<strong>whole organization</strong>{{end}}</td>
+      <td class="num">{{money .Limit $.Currency}}</td>
+      <td class="num">{{if .Checked}}{{money .Spent $.Currency}} <span class="{{if ge .Percent 100}}error-text{{else}}muted{{end}} small">{{.Percent}}%</span>{{else}}<span class="muted small">checking…</span>{{end}}</td>
+      <td class="num">{{if .Checked}}<span class="{{if gt .Projected .Limit}}error-text{{end}}">{{money .Projected $.Currency}}</span>{{end}}</td>
+      <td class="small">{{range $i, $t := .Thresholds}}{{if $i}}, {{end}}{{$t}}%{{end}}{{if .Forecast}} · forecast{{end}}</td>
+      <td><form method="post" action="{{$.Org.Path}}/billing/budgets/{{.ID}}/delete" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="secondary small">Delete</button></form></td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{end}}
+  <form method="post" action="{{.Org.Path}}/billing/budgets" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <select name="project" aria-label="Scope"><option value="">Whole organization</option>{{range .Projects}}<option value="{{.}}">Project {{.}}</option>{{end}}</select>
+    <input name="limit" inputmode="decimal" placeholder="Limit per month, e.g. 50" required aria-label="Monthly limit ({{.Currency}})" size="22">
+    <input name="thresholds" value="50, 80, 100" aria-label="Alert thresholds (percent of the limit)" size="12">
+    <label class="check"><input type="checkbox" name="forecast" value="1" checked> warn on forecast</label>
+    <button type="submit" class="arrow">Save budget</button>
+  </form>
+  <p class="small muted">One budget per scope: saving again replaces its limit and thresholds.</p>
+</div>
+
 <div class="section">
   <h2>Usage by resource</h2>
   {{if .Usage}}

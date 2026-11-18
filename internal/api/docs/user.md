@@ -162,6 +162,19 @@ Instead of a fixed number, a web service or worker can follow its load: on the *
 - Each change is a normal deployment with no downtime, recorded in the audit log with the measured CPU.
 - Your plan's limit on instances and its CPU and memory apply to the maximum. Services with a persistent folder or public TCP/UDP ports run a single instance and cannot autoscale.
 
+### Scheduled scaling
+
+For load you can predict, set the number of instances at given times: on the service's **Settings** tab, under **Scheduled scaling**, add a time as a cron expression in UTC (`minute hour day month weekday`) and a number of instances. For example `0 8 * * 1-5` with 4 instances and `0 20 * * 1-5` with 1 instance gives 4 instances during office hours on weekdays.
+
+- The platform applies a schedule within a minute of its time, as a normal deployment with no downtime, and records it in the audit log.
+- On an autoscaled service, a schedule moves the autoscaling **minimum** instead (raising the maximum if needed); the autoscaler still adds instances above it when the CPU needs them.
+- A schedule runs at most every 15 minutes; a service has up to 10. The same rules as above apply: no persistent folder, no public ports.
+- API: `GET/POST /api/v1/projects/PROJECT/services/SERVICE/schedules` (`{"cron": "0 8 * * 1-5", "instances": 4, "label": "office hours"}`), `DELETE …/schedules/ID`.
+
+### Failover between servers
+
+On an installation with several servers, a service with several instances stays up when one instance stops answering: the proxy retries the request on another instance and skips the failing one for 20 seconds (also when it answers 502, 503 or 504). When a whole server stops reporting for a few minutes (3 by default), the platform cordons it and redeploys its projects without data on the other servers; projects with a database or a persistent folder wait for the operator, who brings the server back or restores them from backups.
+
 ## Updates and rollbacks
 
 Every deployment is a numbered revision. The new version starts next to the old one, and traffic switches only after it passes its health check, so visitors see no downtime.
@@ -255,7 +268,7 @@ Good to know:
 
 ## Managed databases
 
-Managed PostgreSQL, MySQL, MariaDB, MongoDB and Redis run next to your services, on the project's private network, with nightly consistent backups.
+Managed PostgreSQL, MySQL, MariaDB, MongoDB, Redis and Apache Kafka run next to your services, on the project's private network, with nightly consistent backups.
 
 1. **Create it** on the project's **Databases** tab (developers): give it an ID such as `main` and choose PostgreSQL 17, PostgreSQL 16, MySQL 8.4, MariaDB 11.4, MongoDB 8.0 or Redis 7. It starts within a minute with 250 millicores and 256 MB, counted against your plan.
 2. **Connect a service:** on the database's **Connect** tab, choose a service and click **Add secret**. The connection URL is stored as an encrypted secret of that service: `DATABASE_URL` for PostgreSQL, MySQL and MariaDB, `MONGODB_URI` for MongoDB, `REDIS_URL` for Redis. Redeploy the service to apply it.
@@ -269,6 +282,7 @@ Managed PostgreSQL, MySQL, MariaDB, MongoDB and Redis run next to your services,
 - **MySQL and MariaDB:** the database `app` and user `app` are created for you; `root` gets a random password that nobody is given. InnoDB gets half the memory you give MariaDB, a quarter for MySQL (which needs more for itself); give MySQL at least 256 MB. Up to 100 connections are accepted. Named time zones (`CONVERT_TZ(..., 'Europe/Paris')`) are not loaded; use offsets such as `+01:00` or UTC. A restore recreates every table in the snapshot; tables created after it are left in place.
 - **MongoDB:** the database `app` and user `app` (an administrator of this server only) are created for you. It starts with 512 MB, its minimum (its first start runs a shell next to the server). The storage engine's cache gets 40% of the memory (0.25 GB at least). A restore (`mongorestore --drop`) replaces each collection in the snapshot; collections created after it are left in place.
 - **Redis memory:** Redis uses at most 80% of the memory you give it and then refuses new writes instead of evicting keys, so size it for your data.
+- **Apache Kafka (streaming):** choose **Apache Kafka 3.9** to get a single-broker Kafka (KRaft mode, no ZooKeeper) on the project's private network, for event streams between your services. **Add secret** stores `KAFKA_URL`, such as `kafka://app:…@pd-…:9092?security.protocol=SASL_PLAINTEXT&sasl.mechanism=PLAIN`: give your Kafka client the bootstrap server `pd-…:9092`, security protocol `SASL_PLAINTEXT`, mechanism `PLAIN`, user `app` and the password. Topics are created on first use; messages are kept for 7 days. It needs at least 512 MB (40% for the JVM). Kafka is **not backed up**: keep data you need in a database or a bucket.
 - **Plans:** Starter includes 1 managed database, Pro includes 5 (all engines together).
 
 ## Functions
@@ -379,6 +393,17 @@ Each project can have a public page that anyone can open, without an account, at
 - It shows each service's state (operational, down or not running), daily uptime over the last 30 days and outages from the last 14 days.
 - It never shows logs, error messages, images, environment variables or secrets.
 - Turn it off at any time; the address stops working immediately.
+
+## Private network between projects
+
+Every web service answers on a private name, `<service>.<project>.internal`, over plain HTTP on port 80: from your code, call `http://api.shop.internal/orders` instead of the public address. The traffic stays on the server's private networks.
+
+- **Within a project**, services reach each other by these names at once.
+- **Between projects**, an admin connects them: in the project's **Settings** tab, under **Private network**, choose the other project and click **Connect**. Services of both projects can then call each other; connections go both ways. **Disconnect** removes the access.
+- Connecting or disconnecting redeploys both projects' services (with no downtime) so their containers learn the names. A service created later is known to the other services after their next deployment.
+- Requests from other projects, other organizations and the internet are refused, even when they send the right host name.
+- Databases stay reachable from their own project only. On an installation with several servers, private names work for projects on the main server.
+- API: `GET/POST /api/v1/projects/PROJECT/connections` (`{"project": "other"}`, admins), `DELETE …/connections/OTHER`.
 
 ## Custom domains and HTTPS
 
@@ -639,6 +664,8 @@ Admins and owners find **Billing** in the organization's tabs.
 - **Object storage** is billed per GB-month of data stored in your buckets (measured every hour).
 - **Functions** are billed per million requests and per GB-second (memory × run time of each invocation).
 - **Paying:** follow the payment instructions you received from the platform operator; an invoice shows **paid** once the operator has recorded your payment.
+- **Cost by project:** the Billing page prices this month's usage per project (before tax), with a forecast for the whole month at the current pace and last month's amount. Object storage, queues, email and the plan fee belong to the whole organization. API (admin tokens): `GET /api/v1/costs` or `?month=YYYY-MM`.
+- **Budgets:** set a monthly limit for the organization or for one project, with alert thresholds (50%, 80% and 100% by default). Every hour the platform compares the month's spending with the limit; when a threshold is first crossed, or when the forecast passes the limit, your alert channels are notified (event `budget`). A budget only warns: nothing is stopped. Saving a budget again replaces it and starts its alerts over for the month. API: `GET/POST /api/v1/budgets` (`{"project": "shop", "limit_cents": 5000, "thresholds": [50, 80, 100]}`), `DELETE /api/v1/budgets/ID`.
 
 ## Single sign-on
 

@@ -142,6 +142,28 @@
 
 {{if roleAtLeast .Org.Role "admin"}}
 <section class="pane" id="project-settings" role="tabpanel" aria-label="Settings">
+  <div class="section" id="private">
+    <h2>Private network</h2>
+    <p class="small muted">Each web service answers on a private name, <code>&lt;service&gt;.&lt;project&gt;.internal</code> (plain HTTP, port 80), from the services of its own project and of the projects connected here. The traffic stays on the server's private networks. Connecting or disconnecting redeploys both projects' services; a service created later is known to the others after their next deployment.</p>
+    {{if .Services}}<p class="small">This project: {{range $i, $s := .Services}}{{if $i}}, {{end}}<code>{{$s.Slug}}.{{$.Project.Slug}}.internal</code>{{end}}</p>{{end}}
+    {{if .Peers}}
+    <table id="peers-table">
+      <thead><tr><th>Connected project</th><th>Its private names</th><th><span class="sr-only">Actions</span></th></tr></thead>
+      <tbody>
+      {{range .Peers}}<tr><td><a href="{{$.Org.Path}}/p/{{.Project}}">{{.Project}}</a></td><td class="small">{{range $i, $n := .Names}}{{if $i}}, {{end}}<code>{{$n}}</code>{{else}}<span class="muted">no services yet</span>{{end}}</td>
+        <td><form method="post" action="{{$.Org.Path}}/p/{{$.Project.Slug}}/connections" class="inline" data-confirm="Disconnect {{.Project}}? Both projects' services are redeployed."><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="remove" value="1"><button type="submit" class="link">disconnect</button></form></td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
+    {{if .OtherProjects}}
+    <form method="post" action="{{.Org.Path}}/p/{{.Project.Slug}}/connections" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <select name="project" aria-label="Project to connect">{{range .OtherProjects}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+      <button type="submit" class="secondary">Connect</button>
+    </form>
+    {{else}}<p class="small muted">Create another project to connect it.</p>{{end}}
+  </div>
   <div class="section">
     <h2>Public status page</h2>
     <p class="small muted">A page anyone can open, showing whether this project's services are up, their uptime over 30 days and recent outages. It never shows logs, error messages or settings.</p>

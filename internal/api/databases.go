@@ -36,7 +36,10 @@ func (d *databaseInfo) Port() int { return model.EngineInfo(d.Engine).Port }
 func (d *databaseInfo) Label() string { return model.EngineInfo(d.Engine).Name + " " + d.Version }
 
 // SQL reports whether the engine has a database name and user (all but Redis).
-func (d *databaseInfo) SQL() bool { return d.Engine != "redis" }
+func (d *databaseInfo) SQL() bool { return d.Engine != "redis" && d.Engine != "kafka" }
+
+// Streaming reports whether this is a message stream (Kafka): no database name, no backups.
+func (d *databaseInfo) Streaming() bool { return model.Streaming(d.Engine) }
 
 // DumpTool names the tool that takes this engine's consistent backups.
 func (d *databaseInfo) DumpTool() string {
@@ -49,6 +52,8 @@ func (d *databaseInfo) DumpTool() string {
 		return "mariadb-dump"
 	case "mongodb":
 		return "mongodump"
+	case "kafka":
+		return "nothing (Kafka topics are not backed up)"
 	}
 	return "pg_dump"
 }
@@ -60,6 +65,8 @@ func (d *databaseInfo) DefaultSecret() string {
 		return "REDIS_URL"
 	case "mongodb":
 		return "MONGODB_URI"
+	case "kafka":
+		return "KAFKA_URL"
 	}
 	return "DATABASE_URL"
 }
@@ -116,6 +123,11 @@ func (s *Server) dbURL(d *databaseInfo) string {
 		u := url.URL{Scheme: "redis", User: url.UserPassword("default", s.dbPassword(d)), Host: d.Host() + ":6379", Path: "/0"}
 		return u.String()
 	}
+	if d.Engine == "kafka" { // bootstrap server and SASL/PLAIN credentials in one value
+		u := url.URL{Scheme: "kafka", User: url.UserPassword(d.Username, s.dbPassword(d)), Host: d.Host() + ":9092",
+			RawQuery: "security.protocol=SASL_PLAINTEXT&sasl.mechanism=PLAIN"}
+		return u.String()
+	}
 	if d.Engine == "mongodb" {
 		u := url.URL{Scheme: "mongodb", User: url.UserPassword(d.Username, s.dbPassword(d)), Host: d.Host() + ":27017", Path: "/" + d.DBName, RawQuery: "authSource=admin"}
 		return u.String()
@@ -168,6 +180,7 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		mem := max(minDBMemory(engine), 256)
+		backups := !model.Streaming(engine)
 		if err := s.checkQuota(r, tx, o, "", 250, mem, false); err != nil {
 			var qe quotaError
 			if errors.As(err, &qe) {
@@ -179,9 +192,9 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		var id string
 		// Insert with a placeholder, then seal the password bound to the row ID.
 		if err := tx.QueryRow(r.Context(), `
-			INSERT INTO databases (org_id, project_id, slug, engine, version, db_name, username, password_enc, memory_mb)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, '\x00', $8) RETURNING id`,
-			o.ID, p.ID, slug, engine, version, dbName, user, mem).Scan(&id); err != nil {
+			INSERT INTO databases (org_id, project_id, slug, engine, version, db_name, username, password_enc, memory_mb, backup_enabled)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, '\x00', $8, $9) RETURNING id`,
+			o.ID, p.ID, slug, engine, version, dbName, user, mem, backups).Scan(&id); err != nil {
 			if isUniqueViolation(err) {
 				formErr = "A database with this ID already exists in the project."
 				return errRollback
@@ -253,6 +266,9 @@ func (s *Server) databaseSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	enabled := r.PostFormValue("backup_enabled") == "1"
 	o, p, d, err, ok := s.withDatabase(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, d *databaseInfo) error {
+		if d.Streaming() {
+			enabled = false // Kafka has no backups
+		}
 		if cpu < 50 || cpu > 4000 || mem < 128 || mem > 8192 {
 			formErr = "CPU must be 50 to 4000 millicores and memory 128 to 8192 MB."
 			return nil
@@ -371,6 +387,10 @@ func (s *Server) deleteDatabase(w http.ResponseWriter, r *http.Request) {
 func (s *Server) databaseBackupNow(w http.ResponseWriter, r *http.Request) {
 	var formErr string
 	o, p, d, err, ok := s.withDatabase(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, d *databaseInfo) error {
+		if d.Streaming() {
+			formErr = "Kafka has no backups: topics are a stream, kept for 7 days."
+			return nil
+		}
 		busy, err := s.queueTargetJob(r, tx, o, "database_id", d.ID, d.Slug, "backup", "")
 		if busy {
 			formErr = "A backup or restore is already running for this database."
@@ -436,7 +456,7 @@ func engineName(id string) string { return model.EngineInfo(id).Name }
 // minDBMemory is the least memory an engine runs with (MongoDB's first start runs its
 // shell next to the server; at 256 MB it is killed before creating the user).
 func minDBMemory(engine string) int {
-	if engine == "mongodb" {
+	if engine == "mongodb" || engine == "kafka" { // Kafka: a JVM broker and controller
 		return 512
 	}
 	return 128

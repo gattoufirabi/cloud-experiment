@@ -72,8 +72,10 @@ func (c *caddyClient) get(ctx context.Context, path string) ([]byte, error) {
 }
 
 type route struct {
-	OrgID, ProjectID string // for access logs (Zone is the service ID)
-	Cache            bool   // edge cache: keep responses that allow shared caching
+	OrgID, ProjectID string   // for access logs (Zone is the service ID)
+	Cache            bool     // edge cache: keep responses that allow shared caching
+	InternalHost     string   // <service>.<project>.internal ("" for previews)
+	AllowFrom        []string // subnets allowed to use the private name
 	Hosts            []string
 	Dials            []string // one per instance
 	Zone             string   // rate-limit zone name (service ID)
@@ -116,6 +118,9 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 			host = previewName + "." + model.DefaultHost(parentSlug, proj, org, a.cfg.AppsDomain)
 		}
 		rt.Hosts = append([]string{host}, custom...)
+		if previewName == "" {
+			rt.InternalHost = svc + "." + proj + internalSuffix
+		}
 		if len(insts) == 0 { // deployed before instances were recorded
 			insts = []instance{{Name: name, Upstream: upstream}}
 		}
@@ -140,6 +145,7 @@ func (a *Agent) syncCaddy(ctx context.Context, force bool) {
 		a.log.Error("load routes", "err", err)
 		return
 	}
+	a.fillInternal(ctx, routes)
 	idx := make(map[string]hostRef, len(routes))
 	for _, r := range routes {
 		for _, h := range r.Hosts {
@@ -261,7 +267,10 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 		rp := obj{"handler": "reverse_proxy", "upstreams": ups}
 		if len(ups) > 1 { // spread requests; skip an instance that stops answering, retry elsewhere
 			rp["load_balancing"] = obj{"selection_policy": obj{"policy": "round_robin"}, "try_duration": "3s", "try_interval": "250ms"}
-			rp["health_checks"] = obj{"passive": obj{"fail_duration": "20s", "max_fails": 1}}
+			// An instance that fails a request (no answer, or a gateway error from the app's own
+			// proxy) is skipped for 20 s and the request is retried on another one; a whole node
+			// going silent is handled by node failover (scaling.go).
+			rp["health_checks"] = obj{"passive": obj{"fail_duration": "20s", "max_fails": 1, "unhealthy_status": []int{502, 503, 504}}}
 		}
 		if r.Cache { // edge cache in front of the application (keyed by host, so never shared between services)
 			sub = append(sub, obj{"handle": []any{obj{"handler": "cache"}, rp}})
@@ -304,7 +313,13 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 			break
 		}
 	}
+	internal := internalRoutes(routes)
 	if cfg.TLSMode == "acme" {
+		// Private names are plain HTTP on the project networks: their own server on port 80
+		// (Caddy still adds its HTTP->HTTPS redirects for the public hosts after them).
+		if len(internal) > 0 {
+			apps["http"].(obj)["servers"].(obj)["internal"] = obj{"listen": []string{":80"}, "automatic_https": obj{"disable": true}, "routes": internal}
+		}
 		server["listen"] = []string{":443"}
 		issuer := []any{obj{"module": "acme", "ca": cfg.ACMECA}}
 		apps["tls"] = obj{"automation": obj{
@@ -318,6 +333,7 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 	} else {
 		server["listen"] = []string{":80"}
 		server["automatic_https"] = obj{"disable": true}
+		server["routes"] = append(internal, rs...)
 	}
 	return obj{
 		"admin": obj{"listen": "unix/" + cfg.CaddyAdminSocket, "origins": []string{"caddy"}},

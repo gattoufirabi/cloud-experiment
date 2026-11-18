@@ -66,11 +66,14 @@ type Config struct {
 	AlertsEnabled bool
 
 	// This server, as shown to the operator (and, in stage 2, used for placement).
-	NodeID      string // default: the Docker host name
-	NodeRole    string // primary (runs the control plane) | worker
-	NodeCluster string
-	NodeAddress string // private address other nodes reach it on (WireGuard)
-	NodeBind    string // address worker apps are published on (default: NodeAddress)
+	NodeID   string // default: the Docker host name
+	NodeRole string // primary (runs the control plane) | worker
+	// NodeFailoverMinutes: a node silent this long is cordoned and its stateless projects
+	// are redeployed elsewhere (0 = never)
+	NodeFailoverMinutes int
+	NodeCluster         string
+	NodeAddress         string // private address other nodes reach it on (WireGuard)
+	NodeBind            string // address worker apps are published on (default: NodeAddress)
 
 	// Builds from git (sandboxed BuildKit); needs the registry.
 	BuildsEnabled    bool
@@ -245,24 +248,25 @@ func Load() Config {
 		PublicPortMin:        envInt("PUBLIC_PORT_MIN", 20000),
 		PublicPortMax:        envInt("PUBLIC_PORT_MAX", 20999),
 
-		TenantResolvConf:   env("TENANT_RESOLV_CONF", ""),
-		NodeID:             env("NODE_ID", ""),
-		NodeRole:           env("NODE_ROLE", "primary"),
-		NodeCluster:        env("NODE_CLUSTER", "default"),
-		NodeAddress:        env("NODE_ADDRESS", ""),
-		NodeBind:           env("NODE_BIND", env("NODE_ADDRESS", "")),
-		BuildsEnabled:      envBool("BUILDS_ENABLED", false),
-		BuildkitImage:      env("BUILDKIT_IMAGE", "moby/buildkit:v0.34.1-rootless"),
-		GitImage:           env("GIT_IMAGE", "platform-builder:0.43.0"),
-		RailpackFrontend:   env("RAILPACK_FRONTEND", "ghcr.io/railwayapp/railpack-frontend:v0.43.0"),
-		BuildRuntime:       env("BUILD_RUNTIME", ""),
-		BuildTimeout:       time.Duration(envInt("BUILD_TIMEOUT_MINUTES", 15)) * time.Minute,
-		BuildMemoryMB:      envInt("BUILD_MEMORY_MB", 2048),
-		BuildCPUMillis:     envInt("BUILD_CPU_MILLIS", 2000),
-		BuildSubnet:        env("BUILD_SUBNET", "10.207.0.0/24"),
-		BuildMaxImageMB:    envInt("BUILD_MAX_IMAGE_MB", 8192),
-		BuildAllowInsecure: envBool("BUILD_ALLOW_INSECURE_REPOS", false),
-		RegistryKeepDays:   envInt("REGISTRY_KEEP_DAYS", 30),
+		TenantResolvConf:    env("TENANT_RESOLV_CONF", ""),
+		NodeID:              env("NODE_ID", ""),
+		NodeRole:            env("NODE_ROLE", "primary"),
+		NodeFailoverMinutes: envInt("NODE_FAILOVER_MINUTES", 3),
+		NodeCluster:         env("NODE_CLUSTER", "default"),
+		NodeAddress:         env("NODE_ADDRESS", ""),
+		NodeBind:            env("NODE_BIND", env("NODE_ADDRESS", "")),
+		BuildsEnabled:       envBool("BUILDS_ENABLED", false),
+		BuildkitImage:       env("BUILDKIT_IMAGE", "moby/buildkit:v0.34.1-rootless"),
+		GitImage:            env("GIT_IMAGE", "platform-builder:0.43.0"),
+		RailpackFrontend:    env("RAILPACK_FRONTEND", "ghcr.io/railwayapp/railpack-frontend:v0.43.0"),
+		BuildRuntime:        env("BUILD_RUNTIME", ""),
+		BuildTimeout:        time.Duration(envInt("BUILD_TIMEOUT_MINUTES", 15)) * time.Minute,
+		BuildMemoryMB:       envInt("BUILD_MEMORY_MB", 2048),
+		BuildCPUMillis:      envInt("BUILD_CPU_MILLIS", 2000),
+		BuildSubnet:         env("BUILD_SUBNET", "10.207.0.0/24"),
+		BuildMaxImageMB:     envInt("BUILD_MAX_IMAGE_MB", 8192),
+		BuildAllowInsecure:  envBool("BUILD_ALLOW_INSECURE_REPOS", false),
+		RegistryKeepDays:    envInt("REGISTRY_KEEP_DAYS", 30),
 
 		SMTPHost:     env("SMTP_HOST", ""),
 		SMTPPort:     envInt("SMTP_PORT", 587),

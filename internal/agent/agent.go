@@ -63,6 +63,7 @@ type Agent struct {
 	queueWake     chan struct{}
 	emailWake     chan struct{}
 	alarmWake     chan struct{}
+	budgetWake    chan struct{}
 	dnsWake       chan struct{}
 	dnsData       atomic.Value // *dnsData: the hosted zones served
 	fn            *fnState
@@ -144,6 +145,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		queueWake:     make(chan struct{}, 1),
 		emailWake:     make(chan struct{}, 1),
 		alarmWake:     make(chan struct{}, 1),
+		budgetWake:    make(chan struct{}, 1),
 		dnsWake:       make(chan struct{}, 1),
 		fn:            newFnState(),
 		alertHTTP:     newAlertHTTP(cfg.AlertAllowPrivate),
@@ -187,6 +189,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.alarmLoop(ctx)
 	go a.dnsLoop(ctx)
 	go a.buildWarmLoop(ctx)
+	go a.budgetLoop(ctx)
+	go a.scalingLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)
@@ -250,6 +254,8 @@ func (a *Agent) listen(ctx context.Context) {
 							a.pokeEmail()
 						case "alarms":
 							a.pokeAlarms()
+						case "budgets":
+							a.pokeBudgets()
 						case "dns":
 							a.pokeDNS()
 						default:
@@ -1201,6 +1207,9 @@ func (a *Agent) projectHosts(ctx context.Context, projectID, netName string) []s
 				}
 				if a.cfg.StorageEnabled() {
 					hosts = append(hosts, hostOnly(s3ServiceHost(a.cfg))+":"+ep.IPAddress)
+				}
+				for _, n := range a.internalNames(ctx, projectID) { // <service>.<project>.internal
+					hosts = append(hosts, n+":"+ep.IPAddress)
 				}
 			}
 		}

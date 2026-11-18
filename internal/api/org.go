@@ -28,11 +28,11 @@ func isUniqueViolation(err error) bool {
 type orgInfo struct {
 	ID, Slug, Name, Role, PlanID, ScanPolicy string
 	// Scoped members (fine-grained access) only reach these projects (slug -> role).
-	Scoped   bool
-	Projects map[string]string
-	Suspended                                bool
-	SuspendReason                            string
-	TrialEnds                                *time.Time
+	Scoped        bool
+	Projects      map[string]string
+	Suspended     bool
+	SuspendReason string
+	TrialEnds     *time.Time
 }
 
 // TrialDaysLeft is shown on the organization page during a trial.
@@ -513,6 +513,8 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 	var dbs []dbRow
 	var vars []projectVar
 	var others []resource // domains and scheduled jobs of the project
+	var peers []peerView
+	var otherProjects []string
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		var err error
 		if p, err = s.loadProject(r, tx); err != nil {
@@ -549,7 +551,17 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		if services, err = pgx.CollectRows(rows, pgx.RowToStructByPos[svc]); err != nil {
 			return err
 		}
-		vars, err = s.loadProjectVars(r, tx, p.ID)
+		if vars, err = s.loadProjectVars(r, tx, p.ID); err != nil {
+			return err
+		}
+		if peers, err = loadPeers(r.Context(), tx, p.ID); err != nil {
+			return err
+		}
+		prow, err := tx.Query(r.Context(), `SELECT slug FROM projects WHERE id <> $1 ORDER BY slug`, p.ID)
+		if err != nil {
+			return err
+		}
+		otherProjects, err = pgx.CollectRows(prow, pgx.RowTo[string])
 		return err
 	})
 	if isNoRows(err) {
@@ -567,7 +579,7 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services, "Databases": dbs, "Variables": vars, "BaseURL": s.cfg.BaseURL,
-		"Engines": model.Engines, "Others": others, "LiveServices": live})
+		"Engines": model.Engines, "Others": others, "LiveServices": live, "Peers": peers, "OtherProjects": otherProjects})
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {

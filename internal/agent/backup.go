@@ -115,7 +115,7 @@ func (a *Agent) scheduleBackups(ctx context.Context) {
 		WITH d AS (
 			UPDATE databases t SET backup_attempted_at = now()
 			FROM orgs o
-			WHERE o.id = t.org_id AND NOT o.suspended AND t.status = 'running' AND t.backup_enabled AND `+due+`
+			WHERE o.id = t.org_id AND NOT o.suspended AND t.status = 'running' AND t.backup_enabled AND t.engine <> 'kafka' AND `+due+`
 			  AND NOT EXISTS (SELECT 1 FROM backup_jobs j WHERE j.database_id = t.id AND j.status IN ('queued', 'running'))
 			RETURNING t.id, t.org_id
 		)

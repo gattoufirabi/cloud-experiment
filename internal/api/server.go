@@ -278,6 +278,8 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /operator/users/{id}/delete", s.operatorOnly(s.operatorUserDelete))
 	m.HandleFunc("GET /o/{org}/billing", s.auth(authFull, s.billingPage))
 	m.HandleFunc("POST /o/{org}/billing/details", s.auth(authFull, s.billingDetails))
+	m.HandleFunc("POST /o/{org}/billing/budgets", s.auth(authFull, s.saveBudget))
+	m.HandleFunc("POST /o/{org}/billing/budgets/{id}/delete", s.auth(authFull, s.deleteBudget))
 	m.HandleFunc("GET /o/{org}/invoices/{number}", s.auth(authFull, s.invoicePage))
 	m.HandleFunc("POST /o/{org}/projects", s.auth(authFull, s.createProject))
 	m.HandleFunc("POST /o/{org}/invites", s.auth(authFull, s.createInvite))
@@ -301,6 +303,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /o/{org}/p/{project}/variables", s.auth(authFull, s.setProjectVar))
 	m.HandleFunc("POST /o/{org}/p/{project}/variables/{name}/delete", s.auth(authFull, s.deleteProjectVar))
 	m.HandleFunc("POST /o/{org}/p/{project}/redeploy", s.auth(authFull, s.redeployProject))
+	m.HandleFunc("POST /o/{org}/p/{project}/connections", s.auth(authFull, s.projectConnection))
 
 	m.HandleFunc("POST /o/{org}/p/{project}/databases", s.auth(authFull, s.createDatabase))
 	const dbp = "/o/{org}/p/{project}/d/{db}"
@@ -331,6 +334,8 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST "+svc+"/rollback/{rev}", s.auth(authFull, s.rollback))
 	m.HandleFunc("POST "+svc+"/secrets", s.auth(authFull, s.setSecret))
 	m.HandleFunc("POST "+svc+"/jobs", s.auth(authFull, s.saveJobForm))
+	m.HandleFunc("POST "+svc+"/schedules", s.auth(authFull, s.addScheduleForm))
+	m.HandleFunc("POST "+svc+"/schedules/{id}/delete", s.auth(authFull, s.deleteScheduleForm))
 	m.HandleFunc("POST "+svc+"/jobs/{job}/{action}", s.auth(authFull, s.jobAction))
 	m.HandleFunc("GET "+svc+"/job-runs/{run}", s.auth(authFull, s.jobRunLog))
 	m.HandleFunc("POST "+svc+"/secrets/{name}/delete", s.auth(authFull, s.deleteSecret))

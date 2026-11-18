@@ -457,4 +457,3 @@ func (s *Server) apiDeleteDNSRecord(w http.ResponseWriter, r *http.Request, o *o
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
-

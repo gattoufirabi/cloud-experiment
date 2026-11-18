@@ -172,6 +172,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 	var secrets []string
 	var projectVars []projectVar
 	var domains []domainView
+	var schedules []scheduleView
 	var scan *scanSummary
 	var findings []finding
 	var backups *backupView
@@ -237,7 +238,10 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		domains, err = pgx.CollectRows(rows, pgx.RowToStructByPos[domainView])
+		if domains, err = pgx.CollectRows(rows, pgx.RowToStructByPos[domainView]); err != nil {
+			return err
+		}
+		schedules, err = loadSchedules(r.Context(), tx, sv.ID)
 		return err
 	})
 	if !ok {
@@ -264,7 +268,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 	}
 	host := s.serviceHost(o, p, sv)
 	s.render(w, r, "service", http.StatusOK, data{
-		"Jobs": jobs, "JobRuns": jobRuns,
+		"Jobs": jobs, "JobRuns": jobRuns, "Schedules": schedules,
 		"Org": o, "Project": p, "Service": sv, "EnvText": model.FormatEnv(sv.Env),
 		"Deployments": deps, "Secrets": secrets, "Domains": domains, "ProjectVars": projectVars,
 		"URL": s.appURL(host), "Path": svcPath(o, p, sv), "AppsDomain": s.cfg.AppsDomain,

@@ -42,6 +42,9 @@ func (s *Server) billingPage(w http.ResponseWriter, r *http.Request) {
 	var prices billing.Prices
 	var created time.Time
 	var billName, billAddr, billTax string
+	var costs costReport
+	var budgets []budgetView
+	var projects []string
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(r.Context(), `
 			SELECT p.name, p.price_monthly_cents, p.price_vcpu_hour_cents::float8, p.price_gb_hour_cents::float8, p.price_gb_out_cents::float8,
@@ -91,7 +94,20 @@ func (s *Server) billingPage(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		invoices, err = pgx.CollectRows(iq, pgx.RowToStructByPos[invoiceRow])
+		if invoices, err = pgx.CollectRows(iq, pgx.RowToStructByPos[invoiceRow]); err != nil {
+			return err
+		}
+		if costs, err = s.loadCosts(r.Context(), tx, o.ID, now); err != nil {
+			return err
+		}
+		if budgets, err = loadBudgets(r.Context(), tx); err != nil {
+			return err
+		}
+		pq, err := tx.Query(r.Context(), `SELECT slug FROM projects ORDER BY slug`)
+		if err != nil {
+			return err
+		}
+		projects, err = pgx.CollectRows(pq, pgx.RowTo[string])
 		return err
 	})
 	if err != nil {
@@ -105,6 +121,7 @@ func (s *Server) billingPage(w http.ResponseWriter, r *http.Request) {
 		"Currency": s.cfg.BillingCurrency, "TaxPercent": s.cfg.BillingTaxPercent, "PlanName": planName, "Prices": prices,
 		"Month": start, "Invoices": invoices, "BillingEnabled": s.cfg.BillingEnabled,
 		"BillName": billName, "BillAddr": billAddr, "BillTax": billTax,
+		"Costs": costs, "Budgets": budgets, "Projects": projects,
 	})
 }
 
