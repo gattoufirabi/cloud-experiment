@@ -1212,12 +1212,12 @@ z = zipfile.ZipFile(sys.argv[1], "w")
 z.writestr("app-main/package.json", "{ \"name\": \"zipnode\", \"version\": \"1.0.0\", \"scripts\": { \"start\": \"node server.js\" } }")
 z.writestr("app-main/server.js", "require(\"http\").createServer((q, s) => s.end(\"zip-railpack-" + sys.argv[2] + "\")).listen(process.env.PORT || 3000);")
 z.close()' "$(cygpath -w "$TMP/app-main.zip")" "$RUN"
-check "[A] zip uploaded in the console (folder archive, no Dockerfile)" "$(code_of ja -X POST "$BASE$SVC_A/zip" -F csrf=$CSRF_A -F deploy=1 -F "archive=@$TMP/app-main.zip;type=application/zip")" 303
+check "[A] zip uploaded in the console (folder archive, no Dockerfile)" "$(code_of ja -X POST "$BASE$SVC_A/zip" -F csrf=$CSRF_A -F deploy=1 -F "archive=@$(cygpath -w "$TMP/app-main.zip");type=application/zip")" 303
 check "the folder archive is built with Railpack and served" "$(for _ in $(seq 1 150); do b=$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/"); grep -q "zip-railpack-$RUN" <<<"$b" && { echo yes; break; }; sleep 2; done)" yes
 zapi() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" -H 'Content-Type: application/zip' --data-binary "@$2" "$BASE/api/v1/projects/shop/services/web/zip"; }
 echo "not a zip" > "$TMP/bad.zip"
 check "[API] an invalid archive is refused (422)" "$(zapi "$TOK_DEV" "$TMP/bad.zip")" 422
-check "[B->A API] B cannot upload to A's service (404)" "$(zapi "$TOK_B" "$TMP/app-main.zip")" 404
+check "[B->A API] B cannot upload to a service only A has (404)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_B" -H 'Content-Type: application/zip' --data-binary "@$(cygpath -w "$TMP/app-main.zip")" "$BASE/api/v1/projects/shop/services/files/zip")" 404
 check "zip builds audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'build.queued' AND detail::text LIKE '%"zip"%' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 section "Preview per pull request"
 (cd "$GITD/src" && git checkout -q -b pr-branch main && echo "pr-preview-$RUN" > index.html \
@@ -1459,6 +1459,12 @@ check "operator rights need two-step login" "$(c ja -o /dev/null -w '%{redirect_
 check "user management actions audited" "$(owner_sql "SELECT count(DISTINCT action) FROM audit_events WHERE target = 'user:$UB' AND action IN ('user.disabled', 'user.enabled', 'user.password_reset_by_operator', 'totp.reset_by_operator', 'member.role_changed_by_operator')")" 5
 code_of ja -X POST "$BASE/operator/users/$UB/profile" -d csrf=$OPCSRF -d "name=Owner of $B" --data-urlencode "email=owner@$A.test" >/dev/null
 check "an email already in use is refused" "$(owner_sql "SELECT email FROM users WHERE id = '$UB'")" "owner@$B.test"
+# B signs in again: its sessions were ended and its two-step login reset above
+c jb -o /dev/null -X POST "$BASE/login" --data-urlencode "email=owner@$B.test" --data-urlencode "password=correct-horse-battery-$B"
+B_SETUP=$(c jb "$BASE/totp/setup"); B_SEC=$(grep -o 'class="select">[A-Z2-7]\{20,\}<' <<<"$B_SETUP" | head -1 | sed 's/.*">//;s/<$//')
+c jb -o /dev/null -X POST "$BASE/totp/setup" -d "csrf=$(csrf_of <<<"$B_SETUP")" -d "code=$(admin totp-code --secret "$B_SEC" | tr -d '')"
+check "[B] signs in again with a new second factor" "$(code_of jb "$BASE/o/$B")" 200
+CSRF_B=$(c jb "$BASE/o/$B" | csrf_of)
 NEWUID=$(owner_sql "INSERT INTO users (email, name, password_hash) VALUES ('gone-$RUN@example.test', 'Gone', 'x') RETURNING id")
 check "operator deletes an account" "$(code_of ja -X POST "$BASE/operator/users/$NEWUID/delete" -d csrf=$OPCSRF -d "confirm=gone-$RUN@example.test"):$(owner_sql "SELECT count(*) FROM users WHERE id = '$NEWUID'")" "303:0"
 

@@ -325,7 +325,7 @@ func (s *Server) analyticsFor(ctx context.Context, orgID, serviceID, period stri
 	if s.cfg.VictoriaLogsURL == "" {
 		return rep
 	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	stream := func(kind string) string {
 		return fmt.Sprintf(`{an_org=%q, an_svc=%q, an_kind=%q} _time:%s`, orgID, serviceID, kind, p.Window)
@@ -357,17 +357,24 @@ func (s *Server) analyticsFor(ctx context.Context, orgID, serviceID, period stri
 			}
 			rep.ChartWidth = len(rep.Series) * 10
 		}
-		rep.Paths = s.topBy(ctx, acc, "path", "", 15)
+		// The breakdowns are independent: run them at the same time.
+		var wg sync.WaitGroup
+		top := func(dst *[]kv, base, field, extra string, limit int) {
+			wg.Add(1)
+			go func() { defer wg.Done(); *dst = s.topBy(ctx, base, field, extra, limit) }()
+		}
+		top(&rep.Paths, acc, "path", "", 15)
+		top(&rep.Statuses, acc, "status", "", 10)
+		top(&rep.Referrers, acc, "referrer", "referrer:*", 10)
+		top(&rep.Browsers, acc, "browser", "bot:false", 8)
+		top(&rep.OSes, acc, "os", "bot:false", 8)
+		top(&rep.Devices, acc, "device", "", 5)
 		if rows, err := s.logsql(ctx, acc+` | stats by (path) quantile(0.95, duration_ms) p95, count() n | filter n:>=3 | sort by (p95 desc) | limit 10`); err == nil {
 			for _, r := range rows {
 				rep.Slowest = append(rep.Slowest, kv{Key: r["path"], Count: n64(r, "p95"), Extra: r["n"]})
 			}
 		}
-		rep.Statuses = s.topBy(ctx, acc, "status", "", 10)
-		rep.Referrers = s.topBy(ctx, acc, "referrer", "referrer:*", 10)
-		rep.Browsers = s.topBy(ctx, acc, "browser", "bot:false", 8)
-		rep.OSes = s.topBy(ctx, acc, "os", "bot:false", 8)
-		rep.Devices = s.topBy(ctx, acc, "device", "", 5)
+		wg.Wait()
 	}
 	ev := stream("event")
 	if rows, err := s.logsql(ctx, ev+` | stats count() if (name:=pageview) pv, count_uniq(visitor) visitors, count_uniq(session) sessions, count() if (name:!=pageview) events`); err == nil && len(rows) > 0 {
@@ -382,10 +389,17 @@ func (s *Server) analyticsFor(ctx context.Context, orgID, serviceID, period stri
 				rep.BounceRate = int(rep.Bounced * 100 / total)
 			}
 		}
-		rep.Pages = s.topBy(ctx, ev, "path", "name:=pageview", 15)
-		rep.Events = s.topBy(ctx, ev, "name", "name:!=pageview", 15)
-		rep.Sources = s.topBy(ctx, ev, "utm_source", "utm_source:*", 10)
-		rep.EntryReferrers = s.topBy(ctx, ev, "referrer", "name:=pageview referrer:*", 10)
+		var wg sync.WaitGroup
+		for _, q := range []struct {
+			dst           *[]kv
+			field, filter string
+			limit         int
+		}{{&rep.Pages, "path", "name:=pageview", 15}, {&rep.Events, "name", "name:!=pageview", 15},
+			{&rep.Sources, "utm_source", "utm_source:*", 10}, {&rep.EntryReferrers, "referrer", "name:=pageview referrer:*", 10}} {
+			wg.Add(1)
+			go func() { defer wg.Done(); *q.dst = s.topBy(ctx, ev, q.field, q.filter, q.limit) }()
+		}
+		wg.Wait()
 	}
 	return rep
 }
