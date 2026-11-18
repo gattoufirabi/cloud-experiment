@@ -1773,7 +1773,7 @@ EXD=expo-$RUN.example.test
 code_of ja -X POST "$BASE/o/$A/p/expo/s/front/domains" -d csrf=$CSRF_A -d "hostname=$EXD" >/dev/null
 owner_sql "UPDATE domains SET verified_at = now() WHERE hostname = '$EXD'" >/dev/null   # stands in for the DNS check
 EXD_ID=$(owner_sql "SELECT id FROM domains WHERE hostname = '$EXD'")
-check "[A] path /api routed to the api service (prefix removed)" "$(code_of ja -X POST "$BASE/o/$A/p/expo/s/front/domains/$EXD_ID/paths" -d csrf=$CSRF_A -d prefix=/api -d target=expo/api -d strip=1)" 303
+check "[A] path /api routed to the api service (prefix removed)" "$(code_of ja -X POST "$BASE/o/$A/p/expo/s/front/domains/$EXD_ID/paths" -d csrf=$CSRF_A -d prefix=%2Fapi -d target=expo/api -d strip=1)" 303
 check "an invalid path is refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/expo/s/front/domains/$EXD_ID/paths" -d csrf=$CSRF_A -d prefix=api/ -d target=expo/api | grep -c 'err=')" 1
 owner_sql "SELECT pg_notify('deployments', '')" >/dev/null
 check "the domain sends /api/... to api without the prefix, the rest to front" "$(until_is 'main /orders/7' 30 sh -c "curl -s --max-time 5 --resolve '$EXD:$PORT:127.0.0.1' 'http://$EXD:$PORT/api/orders/7'"):$(ex_get "$EXD" / | grep -c 'Welcome to nginx' | sed 's/^[1-9][0-9]*$/yes/')" "main /orders/7:yes"

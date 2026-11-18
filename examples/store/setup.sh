@@ -31,7 +31,7 @@ post() {
   local loc
   loc=$(c -o /dev/null -w '%{redirect_url}' -X POST "$URL$path" -d "csrf=$CSRF" "$@")
   local msg
-  msg=$(printf '%s' "$loc" | grep -o '[?&]\(msg\|err\)=[^&#]*' | head -1 | sed 's/^.//' | sed 's/+/ /g; s/%\([0-9A-F][0-9A-F]\)/\\x\1/g')
+  msg=$(printf '%s' "$loc" | grep -o '[?&]\(msg\|err\)=[^&#]*' | head -1 | sed 's/^.//; s/^msg=//; s/^err=/error: /' | sed 's/+/ /g; s/%\([0-9A-F][0-9A-F]\)/\\x\1/g')
   printf '   %b\n' "${msg:-done}"
 }
 pctl() {
@@ -42,7 +42,7 @@ api() { local m=$1 path=$2; shift 2; "${CURL[@]}" -H "Authorization: Bearer $TOK
 svc() { # svc <name> <kind> <env> [extra form fields]: create the service (if needed) and save its settings
   local name=$1 kind=$2 env=$3; shift 3
   post "/o/$ORG/p/$P/services" -d "slug=$name" -d image=nginx:1.27-alpine >/dev/null
-  post "/o/$ORG/p/$P/s/$name/settings" -d "image=${IMAGE:-nginx:1.27-alpine}" -d port=8080 -d health_path=/ -d cpu_millis=250 -d memory_mb=256 \
+  post "/o/$ORG/p/$P/s/$name/settings" -d "image=${IMAGE:-nginx:1.27-alpine}" -d port=8080 -d health_path=%2F -d cpu_millis=250 -d memory_mb=256 \
     -d instances=1 -d volume_path= -d "kind=$kind" --data-urlencode "env=$env" "$@"
 }
 
@@ -73,7 +73,7 @@ fi
 [ -n "${REPORT_TO:-}" ] && printf '%s' "$REPORT_TO" | pctl var set "$P" REPORT_TO --plain
 
 step "Services: api (private, metrics), web (public storefront), worker"
-svc api web "ROLE=api" -d private=1 -d metrics_path=/metrics
+svc api web "ROLE=api" -d private=1 -d metrics_path=%2Fmetrics
 svc web web "ROLE=web" -d edge_cache=1
 svc worker worker "ROLE=worker"
 
