@@ -966,6 +966,8 @@ mkdir -p "$TMP/oidc"
 (cd .. && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$TMP/oidc/mockoidc" ./scripts/mockoidc) || bad "mock OIDC provider did not build"
 docker rm -f e2e-oidc >/dev/null 2>&1
 MSYS_NO_PATHCONV=1 docker run -d --name e2e-oidc -p 8097:8097 -v "$(cygpath -w "$TMP/oidc"):/m:ro" alpine:3.20 /m/mockoidc -addr :8097 -issuer http://host.docker.internal:8097 >/dev/null
+# wait until the provider answers, from the host and from the platform's containers
+for _ in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:8097/.well-known/openid-configuration && MSYS_NO_PATHCONV=1 docker exec platform-dev-api-1 wget -qO /dev/null http://host.docker.internal:8097/.well-known/openid-configuration 2>/dev/null && break; sleep 1; done
 IDP=http://host.docker.internal:8097
 for _ in $(seq 1 20); do curl -s --resolve host.docker.internal:8097:127.0.0.1 -o /dev/null "$IDP/jwks" && break; sleep 0.5; done
 SSO_DOM=sso-$A.test
@@ -1300,6 +1302,7 @@ echo "built-from-git-$RUN" > "$GITD/src/index.html"
 git clone -q --bare "$GITD/src" "$GITD/srv/app.git" && (cd "$GITD/srv/app.git" && git update-server-info)
 docker rm -f e2e-git >/dev/null 2>&1
 MSYS_NO_PATHCONV=1 docker run -d --name e2e-git -p 8099:80 -v "$(cygpath -w "$GITD/srv"):/usr/share/nginx/html:ro" nginx:1.27-alpine >/dev/null
+for _ in $(seq 1 30); do curl -s -o /dev/null -f http://127.0.0.1:8099/app.git/HEAD && break; sleep 1; done   # the build must not start before the server answers
 REPO=http://host.docker.internal:8099/app.git
 if c ja -L "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=https://user:pw@example.com/a.git" -d branch=main | grep -q "Repository:"; then ok "repository address with credentials refused"; else bad "credentials in repository address accepted"; fi
 check "[A] git source saved" "$(code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$REPO" -d branch=main -d dir=)" 303
