@@ -14,10 +14,13 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected $3, got $2)";
 # section "name": prints how long the previous section took (to find the slow parts)
 T0=$(date +%s); SEC_T=$T0; SEC_N=setup
 section() { local now; now=$(date +%s); echo "   ($SEC_N: $((now - SEC_T)) s)"; SEC_N=$1; SEC_T=$now; echo "== $1"; }
+# Container names, resolved once: "docker exec" is about twice as fast as "docker compose exec"
+PG_C=$(docker compose -f compose.dev.yml ps --format '{{.Name}}' postgres); API_C=$(docker compose -f compose.dev.yml ps --format '{{.Name}}' api)
+NTFY_C=$(docker compose -f compose.dev.yml ps --format '{{.Name}}' ntfy)
 # MSYS_NO_PATHCONV: Git Bash on Windows would otherwise rewrite /platform into a Windows path
-admin() { MSYS_NO_PATHCONV=1 docker compose -f compose.dev.yml exec -T api /platform admin "$@"; }
-live_cid() { docker compose -f compose.dev.yml exec -T postgres psql -qtA -U platform_owner platform -c "SELECT d.container_id FROM deployments d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$1' AND d.status = 'live'" | tr -d '\r'; }
-psql_api() { docker compose -f compose.dev.yml exec -T postgres psql -qtA "postgres://platform_api:dev-api-password@localhost/platform" -c "$1"; }
+admin() { MSYS_NO_PATHCONV=1 docker exec -i "$API_C" /platform admin "$@"; }
+live_cid() { docker exec -i "$PG_C" psql -qtA -U platform_owner platform -c "SELECT d.container_id FROM deployments d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$1' AND d.status = 'live'" | tr -d '\r'; }
+psql_api() { docker exec -i "$PG_C" psql -qtA "postgres://platform_api:dev-api-password@localhost/platform" -c "$1"; }
 
 RUN=$(date +%s | tail -c 5)
 TMP=$(mktemp -d)
@@ -131,7 +134,7 @@ REG=localhost:8088
 mkdir -p "$TMP/docker"
 DCFG=$(cygpath -w "$TMP/docker" 2>/dev/null || echo "$TMP/docker")
 dk() { DOCKER_CONFIG="$DCFG" docker "$@" >/dev/null 2>&1 && echo yes || echo no; } # isolated docker login state
-owner_sql() { docker compose -f compose.dev.yml exec -T postgres psql -qtA -U platform_owner platform -c "$1" | tr -d '\r'; }
+owner_sql() { docker exec -i "$PG_C" psql -qtA -U platform_owner platform -c "$1" | tr -d '\r'; }
 new_token() { c "$1" -X POST "$BASE/o/$2/registry-tokens" -d "csrf=$3" -d name=ci -d push=1 | grep -o 'plr_[A-Za-z0-9_-]*' | head -1; }
 TOK_A=$(new_token ja "$A" "$CSRF_A")
 TOK_B=$(new_token jb "$B" "$CSRF_B")
@@ -1243,6 +1246,7 @@ if echo "$OUT" | grep -q "folder nope not found"; then ok "missing folder report
 code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$REPO" -d branch=node -d dir= >/dev/null
 OUT=$(pctl build shop/web --wait)
 if echo "$OUT" | grep -q "with Railpack (no Dockerfile)" && echo "$OUT" | grep -q "done: "; then ok "repository without a Dockerfile built with Railpack"; else bad "Railpack build failed: $(echo "$OUT" | tail -3)"; fi
+check "the first Railpack build starts from the node's warm cache (no big download)" "$(grep -c "started from the node's warm cache" <<<"$OUT")" 1
 check "Railpack-built app deployed and serving" "$(for _ in $(seq 1 45); do b=$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/"); echo "$b" | grep -q "built-with-railpack-$RUN" && { echo yes; break; }; sleep 2; done)" yes
 # Zip deployment: the source uploaded as an archive, built and deployed
 ZD="$TMP/zipapp"; mkdir -p "$ZD/site"
@@ -1295,7 +1299,7 @@ docker rm -f e2e-git >/dev/null 2>&1
 section "Self-signup and trials"
 T=t$RUN; TEMAIL="owner@$T.test"; TPW=correct-horse-battery-trial
 pow() { # pow <challenge>: nonce for SIGNUP_POW_BITS=8 (sha256 starting with two zero hex digits)
-  local n=0 h; while :; do h=$(printf '%s' "$1:$n" | sha256sum); [ "${h:0:2}" = 00 ] && { echo "$n"; return; }; n=$((n+1)); done; }
+  python -c 'import hashlib,sys,itertools; c=sys.argv[1]; print(next(n for n in itertools.count() if hashlib.sha256(f"{c}:{n}".encode()).hexdigest()[:2] == "00"))' "$1" | tr -d '\r'; }
 challenge() { c "$1" "$BASE/signup" | grep -o 'name="challenge" value="[^"]*"' | sed 's/.*value="//;s/"$//'; }
 mail_body() { # mail_body <to> <subject text>: body of the newest matching message (Mailpit API)
   local id; for _ in $(seq 1 20); do
@@ -1348,7 +1352,7 @@ check "[trial] CPU-burning app deployed" "$(wait_status jt $SVC_T)" live
 for _ in $(seq 1 100); do R=$(owner_sql "SELECT suspend_reason FROM orgs WHERE slug = '$T'"); [ "$R" = cpu_anomaly ] && break; sleep 3; done
 check "trial suspended automatically for sustained full CPU" "$R" cpu_anomaly
 check "suspension stops the app" "$(for _ in $(seq 1 30); do x=$(curl -s -o /dev/null -w '%{http_code}' --resolve "burn-app-$T.apps.localhost:$PORT:127.0.0.1" "http://burn-app-$T.apps.localhost:$PORT/"); [ "$x" = 404 ] && { echo stopped; break; }; sleep 2; done)" stopped
-if MSYS_NO_PATHCONV=1 docker compose -f compose.dev.yml exec -T ntfy wget -qO- "http://localhost/platform-operator/json?poll=1&since=all" 2>/dev/null | grep -q "Trial suspended: $T"; then ok "operator notified"; else bad "no operator notice"; fi
+if MSYS_NO_PATHCONV=1 docker exec -i "$NTFY_C" wget -qO- "http://localhost/platform-operator/json?poll=1&since=all" 2>/dev/null | grep -q "Trial suspended: $T"; then ok "operator notified"; else bad "no operator notice"; fi
 if c jt "$BASE/o/$T" | grep -q "crypto-mining"; then ok "owner sees why the organization is suspended"; else bad "suspension reason not shown"; fi
 admin suspend-org --slug "$T" --undo >/dev/null
 owner_sql "UPDATE orgs SET trial_ends_at = now() - interval '1 minute' WHERE slug = '$T'" >/dev/null
@@ -1362,7 +1366,7 @@ code_of jt -X POST "$BASE$SVC_T/delete" -d csrf=$CSRF_T -d confirm=burn >/dev/nu
 section "Alerts"
 ntfy_has() { # ntfy_has <topic> <text> [tries]: wait until a message on topic contains text
   for _ in $(seq 1 "${3:-30}"); do
-    if MSYS_NO_PATHCONV=1 docker compose -f compose.dev.yml exec -T ntfy wget -qO- "http://localhost/$1/json?poll=1&since=all" 2>/dev/null | grep -q "$2"; then
+    if MSYS_NO_PATHCONV=1 docker exec -i "$NTFY_C" wget -qO- "http://localhost/$1/json?poll=1&since=all" 2>/dev/null | grep -q "$2"; then
       echo yes; return
     fi
     sleep 2

@@ -186,6 +186,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.accessLogLoop(ctx)
 	go a.alarmLoop(ctx)
 	go a.dnsLoop(ctx)
+	go a.buildWarmLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)

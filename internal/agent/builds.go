@@ -318,6 +318,9 @@ chown 1000:1000 /cache`
 	args := []string{"build", "--progress", "plain", "--local", "context=" + ctxDir,
 		"--output", "type=docker,name=" + image + ",dest=/src/out/image.tar,compression=uncompressed"}
 	if mode == "railpack" {
+		if a.seedBuildCache(ctx, cache, short) {
+			log.step("build cache started from the node's warm cache (Railpack base images)")
+		}
 		log.step("building %s with Railpack (no Dockerfile)", image)
 		args = append(args, "--frontend", "gateway.v0", "--opt", "source="+a.cfg.RailpackFrontend,
 			"--local", "dockerfile=/src/plan", "--opt", "build-arg:cache-key="+model.Compact(b.ServiceID))
