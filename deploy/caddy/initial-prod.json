@@ -1,3 +1,28 @@
 {
-  "admin": { "listen": "unix//run/caddy/admin.sock", "origins": ["caddy"] }
+  "admin": {
+    "listen": "unix//run/caddy/admin.sock",
+    "origins": [
+      "caddy"
+    ]
+  },
+  "logging": {
+    "logs": {
+      "default": {
+        "exclude": [
+          "http.log.access.tenant"
+        ]
+      },
+      "tenant": {
+        "writer": {
+          "output": "stdout"
+        },
+        "encoder": {
+          "format": "json"
+        },
+        "include": [
+          "http.log.access.tenant"
+        ]
+      }
+    }
+  }
 }

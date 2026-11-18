@@ -447,6 +447,24 @@ Everything your application writes to standard output and standard error is coll
 
 Write logs to standard output rather than files: files are lost at each deployment unless they are in the persistent folder.
 
+## Prometheus and Grafana
+
+Your metrics are available through a **Prometheus-compatible API**, limited to your organization: point Grafana, `promtool` or any Prometheus client at `https://<console>/api/v1/prometheus` with an API token as bearer (`Authorization: Bearer pla_…`, a viewer token is enough).
+
+- **Platform metrics** of every instance: `platform_container_cpu_seconds_total`, `platform_container_memory_bytes`, `platform_container_memory_limit_bytes`, `platform_container_network_rx_bytes_total`, `platform_container_network_tx_bytes_total`, labelled `service_id`, `project_id` and `instance`.
+- **Your application's metrics:** set the service's **Metrics path** (such as `/metrics`, and a port if it is not the service's). The platform scrapes every instance every 30 seconds and adds the labels `service`, `project`, `service_id` and `instance`. Labels named `org_id`, `project_id`, `service_id`, `service`, `project` or `instance` set by your application are replaced. Up to 20,000 samples and 4 MB per scrape.
+- Supported endpoints: `query`, `query_range`, `series`, `labels`, `label/<name>/values`, `metadata`, `query_exemplars`, `status/buildinfo`. Metrics are kept 30 days.
+- **Managed Grafana:** **Monitoring** › **Grafana and Prometheus** › **Create Grafana** adds a `grafana` service to a project, with the data source and a **Services** dashboard already set up, a read-only token, and its data in a persistent folder. Sign in as `admin` with the password shown once (it is also the service's secret `GF_SECURITY_ADMIN_PASSWORD`).
+
+## Analytics
+
+The **Analytics** page shows, for each web service:
+
+- **Traffic**, measured at the platform's proxy with no code to add: requests over time with errors, visitors, server errors, latency (p50, p95, p99), data sent, top paths, slowest paths, status codes, referrers, browsers, systems and devices (bots are flagged). Query strings are not recorded, as they can hold secrets.
+- **Behavior**, from a small cookieless script: page views, visitors, sessions, bounce rate, top pages, where visitors come from, campaigns (`utm_source`) and your own events. Turn it on in the **Behavior** tab and add the snippet to your pages; single-page apps are followed through history changes. Send events with `platformTrack("signup", {plan: "pro"})` (up to 10 properties). Only pages served at the service's own addresses (its platform address and custom domains) can report to it.
+
+No IP address and no cookie is stored: a visitor is counted with a hash of address and browser salted with a secret that changes every day, so visitors cannot be followed from one day to the next. Periods: last hour, 24 hours, 7 days, 30 days (data is kept as long as your logs). The same report is available with the API: `GET /api/v1/projects/PROJECT/services/SERVICE/analytics?period=24h`.
+
 ## Backups and restore
 
 The persistent folder of each service is backed up every night, encrypted with a key unique to your organization. Services without a persistent folder hold no data to back up.

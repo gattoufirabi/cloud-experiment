@@ -768,6 +768,65 @@ check "[A] domain deleted" "$(code_of ja -X POST "$BASE/o/$A/email/d/$ED/delete"
 owner_sql "DELETE FROM api_tokens WHERE name = 'email-probe'" >/dev/null
 docker rm -f e2e-dns >/dev/null 2>&1
 
+section "Observability: Prometheus API, custom metrics, Grafana, analytics"
+ORG_A=$(owner_sql "SELECT id FROM orgs WHERE slug = '$A'"); ORG_B=$(owner_sql "SELECT id FROM orgs WHERE slug = '$B'")
+prom() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $1" -G "$BASE/api/v1/prometheus/api/v1/$2" "${@:3}"; }
+P=$(prom "$TOK_DEV" query --data-urlencode 'query=count by (org_id) (platform_container_memory_bytes)')
+check "[Prometheus API] answers with A's series only" "$(grep -o '"org_id":"[^"]*"' <<<"$P" | sort -u | tr -d '\n')" "\"org_id\":\"$ORG_A\""
+P=$(prom "$TOK_DEV" query --data-urlencode 'query=count by (org_id) (platform_container_memory_bytes)' --data-urlencode "extra_label=org_id=$ORG_B")
+check "[Prometheus API] a forged extra_label cannot reach B" "$(grep -c "$ORG_B" <<<"$P")" 0
+check "[Prometheus API] series and labels endpoints work" "$(prom "$TOK_DEV" labels | grep -c '"service_id"'):$(prom "$TOK_DEV" label/service_id/values | grep -c '"status":"success"')" "1:1"
+check "[Prometheus API] other paths refused (404)" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/prometheus/api/v1/admin/tsdb/delete_series")" 404
+check "[Prometheus API] needs a token (401)" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "console.localhost:$PORT:127.0.0.1" "$BASE/api/v1/prometheus/api/v1/query?query=up")" 401
+
+admin set-plan --slug "$A" --plan pro >/dev/null
+mkdir -p "$TMP/metricsapp"; printf '%s\n' 'FROM nginx:1.27-alpine' 'COPY metrics /usr/share/nginx/html/metrics' > "$TMP/metricsapp/Dockerfile"
+printf '%s\n' '# TYPE app_orders_total counter' "app_orders_total{org_id=\"$ORG_B\",shop=\"main\"} 42" 'app_queue_depth 7' > "$TMP/metricsapp/metrics"
+docker build -q -t "$REG/$A/metricsapp:1" "$(cygpath -w "$TMP/metricsapp")" >/dev/null
+TOK_MX=$(new_token ja "$A" "$CSRF_A"); echo "$TOK_MX" | dk login $REG -u "$A" --password-stdin >/dev/null; dk push "$REG/$A/metricsapp:1" >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=metrics -d image=nginx:1.27-alpine >/dev/null
+check "[A] service with a metrics path deployed" "$(code_of ja -X POST "$BASE/o/$A/p/shop/s/metrics/settings" -d csrf=$CSRF_A -d "image=$REG/$A/metricsapp:1" -d port=80 -d health_path=%2F -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d metrics_path=%2Fmetrics -d deploy=1):$(wait_status ja /o/$A/p/shop/s/metrics)" "303:live"
+MQ=; for _ in $(seq 1 40); do MQ=$(prom "$TOK_DEV" query --data-urlencode 'query=app_orders_total'); grep -q '"42"' <<<"$MQ" && break; sleep 3; done
+check "the app's own metrics are scraped and queryable" "$(grep -o '"value":\[[0-9.]*,"42"\]' <<<"$MQ" | wc -l | tr -d ' ')" 1
+check "scraped series carry the service and A's organization" "$(grep -o '"service":"metrics"' <<<"$MQ" | head -1):$(grep -o '"org_id":"[^"]*"' <<<"$MQ" | sort -u | tr -d '\n')" "\"service\":\"metrics\":\"org_id\":\"$ORG_A\""
+check "an app cannot write series into B (org_id label dropped)" "$(prom "$TOK_B" query --data-urlencode 'query=app_orders_total' | grep -c '"42"')" 0
+code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/metrics >/dev/null
+
+for i in 1 2 3 4 5; do curl -sS -o /dev/null --resolve "$HOST_A:$PORT:127.0.0.1" -A "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile Safari/604.1" -e "https://news.example.org/x" "http://$HOST_A:$PORT/analytics-$RUN?secret=s3cr3t"; done
+curl -sS -o /dev/null --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/missing-$RUN"
+AN=; for _ in $(seq 1 30); do AN=$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/shop/services/web/analytics?period=1h"); grep -q "/analytics-$RUN" <<<"$AN" && break; sleep 2; done
+check "[analytics] each request is recorded at the proxy" "$(grep -o "\"Key\":\"/analytics-$RUN\",\"Count\":5" <<<"$AN")" "\"Key\":\"/analytics-$RUN\",\"Count\":5"
+check "[analytics] referrer, browser and device are classified" "$(grep -c '"news.example.org"' <<<"$AN"):$(grep -c '"Key":"iOS"' <<<"$AN"):$(grep -c '"Key":"mobile"' <<<"$AN")" "1:1:1"
+vlq() { dx run --rm --network platform-core curlimages/curl:8.11.1 -s "http://victorialogs:9428/select/logsql/query" --data-urlencode "query=$1"; }
+check "[analytics] query strings and IP addresses are not stored" "$(vlq "an_kind:access s3cr3t" | wc -l | tr -d ' '):$(vlq "an_kind:access" | grep -c 'remote_ip\|client_ip')" "0:0"
+check "[analytics] latency percentiles and a 404 counted" "$(grep -o '"P95":[0-9]*' <<<"$AN" | wc -l | tr -d ' '):$(grep -c '"Key":"404"' <<<"$AN")" "1:1"
+check "[B->A] B cannot read A's analytics (404)" "$(code_of jb "$BASE/o/$A/analytics")" 404
+PAGE=$(c ja "$BASE/o/$A/analytics?service=shop%2Fweb&period=1h")
+check "[A] the Analytics page shows the traffic chart and top paths" "$(grep -c '<svg class="chart"' <<<"$PAGE"):$(grep -c "/analytics-$RUN" <<<"$PAGE" | sed 's/^[1-9][0-9]*$/yes/')" "1:yes"
+check "page-view script served" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}:%{content_type}' "$BASE/a/s.js")" "200:text/javascript; charset=utf-8"
+check "[A] page-view script turned on" "$(code_of ja -X POST "$BASE/o/$A/analytics/script" -d csrf=$CSRF_A -d service=shop/web -d on=1)" 303
+AKEY=$(owner_sql "SELECT analytics_key FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'web' AND s.preview_of IS NULL")
+beacon() { curl -sS -o /dev/null -w '%{http_code}' --resolve "console.localhost:$PORT:127.0.0.1" -A "Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36" -H 'Content-Type: text/plain' -d "$1" "$BASE/a/e"; }
+check "events accepted (204)" "$(beacon "{\"k\":\"$AKEY\",\"n\":\"pageview\",\"u\":\"http://$HOST_A/pricing-$RUN?utm_source=newsletter\",\"r\":\"https://www.example.org/\",\"w\":1400,\"s\":\"sess$RUN\"}"):$(beacon "{\"k\":\"$AKEY\",\"n\":\"signup\",\"u\":\"http://$HOST_A/pricing-$RUN\",\"s\":\"sess$RUN\",\"p\":{\"plan\":\"pro\"}}")" "204:204"
+beacon "{\"k\":\"$AKEY\",\"n\":\"pageview\",\"u\":\"https://evil.example/forged-$RUN\",\"s\":\"evil$RUN\"}" >/dev/null
+AN=; for _ in $(seq 1 20); do AN=$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/shop/services/web/analytics?period=1h"); grep -q "pricing-$RUN" <<<"$AN" && break; sleep 2; done
+check "[behavior] page views, campaigns and custom events reported" "$(grep -c "\"Key\":\"/pricing-$RUN\"" <<<"$AN"):$(grep -c '"Key":"newsletter"' <<<"$AN"):$(grep -c '"Key":"signup"' <<<"$AN")" "1:1:1"
+check "[behavior] events from another site are ignored" "$(grep -c "forged-$RUN" <<<"$AN")" 0
+check "[behavior] sessions and bounce rate computed" "$(grep -o '"Sessions":[1-9][0-9]*' <<<"$AN" | wc -l | tr -d ' '):$(grep -o '"BounceRate":[0-9]*' <<<"$AN" | wc -l | tr -d ' ')" "1:1"
+code_of ja -X POST "$BASE/o/$A/analytics/script" -d csrf=$CSRF_A -d service=shop/web -d on=0 >/dev/null
+
+GPAGE=$(c ja -X POST "$BASE/o/$A/monitoring/grafana" -d csrf=$CSRF_A -d project=shop)
+GPW=$(sed -n 's/.*<pre class="cmd">\([a-z0-9_-]*\)<\/pre>.*/\1/p' <<<"$GPAGE" | head -1)
+check "[A] managed Grafana created (admin password shown once)" "$([ ${#GPW} -ge 12 ] && echo yes)" yes
+check "Grafana has a read-only token, its password and a persistent folder" "$(owner_sql "SELECT count(*) FROM secrets x JOIN services s ON s.id = x.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'grafana' AND x.name IN ('PLATFORM_PROM_TOKEN', 'GF_SECURITY_ADMIN_PASSWORD')"):$(owner_sql "SELECT volume_path FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'grafana'"):$(owner_sql "SELECT role FROM api_tokens t JOIN orgs o ON o.id = t.org_id WHERE o.slug = '$A' AND t.name = 'grafana in shop'")" "2:/var/lib/grafana:viewer"
+GH=grafana-shop-$A.apps.localhost
+check "Grafana built and live" "$(for _ in $(seq 1 100); do st=$(owner_sql "SELECT d.status FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'grafana' ORDER BY d.revision DESC LIMIT 1"); [ "$st" = live ] || [ "$st" = failed ] && { echo "$st"; break; }; sleep 4; done)" live
+check "Grafana signs in with the admin password" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "$GH:$PORT:127.0.0.1" -H 'Content-Type: application/json' -d "{\"user\":\"admin\",\"password\":\"$GPW\"}" "http://$GH:$PORT/login")" 200
+check "the platform data source and dashboard are provisioned" "$(curl -sS --resolve "$GH:$PORT:127.0.0.1" -u "admin:$GPW" "http://$GH:$PORT/api/datasources/uid/platform" | grep -o '"type":"prometheus"'):$(curl -sS --resolve "$GH:$PORT:127.0.0.1" -u "admin:$GPW" "http://$GH:$PORT/api/dashboards/uid/platform-services" | grep -o '"title":"Services"' | head -1)" '"type":"prometheus":"title":"Services"'
+code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/grafana >/dev/null
+owner_sql "DELETE FROM api_tokens WHERE name = 'grafana in shop' AND org_id = '$ORG_A'" >/dev/null
+admin set-plan --slug "$A" --plan starter >/dev/null
+
 section "Single sign-on (OIDC)"
 mkdir -p "$TMP/oidc"
 (cd .. && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$TMP/oidc/mockoidc" ./scripts/mockoidc) || bad "mock OIDC provider did not build"

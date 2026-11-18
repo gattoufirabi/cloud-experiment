@@ -33,14 +33,15 @@ import (
 )
 
 type Agent struct {
-	cfg   config.Config
-	pool  *pgxpool.Pool
-	dk    *docker.Client
-	box   *secure.Box
-	caddy *caddyClient
-	logs  *logShipper
-	wake  chan struct{}
-	log   *slog.Logger
+	cfg       config.Config
+	pool      *pgxpool.Pool
+	dk        *docker.Client
+	box       *secure.Box
+	hostIndex map[string]hostRef // application host -> organization/service (access logs)
+	caddy     *caddyClient
+	logs      *logShipper
+	wake      chan struct{}
+	log       *slog.Logger
 
 	scanWake    chan struct{}
 	trivyPulled bool
@@ -174,6 +175,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.queueLoop(ctx)
 	go a.autoscaleLoop(ctx)
 	go a.emailLoop(ctx)
+	go a.scrapeLoop(ctx)
+	go a.accessLogLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)

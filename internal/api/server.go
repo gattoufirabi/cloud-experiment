@@ -193,6 +193,12 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /o/{org}/monitoring/logs.txt", s.auth(authFull, s.downloadLogs))
 	m.HandleFunc("POST /o/{org}/monitoring/logs/exports", s.auth(authFull, s.createLogExport))
 	m.HandleFunc("POST /o/{org}/monitoring/logs/exports/{id}", s.auth(authFull, s.updateLogExport))
+	m.HandleFunc("GET /a/s.js", s.analyticsScriptHandler)
+	m.HandleFunc("POST /a/e", s.analyticsCollect)
+	m.HandleFunc("OPTIONS /a/e", s.analyticsCollect)
+	m.HandleFunc("GET /o/{org}/analytics", s.auth(authFull, s.analyticsPage))
+	m.HandleFunc("POST /o/{org}/analytics/script", s.auth(authFull, s.analyticsScriptToggle))
+	m.HandleFunc("POST /o/{org}/monitoring/grafana", s.auth(authFull, s.createGrafana))
 	m.HandleFunc("GET /o/{org}/email", s.auth(authFull, s.emailPage))
 	m.HandleFunc("POST /o/{org}/email/domains", s.auth(authFull, s.addEmailDomain))
 	m.HandleFunc("POST /o/{org}/email/send", s.auth(authFull, s.sendEmailConsole))
@@ -573,9 +579,17 @@ func parseTemplates() (map[string]*template.Template, error) {
 		"contains":   strings.Contains,
 		"join":       strings.Join,
 		"strs":       func(xs ...string) []string { return xs },
-		"hoursOf":    func(sec int) int { return max(1, sec/3600) },
-		"int64":      func(i int) int64 { return int64(i) },
-		"ms":         itoaPtr,
+		"pct":        percentOf,
+		"dict": func(kv ...any) map[string]any {
+			m := map[string]any{}
+			for i := 0; i+1 < len(kv); i += 2 {
+				m[fmt.Sprint(kv[i])] = kv[i+1]
+			}
+			return m
+		},
+		"hoursOf": func(sec int) int { return max(1, sec/3600) },
+		"int64":   func(i int) int64 { return int64(i) },
+		"ms":      itoaPtr,
 		"dbStatus": func(s string) string {
 			if s == "running" {
 				return "live"

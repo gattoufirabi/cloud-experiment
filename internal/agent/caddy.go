@@ -72,12 +72,13 @@ func (c *caddyClient) get(ctx context.Context, path string) ([]byte, error) {
 }
 
 type route struct {
-	Hosts   []string
-	Dials   []string // one per instance
-	Zone    string   // rate-limit zone name (service ID)
-	WAF     bool     // OWASP Core Rule Set
-	RPM     int      // requests per minute per visitor IP; 0 = no limit
-	Blocked []string // CIDR ranges refused with 403
+	OrgID, ProjectID string // for access logs (Zone is the service ID)
+	Hosts            []string
+	Dials            []string // one per instance
+	Zone             string   // rate-limit zone name (service ID)
+	WAF              bool     // OWASP Core Rule Set
+	RPM              int      // requests per minute per visitor IP; 0 = no limit
+	Blocked          []string // CIDR ranges refused with 403
 }
 
 func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
@@ -85,7 +86,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		SELECT d.container_name, (d.spec->>'port')::int, s.slug, p.slug, o.slug,
 		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}'),
 		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.blocked_ips::text[],
-		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances, o.id, p.id
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
 		LEFT JOIN services ps ON ps.id = s.preview_of
@@ -94,7 +95,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		LEFT JOIN domains dm ON dm.service_id = s.id
 		WHERE d.status = 'live' AND NOT o.suspended AND d.container_name IS NOT NULL
 		  AND NOT coalesce((d.spec->>'worker')::boolean, false) -- workers have no public address
-		GROUP BY d.id, s.id, ps.slug, p.slug, o.slug, d.upstream, d.instances
+		GROUP BY d.id, s.id, ps.slug, p.slug, o.slug, d.upstream, d.instances, o.id, p.id
 		ORDER BY o.slug, p.slug, s.slug`)
 	if err != nil {
 		return nil, err
@@ -106,7 +107,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		var previewName, parentSlug, upstream string
 		var insts []instance
 		rt := route{}
-		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream, &insts); err != nil {
+		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream, &insts, &rt.OrgID, &rt.ProjectID); err != nil {
 			return route{}, err
 		}
 		host := model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)
@@ -138,6 +139,15 @@ func (a *Agent) syncCaddy(ctx context.Context, force bool) {
 		a.log.Error("load routes", "err", err)
 		return
 	}
+	idx := make(map[string]hostRef, len(routes))
+	for _, r := range routes {
+		for _, h := range r.Hosts {
+			idx[strings.ToLower(h)] = hostRef{OrgID: r.OrgID, ProjectID: r.ProjectID, ServiceID: r.Zone}
+		}
+	}
+	a.mu.Lock()
+	a.hostIndex = idx
+	a.mu.Unlock()
 	body, err := json.Marshal(BuildCaddyConfig(a.cfg, routes)["apps"])
 	if err != nil {
 		a.log.Error("marshal caddy config", "err", err)
@@ -264,6 +274,17 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 	}}})
 
 	server := obj{"routes": rs}
+	// Access logs of the applications' hosts only (logger "tenant", defined in Caddy's
+	// startup config): the agent turns them into per-request analytics.
+	loggers := obj{}
+	for _, r := range routes {
+		for _, h := range r.Hosts {
+			loggers[h] = []string{"tenant"}
+		}
+	}
+	if len(loggers) > 0 {
+		server["logs"] = obj{"logger_names": loggers, "skip_unmapped_hosts": true}
+	}
 	apps := obj{"http": obj{"servers": obj{"main": server}}}
 	if cfg.TLSMode == "acme" {
 		server["listen"] = []string{":443"}

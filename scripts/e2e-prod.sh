@@ -78,7 +78,7 @@ cleanup() {
   for row in $(owner_sql "SELECT p.slug || '/' || s.slug FROM services s JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$org' AND s.preview_of IS NULL"); do sel+=(-d "sel=$row"); done
   [ ${#sel[@]} -gt 0 ] && code_of "$jar" -X POST "$BASE/o/$org/compute/actions" -d csrf=$csrf -d action=delete -d confirm=delete "${sel[@]}" >/dev/null
   for b in $(owner_sql "SELECT b.name FROM buckets b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$org'"); do
-    code_of "$jar" -X POST "$BASE/o/$org/storage/b/${b#$org-}/delete" -d csrf=$csrf -d "confirm=${b#$org-}" >/dev/null; done
+    code_of "$jar" -X POST "$BASE/o/$org/storage/b/$b/delete" -d csrf=$csrf -d "confirm=$b" >/dev/null; done
   for q in $(owner_sql "SELECT q.name FROM queues q JOIN orgs o ON o.id = q.org_id WHERE o.slug = '$org'"); do
     code_of "$jar" -X POST "$BASE/o/$org/queues/$q/delete" -d csrf=$csrf -d "confirm=$q" >/dev/null; done
   for sname in $(owner_sql "SELECT s.name FROM org_secrets s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$org'"); do
@@ -165,9 +165,9 @@ fi
 section "API tokens and platformctl"
 TOK=$(c ja -X POST "$BASE/o/$A/api-tokens" -d csrf=$CSRF_A -d name=e2e -d role=developer | grep -o 'pla_[A-Za-z0-9_-]*' | head -1)
 TOK_B=$(c jb -X POST "$BASE/o/$B/api-tokens" -d csrf=$CSRF_B -d name=e2e -d role=developer | grep -o 'pla_[A-Za-z0-9_-]*' | head -1)
-check "[API] whoami names the organization" "$(api "$TOK" GET /whoami | grep -o "\"organization\":\"$A\"")" "\"organization\":\"$A\""
-check "[B API] B's token is bound to B (sees only its own organization)" "$(api "$TOK_B" GET /whoami | grep -o "\"organization\":\"[a-z0-9-]*\"")" "\"organization\":\"$B\""
-check "[API] an invalid token is refused (401)" "$(apicode "pla_not-a-real-token" GET /whoami)" 401
+check "[API] whoami names the organization" "$(api "$TOK" GET /me | grep -o "\"organization\":\"$A\"")" "\"organization\":\"$A\""
+check "[B API] B's token is bound to B (sees only its own organization)" "$(api "$TOK_B" GET /me | grep -o "\"organization\":\"[a-z0-9-]*\"")" "\"organization\":\"$B\""
+check "[API] an invalid token is refused (401)" "$(apicode "pla_not-a-real-token" GET /me)" 401
 pctl() { PLATFORM_URL="$BASE" PLATFORM_TOKEN="$TOK" "$PCTL" "$@" 2>&1; }
 if [ -x "$PCTL" ]; then
   check "[CLI] platformctl status shows the live revision" "$(pctl status shop/web | grep -c live | yes_if)" yes
@@ -196,12 +196,14 @@ if docker exec "$CID_B" sh -c "echo | nc -w 3 $HOSTPG 5432" >/dev/null 2>&1; the
 
 section "Object storage"
 code_of ja -X POST "$BASE/o/$A/storage/buckets" -d csrf=$CSRF_A -d name=files -d quota_mb=5 >/dev/null
-check "[A] bucket created" "$(for _ in $(seq 1 20); do [ -n "$(owner_sql "SELECT 1 FROM buckets b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.name = '$A-files' AND b.garage_id IS NOT NULL")" ] && { echo yes; break; }; sleep 1; done)" yes
+check "[A] bucket created" "$(for _ in $(seq 1 20); do [ "$(owner_sql "SELECT full_name FROM buckets b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.name = 'files' AND garage_id <> ''")" = "$A-files" ] && { echo yes; break; }; sleep 1; done)" yes
 KP=$(c ja -X POST "$BASE/o/$A/storage/keys" -d csrf=$CSRF_A -d name=e2e -d "perm_files=write")
 KID=$(grep -o 'GK[0-9a-f]\{24\}' <<<"$KP" | head -1); KSEC=$(sed -n 's/.*select wrap">\([0-9a-f]\{64\}\)<.*/\1/p' <<<"$KP" | head -1)
-s3c() { curl -sS --resolve "$S3HOST:443:127.0.0.1" --aws-sigv4 "aws:amz:us-east-1:s3" --user "$KID:$KSEC" "$@"; }
+# curl before 8 does not send x-amz-content-sha256 itself; it signs the header given here
+s3c() { curl -sS --resolve "$S3HOST:443:127.0.0.1" --aws-sigv4 "aws:amz:us-east-1:s3" --user "$KID:$KSEC" -H "x-amz-content-sha256: UNSIGNED-PAYLOAD" "$@"; }
 sleep 3
-check "[S3] signed upload" "$(echo "hello-$RUN" | s3c -o /dev/null -w '%{http_code}' -T - "https://$S3HOST/$A-files/hello.txt")" 200
+echo "hello-$RUN" > "$TMP/hello.txt"
+check "[S3] signed upload" "$(s3c -o /dev/null -w '%{http_code}' -T "$TMP/hello.txt" "https://$S3HOST/$A-files/hello.txt")" 200
 check "[S3] object reads back" "$(s3c "https://$S3HOST/$A-files/hello.txt")" "hello-$RUN"
 check "[S3] anonymous read refused" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "$S3HOST:443:127.0.0.1" "https://$S3HOST/$A-files/hello.txt")" 403
 s3c -X DELETE "https://$S3HOST/$A-files/hello.txt" >/dev/null

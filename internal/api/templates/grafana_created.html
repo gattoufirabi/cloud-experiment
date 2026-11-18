@@ -1,0 +1,13 @@
+{{define "title"}}Grafana · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Grafana is being built</h1></div>
+<p class="lede">The <code>grafana</code> service of project {{.Project}} is building (build #{{.Build}}) and deploys on its own in a few minutes.</p>
+<div class="section panel">
+  <h2>Sign in</h2>
+  <p>Address: <a href="https://{{.Host}}" rel="noopener">https://{{.Host}}</a></p>
+  <p>User <code>admin</code>, password:</p>
+  <pre class="cmd">{{.Password}}</pre>
+  <p class="small muted">Shown once: copy it now. It is stored as the service's secret <code>GF_SECURITY_ADMIN_PASSWORD</code>; change it in Grafana after signing in.</p>
+</div>
+<p><a class="button-link" href="{{.Org.Path}}/p/{{.Project}}/s/grafana">Open the service</a></p>
+{{end}}

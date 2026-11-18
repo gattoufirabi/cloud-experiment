@@ -135,6 +135,8 @@ func (e apiErr) Error() string { return e.msg }
 func (s *Server) apiRoutes(m *http.ServeMux) {
 	const svc = "/api/v1/projects/{project}/services/{service}"
 	m.HandleFunc("GET /api/v1/me", s.apiAuth("viewer", s.apiMe))
+	m.HandleFunc("GET /api/v1/prometheus/api/v1/{rest...}", s.apiAuth("viewer", s.apiPrometheus))
+	m.HandleFunc("POST /api/v1/prometheus/api/v1/{rest...}", s.apiAuth("viewer", s.apiPrometheus))
 	m.HandleFunc("GET /api/v1/projects", s.apiAuth("viewer", s.apiProjects))
 	m.HandleFunc("GET /api/v1/projects/{project}/services", s.apiAuth("viewer", s.apiServices))
 	m.HandleFunc("GET /api/v1/projects/{project}/variables", s.apiAuth("viewer", s.apiProjectVars))
@@ -184,6 +186,7 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET "+svc+"/jobs/{job}/runs/{run}", s.apiAuth("viewer", s.apiJobRun))
 	m.HandleFunc("POST "+svc+"/builds", s.apiAuth("developer", s.apiStartBuild))
 	m.HandleFunc("POST "+svc+"/zip", s.apiAuth("developer", s.apiZipDeploy))
+	m.HandleFunc("GET "+svc+"/analytics", s.apiAuth("viewer", s.apiAnalytics))
 	m.HandleFunc("GET "+svc+"/builds/{n}", s.apiAuth("viewer", s.apiBuild))
 	m.HandleFunc("POST "+svc+"/previews", s.apiAuth("developer", s.apiCreatePreview))
 	m.HandleFunc("DELETE "+svc+"/previews/{name}", s.apiAuth("developer", s.apiDeletePreview))

@@ -22,6 +22,23 @@
     {{else}}<p class="small muted">No incidents. Every live application is checked continuously.</p>{{end}}
   </div>
 
+  <div class="section" id="grafana">
+    <h2>Grafana and Prometheus</h2>
+    <p class="small muted">Your metrics (CPU, memory and network of every instance, plus your applications' own metrics when a service sets a <strong>Metrics path</strong>) are available through a Prometheus-compatible API, limited to your organization.</p>
+    <div class="panel"><pre class="cmd"># Prometheus server URL (in Grafana: Prometheus data source, header Authorization: Bearer &lt;API token&gt;)
+{{.BaseURL}}/api/v1/prometheus
+
+curl -H "Authorization: Bearer $TOKEN" "{{.BaseURL}}/api/v1/prometheus/api/v1/query?query=sum(rate(platform_container_cpu_seconds_total[5m]))"</pre></div>
+    {{if and (roleAtLeast .Org.Role "developer") .Projects}}
+    <form method="post" action="{{.Org.Path}}/monitoring/grafana" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Create a managed Grafana in <select name="project">{{range .Projects}}<option value="{{.Slug}}">{{.Name}}</option>{{end}}</select></label>
+      <button type="submit">Create Grafana</button>
+    </form>
+    <p class="small muted">A <code>grafana</code> service with the data source and a services dashboard already set up, its data kept in a persistent folder. It counts as one service (250 millicores, 256 MB).</p>
+    {{end}}
+  </div>
+
   <div class="section" id="channels">
     <h2>Notification channels</h2>
     {{if .Channels}}

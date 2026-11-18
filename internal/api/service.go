@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,9 @@ type serviceInfo struct {
 	Env                                     map[string]string
 	Ports                                   []model.PublicPort
 	AutoMin, AutoMax, AutoCPU               int    // autoscaling (AutoMin 0 = off)
+	MetricsPath                             string // Prometheus endpoint scraped by the platform ("" = none)
+	MetricsPort                             int    // 0 = the service's port
+	AnalyticsKey                            string // web analytics script key ("" = off)
 	PreviewName, ParentSlug                 string // set for preview environments
 	Expires                                 *time.Time
 }
@@ -44,16 +48,19 @@ func (sv *serviceInfo) spec() model.Spec {
 		HealthPath: sv.HealthPath, VolumePath: sv.VolumePath, Env: sv.Env, Worker: sv.Worker, Instances: sv.Instances, Ports: sv.Ports}
 }
 
+var metricsPathRe = regexp.MustCompile(`^/[A-Za-z0-9._~/-]*$`)
+
 func (s *Server) loadService(r *http.Request, tx pgx.Tx, projectID string) (*serviceInfo, error) {
 	var sv serviceInfo
 	err := tx.QueryRow(r.Context(), `
 		SELECT s.id, s.slug, s.image, s.health_path, s.volume_path, s.port, s.cpu_millis, s.memory_mb, s.env,
 		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker, s.instances, s.ports,
-		       s.autoscale_min, s.autoscale_max, s.autoscale_cpu
+		       s.autoscale_min, s.autoscale_max, s.autoscale_cpu, s.metrics_path, s.metrics_port, coalesce(s.analytics_key, '')
 		FROM services s LEFT JOIN services ps ON ps.id = s.preview_of
 		WHERE s.project_id = $1 AND s.slug = $2`, projectID, r.PathValue("service")).
 		Scan(&sv.ID, &sv.Slug, &sv.Image, &sv.HealthPath, &sv.VolumePath, &sv.Port, &sv.CPUMillis, &sv.MemoryMB, &sv.Env,
-			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker, &sv.Instances, &sv.Ports, &sv.AutoMin, &sv.AutoMax, &sv.AutoCPU)
+			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker, &sv.Instances, &sv.Ports, &sv.AutoMin, &sv.AutoMax, &sv.AutoCPU,
+			&sv.MetricsPath, &sv.MetricsPort, &sv.AnalyticsKey)
 	if sv.Env == nil {
 		sv.Env = map[string]string{}
 	}
@@ -372,8 +379,13 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
-		if _, err := tx.Exec(r.Context(), `UPDATE services SET autoscale_min = $2, autoscale_max = $3, autoscale_cpu = $4 WHERE id = $1`,
-			sv.ID, autoMin, autoMax, autoCPU); err != nil {
+		metricsPath, metricsPort := strings.TrimSpace(r.PostFormValue("metrics_path")), atoiDefault(r.PostFormValue("metrics_port"), 0)
+		if metricsPath != "" && (!metricsPathRe.MatchString(metricsPath) || len(metricsPath) > 200) || metricsPort < 0 || metricsPort > 65535 {
+			formErr = "Metrics: a path such as /metrics, and a port from 1 to 65535 (empty: the service's port)."
+			return nil
+		}
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET autoscale_min = $2, autoscale_max = $3, autoscale_cpu = $4, metrics_path = $5, metrics_port = $6 WHERE id = $1`,
+			sv.ID, autoMin, autoMax, autoCPU, metricsPath, metricsPort); err != nil {
 			return err
 		}
 		if next.Ports, err = s.allocatePorts(r, tx, o, sv.ID, next.Ports); err != nil {

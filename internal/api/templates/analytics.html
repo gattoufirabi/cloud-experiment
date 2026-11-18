@@ -1,0 +1,84 @@
+{{define "title"}}Analytics · {{.Org.Name}}{{end}}
+{{define "kvtable"}}{{if .Rows}}<table class="resources">
+  <thead><tr><th>{{.Label}}</th><th class="num">{{.Unit}}</th><th class="wide"></th></tr></thead>
+  <tbody>{{$max := (index .Rows 0).Count}}{{range .Rows}}<tr><td><code class="wrap">{{.Key}}</code></td><td class="num">{{.Count}}</td><td><meter min="0" max="100" value="{{pct .Count $max}}"></meter></td></tr>{{end}}</tbody>
+</table>{{else}}<p class="small muted">Nothing yet.</p>{{end}}{{end}}
+{{define "content"}}
+<div class="head"><h1>Analytics</h1></div>
+<p class="lede">Every request to your services, measured at the platform's proxy (no code needed), and what visitors do on your pages with a cookieless script. No IP address or cookie is stored.</p>
+<p class="help"><a href="/docs/user#analytics" target="_blank" rel="noopener">Guide: analytics ↗</a></p>
+{{if .Services}}
+<form method="get" action="{{.Org.Path}}/analytics" class="inline section">
+  <select name="service" aria-label="Service">{{range .Services}}<option value="{{.Project}}/{{.Slug}}" {{if and $.Current (eq .ID $.Current.ID)}}selected{{end}}>{{.Project}}/{{.Slug}}</option>{{end}}</select>
+  <select name="period" aria-label="Period">{{range .Periods}}<option value="{{.}}" {{if eq . $.Report.Period}}selected{{end}}>last {{.}}</option>{{end}}</select>
+  <button type="submit">Show</button>
+</form>
+{{with .Report}}
+<nav class="tabs" role="tablist" aria-label="Analytics sections">
+  <a role="tab" href="#traffic">Traffic</a>
+  <a role="tab" href="#behavior">Behavior</a>
+</nav>
+
+<section class="pane" id="traffic" role="tabpanel" aria-label="Traffic">
+  <div class="stats">
+    <div class="stat"><span>Requests</span><b>{{.Requests}}</b></div>
+    <div class="stat"><span>Visitors</span><b>{{.Visitors}}</b></div>
+    <div class="stat{{if .Errors}} bad{{end}}"><span>Server errors (5xx)</span><b>{{.Errors}}</b></div>
+    <div class="stat"><span>Latency p50</span><b>{{.P50}} ms</b></div>
+    <div class="stat"><span>p95</span><b>{{.P95}} ms</b></div>
+    <div class="stat"><span>p99</span><b>{{.P99}} ms</b></div>
+    <div class="stat"><span>Sent</span><b>{{bytes .Bytes}}</b></div>
+  </div>
+  {{if .HasTraffic}}
+  <div class="section">
+    <h2>Requests over time</h2>
+    <svg class="chart" viewBox="0 0 {{.ChartWidth}} 100" preserveAspectRatio="none" role="img" aria-label="Requests per interval, errors in red">
+      {{range .Series}}<rect class="bar" x="{{.X}}" y="{{.Y}}" width="8" height="{{.Pct}}"><title>{{.Time.Format "2006-01-02 15:04"}}: {{.Value}} requests, {{.Errors}} errors</title></rect>{{if .EH}}<rect class="bar-err" x="{{.X}}" y="{{.EY}}" width="8" height="{{.EH}}"/>{{end}}{{end}}
+    </svg>
+  </div>
+  <div class="grid-2">
+    <div class="section"><h2>Top paths</h2>{{template "kvtable" (dict "Rows" .Paths "Label" "Path" "Unit" "requests")}}</div>
+    <div class="section"><h2>Slowest paths (p95)</h2>{{if .Slowest}}<table class="resources"><thead><tr><th>Path</th><th class="num">p95</th><th class="num">requests</th></tr></thead>
+      <tbody>{{range .Slowest}}<tr><td><code class="wrap">{{.Key}}</code></td><td class="num">{{.Count}} ms</td><td class="num">{{.Extra}}</td></tr>{{end}}</tbody></table>{{else}}<p class="small muted">Not enough requests yet.</p>{{end}}</div>
+    <div class="section"><h2>Status codes</h2>{{template "kvtable" (dict "Rows" .Statuses "Label" "Status" "Unit" "requests")}}</div>
+    <div class="section"><h2>Referrers</h2>{{template "kvtable" (dict "Rows" .Referrers "Label" "Site" "Unit" "requests")}}</div>
+    <div class="section"><h2>Browsers</h2>{{template "kvtable" (dict "Rows" .Browsers "Label" "Browser" "Unit" "requests")}}</div>
+    <div class="section"><h2>Systems and devices</h2>{{template "kvtable" (dict "Rows" .OSes "Label" "System" "Unit" "requests")}}{{template "kvtable" (dict "Rows" .Devices "Label" "Device" "Unit" "requests")}}</div>
+  </div>
+  {{else}}<p class="small muted section">No requests in this period. Requests to the service's addresses appear here within a few seconds.</p>{{end}}
+</section>
+
+<section class="pane" id="behavior" role="tabpanel" aria-label="Behavior">
+  {{if $.Snippet}}
+  <div class="section">
+    <h2>Page-view script</h2>
+    <p class="small muted">On in this service. Put it in your pages' <code>&lt;head&gt;</code>; single-page apps are followed through history changes. Send your own events with <code>platformTrack("signup", {plan: "pro"})</code>.</p>
+    <pre class="cmd wrap">{{$.Snippet}}</pre>
+    {{if $.CanEdit}}<form method="post" action="{{$.Org.Path}}/analytics/script" class="inline flush"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="service" value="{{$.Current.Project}}/{{$.Current.Slug}}"><input type="hidden" name="on" value="0"><button class="link" type="submit">turn the script off</button></form>{{end}}
+  </div>
+  {{else if $.CanEdit}}
+  <div class="section">
+    <h2>Page-view script</h2>
+    <p class="small muted">Turn it on to see page views, sessions, bounce rate, campaigns and your own events. Only pages served at this service's addresses can report to it.</p>
+    <form method="post" action="{{$.Org.Path}}/analytics/script" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="service" value="{{$.Current.Project}}/{{$.Current.Slug}}"><input type="hidden" name="on" value="1"><button type="submit">Turn on the page-view script</button></form>
+  </div>
+  {{end}}
+  <div class="stats">
+    <div class="stat"><span>Page views</span><b>{{.Pageviews}}</b></div>
+    <div class="stat"><span>Visitors</span><b>{{.PVisitors}}</b></div>
+    <div class="stat"><span>Sessions</span><b>{{.Sessions}}</b></div>
+    <div class="stat"><span>Bounce rate</span><b>{{.BounceRate}}%</b></div>
+    <div class="stat"><span>Custom events</span><b>{{.EventCount}}</b></div>
+  </div>
+  {{if .HasEvents}}
+  <div class="grid-2">
+    <div class="section"><h2>Top pages</h2>{{template "kvtable" (dict "Rows" .Pages "Label" "Page" "Unit" "views")}}</div>
+    <div class="section"><h2>Events</h2>{{template "kvtable" (dict "Rows" .Events "Label" "Event" "Unit" "times")}}</div>
+    <div class="section"><h2>Where visitors come from</h2>{{template "kvtable" (dict "Rows" .EntryReferrers "Label" "Site" "Unit" "views")}}</div>
+    <div class="section"><h2>Campaigns (utm_source)</h2>{{template "kvtable" (dict "Rows" .Sources "Label" "Source" "Unit" "views")}}</div>
+  </div>
+  {{end}}
+</section>
+{{end}}
+{{else}}<p class="small muted">Create a web service first.</p>{{end}}
+{{end}}
