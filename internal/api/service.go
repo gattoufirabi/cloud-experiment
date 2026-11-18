@@ -582,7 +582,7 @@ func (s *Server) setSecret(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, err := tx.Exec(r.Context(), `
 			INSERT INTO secrets (org_id, service_id, name, value_enc) VALUES ($1, $2, $3, $4)
-			ON CONFLICT (service_id, name) DO UPDATE SET value_enc = EXCLUDED.value_enc, created_at = now()`,
+			ON CONFLICT (service_id, name) DO UPDATE SET value_enc = EXCLUDED.value_enc, source = '', created_at = now()`,
 			o.ID, sv.ID, name, enc); err != nil {
 			return err
 		}

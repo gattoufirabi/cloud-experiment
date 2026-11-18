@@ -304,6 +304,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /o/{org}/p/{project}/variables/{name}/delete", s.auth(authFull, s.deleteProjectVar))
 	m.HandleFunc("POST /o/{org}/p/{project}/redeploy", s.auth(authFull, s.redeployProject))
 	m.HandleFunc("POST /o/{org}/p/{project}/connections", s.auth(authFull, s.projectConnection))
+	m.HandleFunc("GET /o/{org}/p/{project}/map", s.auth(authFull, s.projectMapFragment))
 
 	m.HandleFunc("POST /o/{org}/p/{project}/databases", s.auth(authFull, s.createDatabase))
 	const dbp = "/o/{org}/p/{project}/d/{db}"
@@ -688,6 +689,24 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, sta
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
+	_, _ = buf.WriteTo(w)
+}
+
+// renderPartial renders one shared template (defined in layout.html) without the page
+// around it: the HTML fragments htmx swaps in place.
+func (s *Server) renderPartial(w http.ResponseWriter, r *http.Request, name string, d any) {
+	t, ok := s.pages["project"]
+	if !ok {
+		http.Error(w, "page not found", http.StatusInternalServerError)
+		return
+	}
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, name, d); err != nil {
+		s.log.Error("render partial", "name", name, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = buf.WriteTo(w)
 }
 

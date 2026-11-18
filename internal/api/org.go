@@ -515,6 +515,7 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 	var others []resource // domains and scheduled jobs of the project
 	var peers []peerView
 	var otherProjects []string
+	var pmap *projectMap
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		var err error
 		if p, err = s.loadProject(r, tx); err != nil {
@@ -561,7 +562,10 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		otherProjects, err = pgx.CollectRows(prow, pgx.RowTo[string])
+		if otherProjects, err = pgx.CollectRows(prow, pgx.RowTo[string]); err != nil {
+			return err
+		}
+		pmap, err = s.loadProjectMap(r.Context(), tx, o, p)
 		return err
 	})
 	if isNoRows(err) {
@@ -579,7 +583,7 @@ func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.render(w, r, "project", http.StatusOK, data{"Org": o, "Project": p, "Services": services, "Databases": dbs, "Variables": vars, "BaseURL": s.cfg.BaseURL,
-		"Engines": model.Engines, "Others": others, "LiveServices": live, "Peers": peers, "OtherProjects": otherProjects})
+		"Engines": model.Engines, "Others": others, "LiveServices": live, "Peers": peers, "OtherProjects": otherProjects, "Map": pmap})
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {

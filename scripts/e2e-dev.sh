@@ -375,6 +375,14 @@ check "[A] a wrong password is refused" "$(kclient wrong "timeout 40 /opt/kafka/
 check "[A] Kafka has no backups (refused, and not scheduled)" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/shop/d/events/backups" -d csrf=$CSRF_A | grep -c 'err='):$(owner_sql "SELECT backup_enabled FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'events'")" "1:f"
 code_of ja -X POST "$BASE/o/$A/p/shop/d/events/attach" -d csrf=$CSRF_A -d service=files -d name=KAFKA_URL >/dev/null
 check "[A] KAFKA_URL stored as a secret of a service" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name = 'KAFKA_URL'")" 1
+# Project map: the connection secret above draws files -> events
+pmap() { c "$1" -H 'HX-Request: true' "$BASE/o/$2/p/$3/map"; }
+PMAP=$(pmap ja "$A" shop)
+check "project map: services and the Kafka stream are drawn, with the link from the secret" "$(grep -c 'class="pmap-svg"' <<<"$PMAP"):$(grep -c '>files</text>' <<<"$PMAP"):$(grep -c '>events</text>' <<<"$PMAP"):$(grep -cF 'files → events' <<<"$PMAP")" "1:1:1:1"
+check "project map: the project page embeds it, live (htmx polling)" "$(c ja "$BASE/o/$A/p/shop" | grep -c 'id="project-map" hx-get="/o/'"$A"'/p/shop/map" hx-trigger="every')" 1
+check "project map: a plain request is sent to the project page" "$(code_of ja "$BASE/o/$A/p/shop/map")" 303
+check "[B->A] B cannot read A's project map (404)" "$(c jb -o /dev/null -w '%{http_code}' -H 'HX-Request: true' "$BASE/o/$A/p/shop/map")" 404
+check "project map: no secret value in it" "$(grep -c "$KPASS" <<<"$PMAP")" 0
 code_of ja -X POST "$BASE/o/$A/p/shop/d/events/delete" -d csrf=$CSRF_A -d confirm=events >/dev/null
 check "[A] Kafka deleted with its container" "$(for _ in $(seq 1 30); do docker inspect "$KCID" >/dev/null 2>&1 || { echo gone; break; }; sleep 2; done)" gone
 code_of ja -X POST "$BASE/o/$A/p/shop/s/files/secrets/MONGODB_URI/delete" -d csrf=$CSRF_A >/dev/null
@@ -1728,6 +1736,7 @@ B_CID=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s
 B_CADDY=$(dx exec "$B_CID" sh -c "grep ' console.localhost' /etc/hosts | awk '{print \$1}'" 2>/dev/null | tr -d '\r')
 check "[B->A] another organization cannot use A's private names" "$(dx exec "$B_CID" wget -qO- -T 5 --header 'Host: api.back.internal' "http://$B_CADDY/" 2>&1 | grep -q 'Welcome to nginx' && echo 1 || echo 0)" 0
 check "the internet cannot use the private names" "$(curl -s --resolve "api.back.internal:$PORT:127.0.0.1" "http://api.back.internal:$PORT/" | grep -q 'Welcome to nginx' && echo 1 || echo 0)" 0
+check "project map: the connected project is drawn" "$(c ja -H 'HX-Request: true' "$BASE/o/$A/p/front/map" | grep -c 'connected project')" 1
 check "[API] connections listed with their names" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/front/connections" | grep -c '"api.back.internal"')" 1
 check "[API] only admins connect projects (403 for a developer token)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' -d '{"project":"lone"}' "$BASE/api/v1/projects/front/connections")" 403
 check "[B->A] B cannot connect to A's project" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/p/shop/connections" -d csrf=$CSRF_B -d project=back | grep -c 'not+found\|not%20found')" 1
@@ -1751,7 +1760,7 @@ check "[B->A] B cannot add a schedule to A's service (404)" "$(curl -sS --resolv
 owner_sql "UPDATE scaling_schedules SET created_at = now() - interval '400 days' WHERE label = 'e2e'" >/dev/null   # its last 1 January is now due
 SQ="SELECT s.instances || ':' || coalesce((SELECT jsonb_array_length(d.instances) FROM deployments d WHERE d.service_id = s.id AND d.status = 'live'), 0) FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'sched'"
 check "the due schedule scales the service to 2 running instances" "$(until_is 2:2 150 owner_sql "$SQ")" 2:2
-check "applied once, recorded and audited" "$(owner_sql "SELECT last_run IS NOT NULL AND last_error = '' FROM scaling_schedules WHERE label = 'e2e'"):$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'service.scheduled_scaling' AND target = 'service:shop/sched'")" "t:1"
+check "applied once, recorded and audited" "$(owner_sql "SELECT last_run IS NOT NULL AND last_error = '' FROM scaling_schedules WHERE label = 'e2e'"):$(owner_sql "SELECT count(*) FROM audit_events WHERE org_id = '$ORG_A' AND action = 'service.scheduled_scaling' AND target = 'service:shop/sched'")" "t:1"
 check "the service page lists the schedule" "$(c ja "$BASE/o/$A/p/shop/s/sched" | grep -c 'id="schedules-table"')" 1
 check "[API] schedule deleted" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/shop/services/sched/schedules/$(owner_sql "SELECT id FROM scaling_schedules WHERE label = 'e2e'")")" 204
 code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/sched >/dev/null
@@ -1811,7 +1820,7 @@ FOVER_CID=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s 
 code_of ja -X POST "$BASE/operator/nodes/$PRIMARY" -d csrf=$OPCSRF -d cluster=default >/dev/null
 docker compose -f compose.dev.yml --profile multinode stop agent2 >/dev/null 2>&1
 owner_sql "UPDATE nodes SET last_seen = now() - interval '10 minutes' WHERE id = 'node-2'" >/dev/null   # silent for 10 minutes
-check "the silent node is failed over: cordoned, its project placed on the primary" "$(until_is "t:$PRIMARY" 90 owner_sql "SELECT (SELECT cordoned AND failed_over_at IS NOT NULL FROM nodes WHERE id = 'node-2') || ':' || coalesce((SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover'), '')")" "t:$PRIMARY"
+check "the silent node is failed over: cordoned, its project placed on the primary" "$(until_is "true:$PRIMARY" 90 owner_sql "SELECT (SELECT cordoned AND failed_over_at IS NOT NULL FROM nodes WHERE id = 'node-2') || ':' || coalesce((SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover'), '')")" "true:$PRIMARY"
 FOVER_HOST=web-fover-$A.apps.localhost
 check "the app is redeployed on the primary and answers" "$(for _ in $(seq 1 60); do [ "$(owner_sql "SELECT upstream FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover' AND d.status = 'live'")" = "" ] && curl -s --resolve "$FOVER_HOST:$PORT:127.0.0.1" "http://$FOVER_HOST:$PORT/" | grep -q 'Welcome to nginx' && { echo yes; break; }; sleep 2; done)" yes
 check "failover audited and the operator notified" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'node.failed_over' AND target = 'node:node-2'" | sed 's/^[1-9][0-9]*$/yes/'):$(ntfy_has platform-operator "Node node-2 failed over")" "yes:yes"

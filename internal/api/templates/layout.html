@@ -60,6 +60,25 @@
 {{end}}
 {{end}}
 
+{{define "projectmap"}}
+<div class="pmap" id="project-map" hx-get="{{.Path}}" hx-trigger="{{.Poll}}" hx-swap="outerHTML">
+  {{if .Nodes}}
+  <div class="scroll-x">
+  <svg viewBox="0 0 {{.Width}} {{.Height}}" width="{{.Width}}" height="{{.Height}}" class="pmap-svg" role="img" aria-label="How the parts of this project connect">
+    {{range .ColumnTitles}}<text x="{{.X}}" y="18" class="pmap-col">{{.Title}}</text>{{end}}
+    {{range .Edges}}<path d="{{.Path}}" class="pmap-edge{{if .Dashed}} dashed{{end}}"><title>{{.Title}}</title></path>{{if .Label}}<text x="{{.LX}}" y="{{.LY}}" class="pmap-elabel" text-anchor="middle">{{.Label}}</text>{{end}}
+    {{end}}
+    {{range .Nodes}}<g class="pmap-node st-{{.Status}} k-{{.Kind}}">{{if .Href}}<a href="{{.Href}}">{{end}}<title>{{.Label}}: {{.Sub}}</title>
+      <rect x="{{.X}}" y="{{.Y}}" width="210" height="52" rx="8"></rect><circle cx="{{.DotX}}" cy="{{.DotY}}" r="5" class="dot"></circle>
+      <text x="{{.TX}}" y="{{.TY}}" class="pmap-label">{{.Short}}</text><text x="{{.SX}}" y="{{.SY}}" class="pmap-sub">{{.ShortSub}}</text>{{if .Href}}</a>{{end}}</g>
+    {{end}}
+  </svg>
+  </div>
+  <p class="pmap-legend small muted"><span class="lg ok"></span> running <span class="lg busy"></span> deploying or starting <span class="lg bad"></span> failed or stopped · dashed: calls a private name or public address · refreshes on its own{{if .Busy}} (every 3 s while something changes){{end}}</p>
+  {{else}}<p class="small muted">Nothing in this project yet: add a service, a database or a function and it appears here with its connections.</p>{{end}}
+</div>
+{{end}}
+
 {{define "layout"}}<!doctype html>
 <html lang="en">
 <head>
@@ -68,6 +87,8 @@
   {{if .Refresh}}<meta http-equiv="refresh" content="3">{{end}}
   <title>{{block "title" .}}Platform{{end}} · Platform</title>
   <link rel="stylesheet" href="/static/app.css?v={{.V}}">
+  <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true,"historyCacheSize":0}'>
+  <script src="/static/htmx.min.js?v={{.V}}" defer></script>
   <script src="/static/app.js?v={{.V}}" defer></script>
 </head>
 <body>

@@ -203,8 +203,9 @@ func engineConfig(d managedDB, password string) (image string, cmd, env []string
 		// One KRaft node (broker and controller). Clients authenticate with SASL/PLAIN as
 		// the database's user; the controller listens on the container's loopback only.
 		// The broker advertises the database's host name, which services of the project
-		// resolve to its private address. The JVM heap gets 40% of the memory.
-		heap := max(128, d.MemoryMB*4/10)
+		// resolve to its private address. The JVM heap gets 60% of the memory (300 MB at
+		// least: with less, the broker runs out of heap while opening its logs).
+		heap := max(300, d.MemoryMB*6/10)
 		jaas := fmt.Sprintf(`org.apache.kafka.common.security.plain.PlainLoginModule required username="%s" password="%s" user_%s="%s";`,
 			d.Username, password, d.Username, password)
 		return "apache/kafka:" + kafkaImageTag, nil, []string{
@@ -341,7 +342,8 @@ func (a *Agent) waitReady(ctx context.Context, id string, d managedDB) error {
 		if !info.State.Running {
 			return fmt.Errorf("database container stopped (exit code %d)%s", info.State.ExitCode, a.tail(ctx, id))
 		}
-		if _, _, code, err := a.dk.ContainerExec(ctx, id, readyCmd(d), nil); err == nil && code == 0 {
+		if _, _, code, err := a.dk.ContainerExec(ctx, id, readyCmd(d), nil); err == nil && code == 0 &&
+			(d.Engine != "kafka" || a.logSays(ctx, id, "Kafka Server started")) { // Kafka opens its port before it has fully started
 			return nil
 		}
 		select {

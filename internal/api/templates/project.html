@@ -5,11 +5,20 @@
 
 <nav class="tabs" role="tablist" aria-label="Project sections">
   <a role="tab" href="#overview">Overview</a>
+  <a role="tab" href="#map">Map</a>
   <a role="tab" href="#services">Services <span class="count">{{len .Services}}</span></a>
   <a role="tab" href="#databases">Databases <span class="count">{{len .Databases}}</span></a>
   <a role="tab" href="#variables">Variables <span class="count">{{len .Variables}}</span></a>
   {{if roleAtLeast .Org.Role "admin"}}<a role="tab" href="#project-settings">Settings</a>{{end}}
 </nav>
+
+<section class="pane" id="map" role="tabpanel" aria-label="Map">
+  <div class="section">
+    <h2>How this project connects</h2>
+    <p class="small muted">Where traffic comes in, what runs, and the data each part uses. Links come from what the platform set up (connection secrets, domains, jobs, triggers, connections) and from host names in plain environment variables; secret values are never read. Click a box to open it.</p>
+    {{template "projectmap" .Map}}
+  </div>
+</section>
 
 <section class="pane" id="overview" role="tabpanel" aria-label="Overview">
   <div class="stats">

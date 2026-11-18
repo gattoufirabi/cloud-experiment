@@ -419,3 +419,19 @@ if (activity) {
   };
   poll();
 }
+
+// ---------- loading feedback ----------
+// The button of a form being submitted shows a spinner and cannot be pressed twice. It is
+// disabled after the submit event (a disabled button's name and value would be left out).
+document.addEventListener("submit", (e) => {
+  if (e.defaultPrevented) return; // a confirmation was declined
+  const b = e.submitter || e.target.querySelector("button[type=submit], button:not([type]), input[type=submit]");
+  if (!b || e.target.hasAttribute("hx-post") || e.target.target === "_blank") return;
+  b.classList.add("is-busy");
+  b.setAttribute("aria-busy", "true");
+  setTimeout(() => { b.disabled = true; }, 0);
+  // A form that only downloads a file does not leave the page: give the button back.
+  setTimeout(() => { b.classList.remove("is-busy"); b.removeAttribute("aria-busy"); b.disabled = false; }, 15000);
+  // Back/forward cache: the page may come back with the button still busy.
+  window.addEventListener("pageshow", () => { b.classList.remove("is-busy"); b.removeAttribute("aria-busy"); b.disabled = false; }, { once: true });
+});

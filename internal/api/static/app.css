@@ -554,3 +554,37 @@ td meter { width: 100%; min-width: 80px; }
 .toast a { color: inherit; }
 @media (max-width: 640px) { .activity-word { display: none; } }
 [hidden] { display: none !important; }
+
+/* ---------- project map (server-drawn SVG, refreshed by htmx) ---------- */
+.pmap-svg { display: block; max-width: none; font-family: var(--font); }
+.pmap-col { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; fill: var(--text-3); }
+.pmap-edge { fill: none; stroke: var(--border-strong); stroke-width: 1.6; }
+.pmap-edge.dashed { stroke-dasharray: 5 4; }
+.pmap-elabel { font-size: 10px; fill: var(--text-3); }
+.pmap-node rect { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.2; }
+.pmap-node a:hover rect, .pmap-node a:focus rect { stroke: var(--primary); stroke-width: 2; }
+.pmap-node a:focus { outline: none; }
+.pmap-label { font-size: 13px; font-weight: 600; fill: var(--text); }
+.pmap-sub { font-size: 11px; fill: var(--text-3); }
+.pmap-node .dot { fill: var(--border-strong); }
+.pmap-node.st-ok .dot { fill: var(--ok); }
+.pmap-node.st-busy .dot { fill: var(--warn); animation: pmap-pulse 1.2s ease-in-out infinite; }
+.pmap-node.st-bad .dot { fill: var(--bad); }
+.pmap-node.st-bad rect { stroke: var(--bad-line); }
+.pmap-node.k-internet rect, .pmap-node.k-project rect { fill: var(--surface-2); stroke-dasharray: 4 3; }
+.pmap-node.k-database rect, .pmap-node.k-queue rect, .pmap-node.k-bucket rect, .pmap-node.k-email rect { fill: var(--primary-soft); stroke: var(--primary-line); }
+.pmap-legend .lg { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin: 0 .25rem 0 .6rem; vertical-align: middle; background: var(--border-strong); }
+.pmap-legend .lg.ok { background: var(--ok); } .pmap-legend .lg.busy { background: var(--warn); } .pmap-legend .lg.bad { background: var(--bad); }
+@keyframes pmap-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .pmap-node.st-busy .dot { animation: none; } }
+
+/* ---------- loading feedback ---------- */
+/* A form being submitted: its button shows a spinner and cannot be pressed twice. */
+button.is-busy, input[type="submit"].is-busy { position: relative; color: transparent !important; pointer-events: none; }
+button.is-busy::after, input[type="submit"].is-busy::after {
+  content: ""; position: absolute; inset: 0; margin: auto; width: 1em; height: 1em;
+  border: 2px solid currentColor; border-color: var(--text-3) transparent var(--text-3) transparent; border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+.htmx-request.pmap { opacity: .85; transition: opacity .2s; }
+@media (prefers-reduced-motion: reduce) { button.is-busy::after { animation-duration: 2s; } }

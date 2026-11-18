@@ -736,6 +736,22 @@ func (a *Agent) waitHealthy(ctx context.Context, id, netName string, s model.Spe
 }
 
 // tail returns the last log lines of a container, for failure messages shown to the client.
+// logSays reports whether the container's recent output contains text.
+func (a *Agent) logSays(ctx context.Context, id, text string) bool {
+	rc, err := a.dk.ContainerLogs(ctx, id, 0, false, "2000")
+	if err != nil {
+		return false
+	}
+	defer rc.Close()
+	found := false
+	_ = docker.Demux(rc, func(_ byte, line string) {
+		if !found && strings.Contains(line, text) {
+			found = true
+		}
+	})
+	return found
+}
+
 func (a *Agent) tail(ctx context.Context, id string) string {
 	rc, err := a.dk.ContainerLogs(ctx, id, 0, false, "15")
 	if err != nil {
