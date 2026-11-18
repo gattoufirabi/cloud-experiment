@@ -263,7 +263,8 @@
     {{range .Domains}}
       <div class="panel{{if not .Verified}} strong{{end}}">
         <div class="head"><strong>{{.Hostname}}</strong>{{if .Verified}}<span class="st st-verified">verified</span>{{else}}<span class="st st-pending">waiting for DNS</span>{{end}}</div>
-        {{if not .Verified}}
+        {{if .Zone}}<p class="small muted">DNS handled by the platform in your hosted zone <a href="{{$.Org.Path}}/dns/{{.Zone}}">{{.Zone}}</a>{{if not .Verified}}: verified as soon as the zone's delegation is confirmed{{end}}.</p>
+        {{else if not .Verified}}
         <ul class="brackets small">
           <li>TXT record <code class="select">_platform-challenge.{{.Hostname}}</code> with value <code class="select">platform-verify={{.Token}}</code></li>
           <li>CNAME (or A record) for <code>{{.Hostname}}</code> pointing to this platform</li>

@@ -166,6 +166,7 @@ type deploymentView struct {
 type domainView struct {
 	ID, Hostname, Token string
 	Verified            bool
+	Zone                string // the hosted zone where the platform wrote its records ("" if none)
 }
 
 func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +239,9 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		if projectVars, err = s.loadProjectVars(r, tx, p.ID); err != nil {
 			return err
 		}
-		rows, err = tx.Query(r.Context(), `SELECT id, hostname, verify_token, verified_at IS NOT NULL FROM domains WHERE service_id = $1 ORDER BY hostname`, sv.ID)
+		rows, err = tx.Query(r.Context(), `SELECT dm.id, dm.hostname, dm.verify_token, dm.verified_at IS NOT NULL,
+			coalesce((SELECT z.domain FROM dns_records x JOIN dns_zones z ON z.id = x.zone_id WHERE x.managed_by = 'domain:' || dm.id::text LIMIT 1), '')
+			FROM domains dm WHERE dm.service_id = $1 ORDER BY dm.hostname`, sv.ID)
 		if err != nil {
 			return err
 		}
@@ -646,7 +649,7 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
 const challengePrefix = "_platform-challenge."
 
 func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) {
-	var formErr string
+	var formErr, auto string
 	o, p, sv, err, ok := s.withService(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
 		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(r.PostFormValue("hostname"))), ".")
 		if sv.Worker {
@@ -674,8 +677,9 @@ func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		token := secure.NewToken()[:32]
-		if _, err := tx.Exec(r.Context(), `INSERT INTO domains (org_id, service_id, hostname, verify_token) VALUES ($1, $2, $3, $4)`,
-			o.ID, sv.ID, host, token); err != nil {
+		var id string
+		if err := tx.QueryRow(r.Context(), `INSERT INTO domains (org_id, service_id, hostname, verify_token) VALUES ($1, $2, $3, $4) RETURNING id`,
+			o.ID, sv.ID, host, token).Scan(&id); err != nil {
 			if isUniqueViolation(err) {
 				formErr = "This domain is already registered on the platform."
 				return nil
@@ -683,6 +687,21 @@ func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		s.audit(r, tx, o.ID, "domain.added", "domain:"+host, nil)
+		// in a zone hosted here: the platform writes the records (and verifies it if it can)
+		done, err := s.autoServiceDomainTx(r.Context(), r, tx, o, id, host, token, s.serviceHost(o, p, sv))
+		if err != nil {
+			return err
+		}
+		if done {
+			var verified bool
+			_ = tx.QueryRow(r.Context(), `SELECT verified_at IS NOT NULL FROM domains WHERE id = $1`, id).Scan(&verified)
+			auto = "Domain added. Its DNS records were created in your hosted zone"
+			if verified {
+				auto += " and it is verified: HTTPS starts within a minute."
+			} else {
+				auto += "; it is verified as soon as the zone's delegation is confirmed."
+			}
+		}
 		return nil
 	})
 	if !ok {
@@ -694,6 +713,10 @@ func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) {
 	}
 	if formErr != "" {
 		back(w, r, svcPath(o, p, sv)+"#domains", "", formErr)
+		return
+	}
+	if auto != "" {
+		back(w, r, svcPath(o, p, sv)+"#domains", auto, "")
 		return
 	}
 	back(w, r, svcPath(o, p, sv)+"#domains", "Domain added. Create the DNS records shown, then click Verify.", "")
@@ -751,6 +774,9 @@ func (s *Server) deleteDomain(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		s.audit(r, tx, o.ID, "domain.removed", "domain:"+host, nil)
+		if err := s.removeManagedTx(r.Context(), r, tx, o, "domain:"+r.PathValue("id")); err != nil {
+			return err
+		}
 		_, err := tx.Exec(r.Context(), `SELECT pg_notify('deployments', '')`)
 		return err
 	})

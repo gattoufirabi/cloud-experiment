@@ -19,7 +19,7 @@
   <div class="scroll-x">
   <table class="resources">
     <thead><tr><th>Name</th><th>Type</th><th>Value</th><th class="num">TTL</th><th></th></tr></thead>
-    <tbody>{{range .Records}}<tr><td><code>{{.Name}}</code></td><td>{{.Type}}</td><td><code class="wrap">{{if eq .Type "MX"}}{{.Priority}} {{end}}{{.Value}}</code></td><td class="num">{{.TTL}}</td>
+    <tbody>{{range .Records}}<tr><td><code>{{.Name}}</code>{{with .Automatic}} <span class="badge" title="written by the platform for a {{.}}; removed with it">automatic · {{.}}</span>{{end}}</td><td>{{.Type}}</td><td><code class="wrap">{{if eq .Type "MX"}}{{.Priority}} {{end}}{{.Value}}</code></td><td class="num">{{.TTL}}</td>
       <td>{{if $.CanEdit}}<form method="post" action="{{$.Org.Path}}/dns/{{$.Zone.Domain}}" class="inline flush" data-confirm="Delete this record?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="action" value="delete"><input type="hidden" name="record" value="{{.ID}}"><button class="link" type="submit">delete</button></form>{{end}}</td></tr>{{end}}</tbody>
   </table>
   </div>

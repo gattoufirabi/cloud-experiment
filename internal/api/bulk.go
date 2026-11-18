@@ -82,12 +82,12 @@ var bulkAreas = map[string]bulkArea{
 		actions: map[string]string{"remove": "developer"},
 		verbs:   map[string]string{"remove": "Removed"},
 		apply: func(s *Server, r *http.Request, tx pgx.Tx, o *orgInfo, item, action string) (string, error) {
-			var host string
-			if err := tx.QueryRow(r.Context(), `DELETE FROM domains WHERE hostname = $1 RETURNING hostname`, item).Scan(&host); err != nil {
+			var host, id string
+			if err := tx.QueryRow(r.Context(), `DELETE FROM domains WHERE hostname = $1 RETURNING hostname, id::text`, item).Scan(&host, &id); err != nil {
 				return item + " (not found)", nil
 			}
 			s.audit(r, tx, o.ID, "domain.removed", "domain:"+host, map[string]string{"via": "bulk action"})
-			return "", nil
+			return "", s.removeManagedTx(r.Context(), r, tx, o, "domain:"+id)
 		}},
 }
 

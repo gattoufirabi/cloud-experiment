@@ -447,6 +447,13 @@ Host your domains' DNS on the platform: **DNS** › **Add a domain**, then at yo
 - The SOA and NS records are provided by the platform. Changes apply within seconds; resolvers may keep earlier answers for their TTL.
 - API: `GET/POST /api/v1/dns/zones`, `GET/POST /api/v1/dns/zones/DOMAIN/records`, `DELETE /api/v1/dns/zones/DOMAIN/records/ID`.
 
+**Automatic records:** when a domain of your organization lies in a zone you host here, the platform writes its DNS records itself:
+
+- a **custom domain** of a service (`shop.example.com` in the zone `example.com`): a CNAME to the service (an A record for the zone's own name) and the verification record. It is verified at once when the zone is active, or as soon as its delegation is confirmed: no record to copy, no **Verify** to click;
+- an **email sending domain**: the ownership, DKIM, SPF and DMARC records, and it is verified the same way. An SPF or DMARC record you already have is kept, not duplicated.
+
+These records are marked **automatic** in the zone; they change and disappear with the domain. A record you wrote yourself at the same name is never replaced. Adding a zone also does this for the domains you already had in it.
+
 ## Edge cache (CDN)
 
 Turn on **Edge cache** in a service's settings and the platform's proxy keeps the responses your application marks as cacheable for shared caches (`Cache-Control: public, max-age=…`, or `s-maxage`) and answers repeat requests itself, without reaching your application. Responses that are `private`, `no-store`, or without `Cache-Control` are never kept (those without the header are marked `private`). The `Cache-Status` response header shows hits and misses. Entries are per address, so nothing is shared between services, and responses over 10 MB are not kept. To change cached content before it expires, use versioned file names (`app.3f2a.js`) or short `max-age` values.

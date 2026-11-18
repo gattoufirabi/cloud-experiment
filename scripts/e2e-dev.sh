@@ -1705,6 +1705,25 @@ check "an unknown name answers NXDOMAIN" "$(ask_dns "nothing.$ZONE" A | grep -c 
 check "a domain not hosted here is refused (not a resolver)" "$(ask_dns example.org A | grep -c REFUSED)" 1
 check "[B->A] B cannot open A's zone (404)" "$(code_of jb "$BASE/o/$A/dns/$ZONE")" 404
 check "[API] records listed" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/dns/zones/$ZONE/records" | grep -o '"Type":"[A-Z]*"' | sort -u | wc -l | tr -d ' ')" 4
+# Automatic DNS: domains inside a hosted zone get their records from the platform
+admin set-plan --slug "$A" --plan pro >/dev/null
+check "[A] a custom domain in the hosted zone is set up and verified at once" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/shop/s/web/domains" -d csrf=$CSRF_A -d "hostname=shop.$ZONE" | grep -c 'is+verified'):$(owner_sql "SELECT verified_at IS NOT NULL FROM domains WHERE hostname = 'shop.$ZONE'")" "1:t"
+check "its records were written (CNAME to the service, verification TXT), marked automatic" "$(owner_sql "SELECT string_agg(type || ' ' || name, ',' ORDER BY type) FROM dns_records r JOIN dns_zones z ON z.id = r.zone_id WHERE z.domain = '$ZONE' AND r.managed_by LIKE 'domain:%'"):$(c ja "$BASE/o/$A/dns/$ZONE" | grep -c 'automatic · custom domain' | sed 's/^[1-9][0-9]*$/yes/')" "CNAME shop,TXT _platform-challenge.shop:yes"
+check "the name answers on the platform's DNS" "$(sleep 2; ask_dns "shop.$ZONE" CNAME | grep -c "web-shop-$A.apps.localhost")" 1
+check "the service's Domains tab says the platform handles it" "$(c ja "$BASE/o/$A/p/shop/s/web" | grep -c "DNS handled by the platform in your hosted zone")" 1
+check "[A] an email domain in the hosted zone gets its records and is verified" "$(code_of ja -X POST "$BASE/o/$A/email/domains" -d csrf=$CSRF_A -d "domain=$ZONE"):$(owner_sql "SELECT status FROM email_domains WHERE domain = '$ZONE'"):$(owner_sql "SELECT count(*) FROM dns_records r JOIN dns_zones z ON z.id = r.zone_id WHERE z.domain = '$ZONE' AND r.managed_by LIKE 'email:%'")" "303:verified:3"
+check "a person's own SPF record is kept (no second SPF)" "$(owner_sql "SELECT count(*) FROM dns_records r JOIN dns_zones z ON z.id = r.zone_id WHERE z.domain = '$ZONE' AND r.name = '@' AND r.value LIKE 'v=spf1%'")" 1
+check "removing the domain removes its records" "$(code_of ja -X POST "$BASE/o/$A/p/shop/s/web/domains/$(owner_sql "SELECT id FROM domains WHERE hostname = 'shop.$ZONE'")/delete" -d csrf=$CSRF_A):$(owner_sql "SELECT count(*) FROM dns_records WHERE managed_by LIKE 'domain:%' AND zone_id = (SELECT id FROM dns_zones WHERE domain = '$ZONE')")" "303:0"
+EMDID=$(owner_sql "SELECT id FROM email_domains WHERE domain = '$ZONE'")
+code_of ja -X POST "$BASE/o/$A/email/d/$ZONE/delete" -d csrf=$CSRF_A -d "confirm=$ZONE" >/dev/null
+check "so does removing the email domain" "$(owner_sql "SELECT count(*) FROM dns_records WHERE managed_by = 'email:$EMDID'")" 0
+LATEZ=late$RUN.example
+code_of ja -X POST "$BASE/o/$A/p/shop/s/web/domains" -d csrf=$CSRF_A -d "hostname=www.$LATEZ" >/dev/null
+check "a zone added after its domain writes the domain's records too" "$(code_of ja -X POST "$BASE/o/$A/dns" -d csrf=$CSRF_A -d "domain=$LATEZ"):$(owner_sql "SELECT count(*) FROM dns_records r JOIN dns_zones z ON z.id = r.zone_id WHERE z.domain = '$LATEZ' AND r.managed_by LIKE 'domain:%'")" "303:2"
+check "the pending zone's domain is verified when the delegation is confirmed" "$(owner_sql "SELECT verified_at IS NULL FROM domains WHERE hostname = 'www.$LATEZ'")" t
+code_of ja -X POST "$BASE/o/$A/dns/$LATEZ" -d csrf=$CSRF_A -d action=remove -d "confirm=$LATEZ" >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/shop/s/web/domains/$(owner_sql "SELECT id FROM domains WHERE hostname = 'www.$LATEZ'")/delete" -d csrf=$CSRF_A >/dev/null
+admin set-plan --slug "$A" --plan starter >/dev/null
 check "[A] zone deleted" "$(code_of ja -X POST "$BASE/o/$A/dns/$ZONE" -d csrf=$CSRF_A -d action=remove -d "confirm=$ZONE")" 303
 check "a deleted zone is no longer served" "$(sleep 2; ask_dns "$ZONE" A | grep -c REFUSED)" 1
 

@@ -39,6 +39,18 @@ type dnsZoneView struct {
 type dnsRecordView struct {
 	ID, Name, Type, Value string
 	Priority, TTL         int
+	ManagedBy             string // "" for records people added; "domain:<id>" or "email:<id>"
+}
+
+// Automatic is the kind of resource an automatic record belongs to, for the page.
+func (r dnsRecordView) Automatic() string {
+	switch {
+	case strings.HasPrefix(r.ManagedBy, "domain:"):
+		return "custom domain"
+	case strings.HasPrefix(r.ManagedBy, "email:"):
+		return "email"
+	}
+	return ""
 }
 
 func loadDNSZones(ctx context.Context, tx pgx.Tx) ([]dnsZoneView, error) {
@@ -56,7 +68,7 @@ func loadDNSZone(ctx context.Context, tx pgx.Tx, domain string) (*dnsZoneView, [
 		FROM dns_zones z WHERE z.domain = $1`, domain).Scan(&z.ID, &z.Domain, &z.Status, &z.Checked, &z.Active, &z.Records, &z.Created); err != nil {
 		return nil, nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id, name, type, value, priority, ttl FROM dns_records WHERE zone_id = $1
+	rows, err := tx.Query(ctx, `SELECT id, name, type, value, priority, ttl, managed_by FROM dns_records WHERE zone_id = $1
 		ORDER BY CASE WHEN name = '@' THEN '' ELSE name END, type, priority, value`, z.ID)
 	if err != nil {
 		return nil, nil, err
@@ -101,6 +113,10 @@ func (s *Server) addZoneTx(ctx context.Context, r *http.Request, tx pgx.Tx, o *o
 		return "", err
 	}
 	s.audit(r, tx, o.ID, "dns.zone_added", "zone:"+domain, nil)
+	// the organization's domains in this zone get their records at once
+	if err := s.autoZoneTx(ctx, r, tx, o, domain); err != nil {
+		return "", err
+	}
 	_, err := tx.Exec(ctx, `SELECT pg_notify('deployments', 'dns')`)
 	return domain, err
 }

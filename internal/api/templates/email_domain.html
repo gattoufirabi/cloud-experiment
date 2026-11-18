@@ -9,7 +9,8 @@
 <div class="section">
   <div class="table-tools"><h2>DNS records</h2>
     {{if .CanEdit}}<form method="post" action="{{.Org.Path}}/email/d/{{.Domain.Domain}}/check" class="inline flush"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Check now</button></form>{{end}}</div>
-  <p class="small muted">Create these records at your DNS provider. The first two are required; DNS changes can take a few minutes to be visible.</p>
+  {{if .Zone}}<p class="small"><span class="badge">automatic</span> These records were written in your hosted zone <a href="{{.Org.Path}}/dns/{{.Zone}}">{{.Zone}}</a>: nothing to do. An SPF or DMARC record you already had is kept.</p>
+  {{else}}<p class="small muted">Create these records at your DNS provider. The first two are required; DNS changes can take a few minutes to be visible.</p>{{end}}
   <div class="scroll-x">
   <table class="resources">
     <thead><tr><th>Name</th><th>Type</th><th>Value</th><th>Why</th></tr></thead>

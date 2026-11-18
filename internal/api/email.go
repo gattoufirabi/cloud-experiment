@@ -139,6 +139,12 @@ func (s *Server) addEmailDomainTx(r *http.Request, tx pgx.Tx, o *orgInfo, domain
 		return err
 	}
 	s.audit(r, tx, o.ID, "email.domain_added", "email-domain:"+domain, nil)
+	// in a zone hosted here: the platform writes its records (and verifies it if it can)
+	if d, err := loadSendDomain(r.Context(), tx, domain); err == nil {
+		if _, err := s.autoEmailDomainTx(r.Context(), r, tx, o, d); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -147,7 +153,7 @@ func (s *Server) deleteEmailDomainTx(r *http.Request, tx pgx.Tx, o *orgInfo, d *
 		return err
 	}
 	s.audit(r, tx, o.ID, "email.domain_deleted", "email-domain:"+d.Domain, nil)
-	return nil
+	return s.removeManagedTx(r.Context(), r, tx, o, "email:"+d.ID)
 }
 
 type sendRequest struct {
@@ -559,7 +565,11 @@ func (s *Server) emailDomainPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "email_domain", http.StatusOK, data{"Org": o, "Domain": d, "Records": d.Records(s.spfMechanism()), "CanEdit": model.RoleAtLeast(o.Role, "developer")})
+	var zone string
+	_ = db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+		return tx.QueryRow(r.Context(), `SELECT coalesce((SELECT z.domain FROM dns_records x JOIN dns_zones z ON z.id = x.zone_id WHERE x.managed_by = 'email:' || $1 LIMIT 1), '')`, d.ID).Scan(&zone)
+	})
+	s.render(w, r, "email_domain", http.StatusOK, data{"Org": o, "Domain": d, "Records": d.Records(s.spfMechanism()), "CanEdit": model.RoleAtLeast(o.Role, "developer"), "Zone": zone})
 }
 
 func (s *Server) checkEmailDomain(w http.ResponseWriter, r *http.Request) {

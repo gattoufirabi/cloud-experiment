@@ -198,6 +198,12 @@ func (a *Agent) checkDelegations(ctx context.Context) {
 		if err == nil && delegated {
 			_, _ = a.pool.Exec(ctx, `UPDATE dns_zones SET status = 'active', active_at = now(), checked_at = now() WHERE id = $1`, z.ID)
 			_ = auditAgent(ctx, a, z.OrgID, "dns.zone_active", "zone:"+z.Domain, nil)
+			// domains whose records the platform wrote in this zone are verified now
+			_, _ = a.pool.Exec(ctx, `UPDATE domains SET verified_at = now() WHERE verified_at IS NULL AND id::text IN (
+				SELECT substring(managed_by from 8) FROM dns_records WHERE zone_id = $1 AND managed_by LIKE 'domain:%')`, z.ID)
+			_, _ = a.pool.Exec(ctx, `UPDATE email_domains SET status = 'verified', message = '', checked_at = now(), verified_at = coalesce(verified_at, now())
+				WHERE status <> 'verified' AND id::text IN (SELECT substring(managed_by from 7) FROM dns_records WHERE zone_id = $1 AND managed_by LIKE 'email:%')`, z.ID)
+			_, _ = a.pool.Exec(ctx, `SELECT pg_notify('deployments', '')`)
 		} else {
 			_, _ = a.pool.Exec(ctx, `UPDATE dns_zones SET checked_at = now() WHERE id = $1`, z.ID)
 		}
