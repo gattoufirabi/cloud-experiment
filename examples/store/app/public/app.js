@@ -38,10 +38,6 @@ async function load() {
   } catch (e) {
     list.replaceChildren(el("p", { class: "error" }, "The catalogue could not be loaded: " + e.message));
   }
-  api("/health").then((h) => {
-    const on = Object.entries(h).filter(([k, v]) => k !== "ok" && v).map(([k]) => k);
-    $("#health").textContent = "Connected services: " + on.join(", ");
-  }).catch(() => {});
 }
 
 function render() {

@@ -8,8 +8,24 @@ const api = process.env.API_URL || "http://api.shop.internal";
 const root = path.resolve("public");
 const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
 
+// Only what a shopper needs is forwarded; the rest of the API (photo uploads, payment and
+// photo callbacks, health details) stays reachable on the private network only.
+const shopperRoutes = [
+  ["GET", /^\/api\/products$/],
+  ["GET", /^\/api\/products\/\d+\/reviews$/],
+  ["POST", /^\/api\/products\/\d+\/reviews$/],
+  ["POST", /^\/api\/orders$/],
+  ["GET", /^\/api\/orders\/\d+$/],
+];
+const forwarded = (method, path) => shopperRoutes.some(([m, re]) => m === method && re.test(path));
+
 http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
+  if (url.pathname.startsWith("/api/") && !forwarded(req.method, url.pathname)) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+    return;
+  }
   if (url.pathname.startsWith("/api/")) {
     try {
       const body = req.method === "GET" || req.method === "HEAD" ? undefined : await new Promise((ok) => {
