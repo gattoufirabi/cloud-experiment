@@ -76,6 +76,13 @@ func (o *orgInfo) sees(projectSlug string) bool {
 // org resolves the {org} path segment for the current user and enforces a minimum role.
 // Organizations the user does not belong to answer 404, so their existence is not revealed.
 func (s *Server) org(w http.ResponseWriter, r *http.Request, minRole string) (*orgInfo, bool) {
+	if ao, status := apiOrgFrom(r, minRole); status != 0 { // a console action called through the API
+		if ao == nil {
+			w.WriteHeader(status)
+			return nil, false
+		}
+		return ao, true
+	}
 	var o orgInfo
 	err := s.pool.QueryRow(r.Context(), `
 		SELECT o.id, o.slug, o.name, m.role, o.plan_id, o.scan_policy, o.suspended, o.suspend_reason, o.trial_ends_at

@@ -201,7 +201,9 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
-		enc, err := s.box.Seal([]byte(secure.NewToken()[:32]), "db:"+id)
+		// A password starting with "-" would be read as an option by command-line clients.
+		pw := "p" + strings.TrimLeft(secure.NewToken(), "-_")[:31]
+		enc, err := s.box.Seal([]byte(pw), "db:"+id)
 		if err != nil {
 			return err
 		}

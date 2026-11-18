@@ -157,7 +157,8 @@ func mysqlShell(d managedDB, tool, args string) []string {
 
 // mongoAuth signs MongoDB tools in as the database's user; the credentials come from
 // the container's own environment, never the agent's command line.
-const mongoAuth = `--host 127.0.0.1 --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin`
+// The "--option=value" form: a value starting with "-" is never read as another option.
+const mongoAuth = `--host 127.0.0.1 --username="$MONGO_INITDB_ROOT_USERNAME" --password="$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin`
 
 func mongoShell(cmd string) []string { return []string{"sh", "-c", cmd} }
 
@@ -318,7 +319,7 @@ func readyCmd(d managedDB) []string {
 		return mysqlShell(d, client, d.DBName+` -e "SELECT 1" >/dev/null`)
 	}
 	if d.Engine == "redis" {
-		return []string{"sh", "-c", `redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG`}
+		return []string{"sh", "-c", `REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG`}
 	}
 	if d.Engine == "mongodb" {
 		return mongoShell("mongosh --quiet " + mongoAuth + ` --eval "db.runCommand({ping: 1}).ok" | grep -q 1`)
@@ -395,7 +396,7 @@ func (a *Agent) backupDatabase(ctx context.Context, j backupJob, tag string) (st
 	}
 	if d.Engine == "redis" {
 		// --rdb asks the server for a point-in-time snapshot and saves it as dump.rdb.
-		cmd = []string{"sh", "-c", `rm -f /backup/* && redis-cli -a "$REDIS_PASSWORD" --no-auth-warning --rdb /backup/dump.rdb >/dev/null`}
+		cmd = []string{"sh", "-c", `rm -f /backup/* && REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli --rdb /backup/dump.rdb >/dev/null`}
 		tool = "redis snapshot"
 	}
 	_, stderr, code, err := a.dk.ContainerExec(ctx, d.ContainerID, cmd, nil)

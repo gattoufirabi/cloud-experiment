@@ -145,7 +145,7 @@
       <a class="navlink" href="/docs/user">Docs</a>
       {{with .User}}
       <details class="menu user-menu">
-        <summary><span class="avatar" aria-hidden="true">{{slice .Email 0 1}}</span><span class="sr-only">Account menu</span></summary>
+        <summary><span class="avatar" aria-hidden="true">{{if .Email}}{{slice .Email 0 1}}{{else}}?{{end}}</span><span class="sr-only">Account menu</span></summary>
         <div class="menu-panel right">
           <span class="menu-meta">{{.Email}}</span>
           <a href="/account">Account and security</a>

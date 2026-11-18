@@ -186,7 +186,7 @@ check "[A] MongoDB running (512 MB)" "$(db_wait mongo):$(db_st mongo memory_mb)"
 check "[A] Redis running" "$(db_wait cache)" running
 PG=$(db_st pg container_id); MG=$(db_st mongo container_id)
 docker exec "$PG" sh -c "PGPASSWORD=\$POSTGRES_PASSWORD psql -qtA -h 127.0.0.1 -U app app -c \"CREATE TABLE t (v text); INSERT INTO t VALUES ('pg-$RUN')\"" >/dev/null
-mongo_js() { docker exec "$MG" sh -c "mongosh --quiet --host 127.0.0.1 -u \"\$MONGO_INITDB_ROOT_USERNAME\" -p \"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin app --eval '$1'" 2>&1 | tr -d '\r'; }
+mongo_js() { docker exec "$MG" sh -c "mongosh --quiet --host 127.0.0.1 --username=\"\$MONGO_INITDB_ROOT_USERNAME\" --password=\"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin app --eval '$1'" 2>&1 | tr -d '\r'; }
 mongo_js "db.notes.insertOne({t: \"mg-$RUN\"})" >/dev/null
 check "[A] MongoDB stores documents" "$(mongo_js 'db.notes.findOne().t')" "mg-$RUN"
 for d in pg mongo; do code_of ja -X POST "$BASE/o/$A/p/shop/d/$d/backups" -d csrf=$CSRF_A >/dev/null; check "[A] $d backup completes" "$(db_job $d backup)" done; done

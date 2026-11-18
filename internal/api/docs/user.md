@@ -667,6 +667,22 @@ The same operations are available over HTTP with `Authorization: Bearer <token>`
 
 A token works only inside its organization and only with its role. Every change made with a token appears in the audit log, named after the token.
 
+**Console actions on the API** (the same checks, limits and audit as the console; the answer is `200 {"message": ...}`, or `422 {"error": ...}` when the console would refuse the form):
+
+| Endpoint | Body |
+|---|---|
+| `POST /api/v1/projects` | `{"slug": "shop", "name": "Shop"}` |
+| `POST /api/v1/projects/PROJECT/services` | `{"slug": "web", "image": "nginx:1.27-alpine"}` |
+| `PUT /api/v1/projects/PROJECT/services/SERVICE/settings` | the settings form: `image`, `port`, `health_path`, `cpu_millis`, `memory_mb`, `instances`, `kind` (`web` or `worker`), `env` (`"A=1
+B=2"`), `private`, `edge_cache`, `metrics_path`, `deploy`… |
+| `POST /api/v1/projects/PROJECT/services/SERVICE/domains` | `{"hostname": "shop.example.com"}` |
+| `POST /api/v1/projects/PROJECT/databases` | `{"slug": "main", "engine": "postgres:17"}` |
+| `POST /api/v1/projects/PROJECT/databases/DB/attach` | `{"service": "web", "name": "DATABASE_URL"}` |
+| `POST /api/v1/projects/PROJECT/databases/DB/public` | `{"allow": "203.0.113.7"}` or `{"close": true}` (admins) |
+| `POST /api/v1/projects/PROJECT/functions/FN/triggers` | `{"bucket": "photos", "events": "created", "prefix": "in/", "suffix": ".jpg"}` |
+| `POST /api/v1/projects/PROJECT/functions/FN/webhook` | `{}`: answers `{"url": ...}` (shown once) |
+| `POST /api/v1/storage/buckets/BUCKET/attach`, `/api/v1/queues/QUEUE/attach`, `/api/v1/email/attach` | `{"service": "project/service"}` |
+
 ## Disk limits
 
 Each plan includes an amount of persistent storage: service folders and managed databases (with their backup dumps). The organization page shows **disk used / allowed**; it is measured every 15 minutes.

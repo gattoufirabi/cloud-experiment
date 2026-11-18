@@ -143,6 +143,7 @@ func (e apiErr) Error() string { return e.msg }
 func (s *Server) apiRoutes(m *http.ServeMux) {
 	const svc = "/api/v1/projects/{project}/services/{service}"
 	m.HandleFunc("GET /api/v1/me", s.apiAuth("viewer", s.apiMe))
+	s.apiConsoleRoutes(m)
 	m.HandleFunc("GET /api/v1/prometheus/api/v1/{rest...}", s.apiAuth("viewer", s.apiPrometheus))
 	m.HandleFunc("POST /api/v1/prometheus/api/v1/{rest...}", s.apiAuth("viewer", s.apiPrometheus))
 	m.HandleFunc("GET /api/v1/projects", s.apiAuth("viewer", s.apiProjects))

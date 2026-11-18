@@ -30,17 +30,17 @@ every morning 07:00 UTC ──job──▶ node src/report.js ──▶ email wi
 
 ## Deploy it
 
+Create an API token with the **admin** role (console › **Access** › API tokens), then:
+
 ```
 cd examples/store
-PLATFORM_URL=https://console.example.com ORG=your-org SESSION=<your session cookie> \
+PLATFORM_URL=https://console.example.com PLATFORM_TOKEN=pla_... \
   EMAIL_FROM="Corner Shop <shop@yourdomain.com>" REPORT_TO=you@yourdomain.com ./setup.sh
 ```
 
-`SESSION` is the value of the console's `__Host-sid` cookie while you are signed in (your
-browser's developer tools, Storage › Cookies). The script creates an admin API token for the
-rest (kept in `.setup-token`; revoke it in **Access** when you are done) and can be run again
-safely. It needs `curl`, and `platformctl` or Go to run it from this repository. The project
-needs a plan with 4 databases and about 2.5 GB of memory (Kafka and MongoDB need 512 MB each).
+The script only uses the platform's API, and can be run again safely (what exists is kept).
+It needs `curl`, and `platformctl` or Go to run it from this repository. The project needs a
+plan with 4 databases and about 2.5 GB of memory (Kafka and MongoDB need 512 MB each).
 
 Without `EMAIL_FROM` the store works and logs the emails it would send. To try the payment
 webhook, sign a body with the `PAYMENT_SECRET` project variable:

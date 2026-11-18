@@ -263,7 +263,7 @@ GONE=no; for _ in $(seq 1 30); do docker inspect "$DB_CID" >/dev/null 2>&1 || { 
 check "[A] database container removed" "$GONE" yes
 
 section "Managed Redis"
-rd_cli() { dx exec "$RD_CID" sh -c "redis-cli -a \"\$REDIS_PASSWORD\" --no-auth-warning $1" 2>&1 | tr -d '\r'; }
+rd_cli() { dx exec "$RD_CID" sh -c "REDISCLI_AUTH=\"\$REDIS_PASSWORD\" redis-cli $1" 2>&1 | tr -d '\r'; }
 check "[A] Redis created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=cache -d engine=redis:7)" 303
 RD_ST=""; for _ in $(seq 1 60); do
   RD_ST=$(owner_sql "SELECT d.status FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'cache'")
@@ -335,7 +335,7 @@ st=; for _ in $(seq 1 150); do st=$(my_db mongo status); [ "$st" = running ] || 
 check "[A] MongoDB running" "$st" running
 MCID=$(my_db mongo container_id)
 MHOST=$(owner_sql "SELECT 'pd-' || left(replace(d.id::text, '-', ''), 12) FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'mongo'")
-mongo_js() { dx exec "$MCID" sh -c "mongosh --quiet --host 127.0.0.1 -u \"\$MONGO_INITDB_ROOT_USERNAME\" -p \"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin app --eval '$1'" 2>&1 | tr -d '\r'; }
+mongo_js() { dx exec "$MCID" sh -c "mongosh --quiet --host 127.0.0.1 --username=\"\$MONGO_INITDB_ROOT_USERNAME\" --password=\"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin app --eval '$1'" 2>&1 | tr -d '\r'; }
 check "[A] MongoDB refuses a wrong password" "$(dx exec "$MCID" sh -c "mongosh --quiet --host 127.0.0.1 -u app -p wrong --authenticationDatabase admin --eval 'db.runCommand({ping:1}).ok'" >/dev/null 2>&1 && echo yes || echo no)" no
 if dx exec "$CID_F" sh -c "echo | nc -w 3 $MHOST 27017" >/dev/null 2>&1; then ok "[A] service in the same project reaches MongoDB"; else bad "[A] service cannot reach MongoDB"; fi
 if dx exec "$CID_B" sh -c "echo | nc -w 3 $MHOST 27017" >/dev/null 2>&1; then bad "[B->A] B's service reached A's MongoDB"; else ok "[B->A] B's service cannot reach A's MongoDB"; fi
@@ -1803,6 +1803,21 @@ code_of ja -X POST "$BASE/o/$A/p/expo/d/pubdb/public" -d csrf=$CSRF_A -d close=1
 check "closing public access removes the endpoint and frees the port" "$(for _ in $(seq 1 30); do [ -z "$(docker ps -q --filter label=platform.dbproxy)" ] && { echo yes; break; }; sleep 2; done):$(owner_sql "SELECT count(*) FROM public_ports pp JOIN databases d ON d.id = pp.database_id WHERE d.slug = 'pubdb' AND d.org_id = '$ORG_A'")" "yes:0"
 check "MySQL offers no public endpoint" "$(code_of ja -X POST "$BASE/o/$A/p/expo/databases" -d csrf=$CSRF_A -d slug=mydb -d engine=mysql:8.4 >/dev/null; c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/expo/d/mydb/public" -d csrf=$CSRF_A -d 'allow=203.0.113.7' | grep -c 'err=')" 1
 code_of ja -X POST "$BASE/o/$A/p/expo/delete" -d csrf=$CSRF_A -d confirm=expo >/dev/null
+admin set-plan --slug "$A" --plan starter >/dev/null
+
+section "Console actions on the API"
+admin set-plan --slug "$A" --plan pro >/dev/null
+TOK_ADMAPI=$(new_api_token ja "$A" "$CSRF_A" automation admin)
+capi() { local m=$1 path=$2; shift 2; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_ADMAPI" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1$path" "$@"; }
+check "[API] project created" "$(capi POST /projects -d '{"slug": "apiproj", "name": "From the API"}' | grep -c '"message"')" 1
+check "[API] a developer token cannot create a project (403)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' -d '{"slug": "nope"}' "$BASE/api/v1/projects")" 403
+check "[API] service created and its settings saved (private, worker refused port)" "$(capi POST /projects/apiproj/services -d '{"slug": "svc", "image": "nginx:1.27-alpine"}' | grep -c '"message"'):$(capi PUT /projects/apiproj/services/svc/settings -d '{"image": "nginx:1.27-alpine", "port": 80, "health_path": "/", "cpu_millis": 100, "memory_mb": 64, "instances": 1, "env": "A=1", "private": true, "deploy": true}' | grep -c '"message"'):$(owner_sql "SELECT public FROM services s JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'apiproj' AND s.slug = 'svc'")" "1:1:f"
+check "[API] a refused form answers 422 with the console's message" "$(capi PUT /projects/apiproj/services/svc/settings -o /dev/null -w '%{http_code}' -d '{"image": "nginx:1.27-alpine", "port": 0, "health_path": "/", "cpu_millis": 100, "memory_mb": 64}')" 422
+check "[API] database created and attached as a secret" "$(capi POST /projects/apiproj/databases -d '{"slug": "kv", "engine": "redis:7"}' | grep -c '"message"'):$(capi POST /projects/apiproj/databases/kv/attach -d '{"service": "svc", "name": "REDIS_URL"}' | grep -c '"message"')" "1:1"
+check "[API] a missing database answers 404" "$(capi POST /projects/apiproj/databases/nope/attach -o /dev/null -w '%{http_code}' -d '{"service": "svc", "name": "X_URL"}')" 404
+check "[B->A API] B's token cannot act in A's project (404)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_B" -H 'Content-Type: application/json' -d '{"slug": "x", "engine": "redis:7"}' "$BASE/api/v1/projects/apiproj/databases")" 404
+check "[API] console actions audited with the token" "$(owner_sql "SELECT count(*) > 0 FROM audit_events WHERE org_id = '$ORG_A' AND action = 'project.created' AND detail::text LIKE '%automation%'")" t
+code_of ja -X POST "$BASE/o/$A/p/apiproj/delete" -d csrf=$CSRF_A -d confirm=apiproj >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
 section "Cost reports and budgets"
