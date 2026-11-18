@@ -37,7 +37,7 @@ datasources:
     uid: platform
     type: prometheus
     access: proxy
-    url: $PLATFORM_PROM_URL
+    url: $GRAFANA_PROM_URL
     isDefault: true
     editable: false
     jsonData:
@@ -45,7 +45,7 @@ datasources:
       httpHeaderName1: Authorization
       timeInterval: 15s
     secureJsonData:
-      httpHeaderValue1: Bearer $PLATFORM_PROM_TOKEN
+      httpHeaderValue1: Bearer $GRAFANA_PROM_TOKEN
 `,
 		"provisioning/dashboards/platform.yaml": `apiVersion: 1
 providers:
@@ -105,6 +105,23 @@ func (s *Server) createGrafana(w http.ResponseWriter, r *http.Request) {
 			formErr = "Choose a project."
 			return nil
 		}
+		// A grafana service that never went live (a failed first build or deploy) is
+		// replaced, so "Create Grafana" also repairs a failed attempt.
+		var replaced bool
+		if err := tx.QueryRow(r.Context(), `
+			WITH gone AS (
+				DELETE FROM services s WHERE s.project_id = $1 AND s.slug = 'grafana' AND s.preview_of IS NULL
+				  AND NOT EXISTS (SELECT 1 FROM deployments d WHERE d.service_id = s.id AND d.status = 'live')
+				RETURNING s.id)
+			SELECT count(*) > 0 FROM gone`, projectID).Scan(&replaced); err != nil {
+			return err
+		}
+		if replaced {
+			if _, err := tx.Exec(r.Context(), `DELETE FROM api_tokens WHERE name = $1`, truncateStr("grafana in "+project, 60)); err != nil {
+				return err
+			}
+			s.audit(r, tx, o.ID, "service.deleted", "service:"+project+"/grafana", map[string]any{"replaced_failed_grafana": true})
+		}
 		spec := model.Spec{Image: "", Port: 3000, CPUMillis: 250, MemoryMB: 256, HealthPath: "/api/health", Instances: 1}
 		if err := s.checkQuota(r, tx, o, "", spec.CPUMillis, spec.MemoryMB, true); err != nil {
 			var qe quotaError
@@ -116,7 +133,7 @@ func (s *Server) createGrafana(w http.ResponseWriter, r *http.Request) {
 		}
 		host = model.DefaultHost("grafana", project, o.Slug, s.cfg.AppsDomain)
 		env, _ := json.Marshal(map[string]string{"GF_SERVER_ROOT_URL": "https://" + host, "GF_SECURITY_ADMIN_USER": "admin",
-			"PLATFORM_PROM_URL": s.cfg.BaseURL + "/api/v1/prometheus"})
+			"GRAFANA_PROM_URL": s.cfg.BaseURL + "/api/v1/prometheus"})
 		var serviceID string
 		if err := tx.QueryRow(r.Context(), `
 			INSERT INTO services (org_id, project_id, slug, image, port, cpu_millis, memory_mb, health_path, env, volume_path)
@@ -134,7 +151,7 @@ func (s *Server) createGrafana(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		password = strings.ToLower(secure.NewToken()[:20])
-		for name, value := range map[string]string{"PLATFORM_PROM_TOKEN": token, "GF_SECURITY_ADMIN_PASSWORD": password} {
+		for name, value := range map[string]string{"GRAFANA_PROM_TOKEN": token, "GF_SECURITY_ADMIN_PASSWORD": password} {
 			enc, err := s.box.Seal([]byte(value), "secret:"+serviceID+":"+name)
 			if err != nil {
 				return err
