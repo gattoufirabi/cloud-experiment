@@ -98,7 +98,7 @@ finish() {
 trap finish EXIT
 
 section "Preflight"
-check "API healthy" "$(dc ps api --format '{{.Status}}' | grep -c healthy)" 1
+check "API healthy" "$(for _ in $(seq 1 30); do dc ps api --format '{{.Status}}' | grep -q '(healthy)' && { echo 1; break; }; sleep 2; done)" 1   # just after a deploy it is still starting
 check "console login page" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "$CONSOLE:443:127.0.0.1" "$BASE/login")" 200
 check "a node reported in the last 2 minutes" "$(owner_sql "SELECT count(*) > 0 FROM nodes WHERE last_seen > now() - interval '2 minutes'")" t
 check "every migration applied" "$(ls ../migrations/*.sql | wc -l | tr -d ' ')" "$(owner_sql "SELECT count(*) FROM schema_migrations")"
