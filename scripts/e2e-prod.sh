@@ -83,6 +83,9 @@ cleanup() {
     code_of "$jar" -X POST "$BASE/o/$org/queues/$q/delete" -d csrf=$csrf -d "confirm=$q" >/dev/null; done
   for sname in $(owner_sql "SELECT s.name FROM org_secrets s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$org'"); do
     code_of "$jar" -X POST "$BASE/o/$org/secrets/$sname/delete" -d csrf=$csrf -d "confirm=$sname" >/dev/null; done
+  owner_sql "DELETE FROM dns_zones WHERE org_id = (SELECT id FROM orgs WHERE slug = '$org'); DELETE FROM alarm_rules WHERE org_id = (SELECT id FROM orgs WHERE slug = '$org'); DELETE FROM users WHERE email = 'scoped@$org.test'" >/dev/null 2>&1
+  for p in $(owner_sql "SELECT p.slug FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$org' AND p.slug <> 'shop'"); do
+    code_of "$jar" -X POST "$BASE/o/$org/p/$p/delete" -d csrf=$csrf -d "confirm=$p" >/dev/null; done
   owner_sql "DELETE FROM api_tokens WHERE org_id = (SELECT id FROM orgs WHERE slug = '$org'); DELETE FROM registry_tokens WHERE org_id = (SELECT id FROM orgs WHERE slug = '$org'); DELETE FROM invites WHERE org_id = (SELECT id FROM orgs WHERE slug = '$org') AND accepted_at IS NULL" >/dev/null 2>&1
 }
 finish() {
@@ -249,6 +252,106 @@ check "[B->A API] B cannot reach A's queue (404)" "$(apicode "$TOK_B" POST /queu
 check "[API] secret created" "$(apicode "$TOK" POST /secrets -d "{\"name\": \"e2e-key\", \"value\": \"v1-$RUN\"}")" 201
 check "the secret is stored encrypted" "$(owner_sql "SELECT count(*) FROM org_secret_versions WHERE position(convert_to('v1-$RUN', 'UTF8') in value_enc) > 0")" 0
 check "[B->A API] B cannot read A's secret (404)" "$(apicode "$TOK_B" GET /secrets/e2e-key)" 404
+
+section "Function triggers (bucket events, webhooks)"
+TRIG_CODE='export const handler = async (event) => {
+  const r = event.Records?.[0];
+  if (r) console.log("bucket-event", r.eventName, r.s3.bucket.name, r.s3.object.key);
+  else console.log("webhook-event", event.requestContext?.http?.method, event.body);
+  return { ok: true };
+};'
+check "[API] trigger function deployed" "$(fn PUT ontrigger -o /dev/null -w '%{http_code}' -d "$(python3 -c 'import json,sys; print(json.dumps({"runtime": "nodejs22", "code": sys.argv[1]}))' "$TRIG_CODE")")" 201
+code_of ja -X POST "$BASE/o/$A/storage/buckets" -d csrf=$CSRF_A -d name=media -d quota_mb=5 >/dev/null
+KP2=$(c ja -X POST "$BASE/o/$A/storage/keys" -d csrf=$CSRF_A -d name=trigger-writer -d "perm_media=write")
+KM=$(grep -o 'GK[0-9a-f]\{24\}' <<<"$KP2" | head -1); SM=$(sed -n 's/.*select wrap">\([0-9a-f]\{64\}\)<.*/\1/p' <<<"$KP2" | head -1)
+s3m() { curl -sS -o /dev/null -w '%{http_code}' --resolve "$S3HOST:443:127.0.0.1" --aws-sigv4 "aws:amz:us-east-1:s3" --user "$KM:$SM" -H "x-amz-content-sha256: UNSIGNED-PAYLOAD" "$@"; }
+check "[A] bucket trigger added (uploads of *.txt under in/)" "$(code_of ja -X POST "$BASE/o/$A/p/shop/f/ontrigger/triggers" -d csrf=$CSRF_A -d bucket=media -d events=created -d prefix=in/ -d suffix=.txt)" 303
+sleep 22   # the agent reloads triggers every 20 seconds (and the new key needs a moment)
+echo "trigger-$RUN" > "$TMP/trig.txt"
+for k in "in/doc-$RUN.txt" "out/doc-$RUN.txt"; do s3m -T "$TMP/trig.txt" "https://$S3HOST/$A-media/$k" >/dev/null; done
+inv_log() { owner_sql "SELECT count(*) FROM function_invocations i JOIN functions f ON f.id = i.function_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'ontrigger' AND i.trigger = '$1' AND i.log LIKE '%$2%'"; }
+check "an upload matching the trigger runs the function with an S3 event" "$(for _ in $(seq 1 30); do [ "$(inv_log bucket "ObjectCreated:Put $A-media in/doc-$RUN.txt")" = 1 ] && { echo yes; break; }; sleep 2; done)" yes
+check "an upload outside the prefix does not run it" "$(inv_log bucket "out/doc-$RUN")" 0
+WPAGE=$(c ja -X POST "$BASE/o/$A/p/shop/f/ontrigger/webhook" -d csrf=$CSRF_A)
+WURL=$(grep -o "$BASE/hooks/fn/whk_[A-Za-z0-9_-]*" <<<"$WPAGE" | head -1)
+hook() { curl -sS --resolve "$CONSOLE:443:127.0.0.1" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' "$@"; }
+check "[A] webhook URL created (shown once)" "$([ -n "$WURL" ] && echo yes)" yes
+check "the webhook answers 202 and runs the function" "$(hook -d "{\"hook\":\"h-$RUN\"}" "$WURL"):$(for _ in $(seq 1 30); do [ "$(inv_log webhook "h-$RUN")" -ge 1 ] && { echo yes; break; }; sleep 2; done)" "202:yes"
+check "a wrong webhook token answers 404" "$(hook -d x "$BASE/hooks/fn/whk_wrong")" 404
+code_of ja -X POST "$BASE/o/$A/p/shop/f/ontrigger/webhook" -d csrf=$CSRF_A -d remove=1 >/dev/null
+check "a removed webhook stops working" "$(hook -d x "$WURL")" 404
+for k in "in/doc-$RUN.txt" "out/doc-$RUN.txt"; do s3m -X DELETE "https://$S3HOST/$A-media/$k" >/dev/null; done
+
+section "Metric alarms"
+alarm_redir() { c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/monitoring/alarms" -d csrf=$CSRF_A "$@"; }
+check "[alarms] invalid PromQL refused" "$(alarm_redir -d name=bad --data-urlencode 'query=max(' -d op=%3E -d threshold=1 -d for_minutes=0 | grep -c 'err=')" 1
+check "[A] alarm created" "$(code_of ja -X POST "$BASE/o/$A/monitoring/alarms" -d csrf=$CSRF_A -d "name=e2e memory" --data-urlencode 'query=max(platform_container_memory_bytes)' -d op=%3E -d threshold=1 -d for_minutes=0)" 303
+owner_sql "SELECT pg_notify('deployments', 'alarms')" >/dev/null
+ALQ="SELECT r.state || ':' || (SELECT count(*) FROM alert_incidents i WHERE i.alarm_id = r.id AND i.status = 'firing') FROM alarm_rules r JOIN orgs o ON o.id = r.org_id WHERE o.slug = '$A' AND r.name = 'e2e memory'"
+check "[alarms] the breach fires an incident" "$(for _ in $(seq 1 45); do s=$(owner_sql "$ALQ"); [ "$s" = firing:1 ] && break; sleep 2; done; echo "$s")" firing:1
+check "[B->A API] B does not see A's alarms" "$(api "$TOK_B" GET /alarms | grep -c 'e2e memory')" 0
+ALID=$(owner_sql "SELECT r.id FROM alarm_rules r JOIN orgs o ON o.id = r.org_id WHERE o.slug = '$A' AND r.name = 'e2e memory'")
+code_of ja -X POST "$BASE/o/$A/monitoring/alarms/$ALID" -d csrf=$CSRF_A -d action=pause >/dev/null
+check "[alarms] pausing resolves its incident" "$(owner_sql "$ALQ")" ok:0
+check "[API] alarm created, listed and deleted" "$(apicode "$TOK" POST /alarms -d '{"name":"api-alarm","query":"sum(rate(platform_container_cpu_seconds_total[5m]))","op":">","threshold":100,"for_minutes":5}'):$(api "$TOK" GET /alarms | grep -c '"Name":"api-alarm"'):$(apicode "$TOK" DELETE /alarms/api-alarm)" "201:1:204"
+code_of ja -X POST "$BASE/o/$A/monitoring/alarms/$ALID" -d csrf=$CSRF_A -d action=delete >/dev/null
+
+section "Fine-grained access (project-scoped members and tokens)"
+code_of ja -X POST "$BASE/o/$A/projects" -d csrf=$CSRF_A -d slug=hidden -d name=Hidden >/dev/null
+SDEV="scoped@$A.test"
+owner_sql "DELETE FROM users WHERE email = '$SDEV'" >/dev/null
+SLINK=$(admin invite --org "$A" --email "$SDEV" --role developer | tail -1 | tr -d '\r')
+code_of jsd -X POST "$BASE/invite/${SLINK##*/invite/}" --data-urlencode "name=Scoped Dev" --data-urlencode "password=$PW" --data-urlencode "password2=$PW" >/dev/null
+SPAGE=$(c jsd "$BASE/totp/setup"); SSEC=$(grep -o 'class="select">[A-Z2-7]\{20,\}<' <<<"$SPAGE" | head -1 | sed 's/.*">//;s/<$//')
+c jsd -o /dev/null -X POST "$BASE/totp/setup" -d "csrf=$(csrf_of <<<"$SPAGE")" -d "code=$(admin totp-code --secret "$SSEC" | tr -d '\r')"
+SUID=$(owner_sql "SELECT id FROM users WHERE email = '$SDEV'")
+check "[A admin] developer limited to project shop" "$(code_of jsd "$BASE/o/$A/compute"):$(code_of ja -X POST "$BASE/o/$A/members/$SUID/access" -d csrf=$CSRF_A -d project_shop=developer)" "200:303"
+check "[scoped] sees shop; another project and org-wide pages are hidden" "$(code_of jsd "$BASE/o/$A/p/shop"):$(code_of jsd "$BASE/o/$A/p/hidden"):$(code_of jsd "$BASE/o/$A/compute"):$(code_of jsd "$BASE/o/$A/iam")" "200:404:404:404"
+check "[scoped] the projects page and sidebar do not mention the hidden project" "$(c jsd "$BASE/o/$A/projects" | grep -c "/o/$A/p/hidden")" 0
+PTOK=$(c ja -X POST "$BASE/o/$A/api-tokens" -d csrf=$CSRF_A -d name=shop-only -d role=developer -d project=shop | grep -o 'pla_[A-Za-z0-9_-]*' | head -1)
+check "[project token] reaches its project; other projects and org APIs refused" "$(apicode "$PTOK" GET /projects/shop/services):$(apicode "$PTOK" GET /projects/hidden/services):$(apicode "$PTOK" GET /queues)" "200:403:403"
+code_of ja -X POST "$BASE/o/$A/members/$SUID/remove" -d csrf=$CSRF_A >/dev/null
+owner_sql "DELETE FROM users WHERE email = '$SDEV'" >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/hidden/delete" -d csrf=$CSRF_A -d confirm=hidden >/dev/null
+
+section "DNS hosting"
+PUBIP=$(val PUBLIC_IP); ZONE=z$RUN.example
+qdns() { dig +short +time=3 +tries=2 "@$PUBIP" "$1" "$2"; }
+check "[A] zone added (pending until delegated)" "$(code_of ja -X POST "$BASE/o/$A/dns" -d csrf=$CSRF_A -d "domain=$ZONE")" 303
+check "[B] the same domain cannot be taken by another organization" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/dns" -d csrf=$CSRF_B -d "domain=$ZONE" | grep -c 'already')" 1
+check "the platform's own domain cannot be hosted" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/dns" -d csrf=$CSRF_A -d "domain=$APPS" | grep -c 'err=')" 1
+zrec() { code_of ja -X POST "$BASE/o/$A/dns/$ZONE" -d csrf=$CSRF_A -d action=add "$@"; }
+check "records added (A, TXT)" "$(zrec -d name=@ -d type=A -d value=203.0.113.5):$(zrec -d name=@ -d type=TXT --data-urlencode "value=e2e-$RUN")" "303:303"
+check "a pending zone is not served (REFUSED)" "$(dig +time=3 +tries=2 "@$PUBIP" "$ZONE" A | grep -c 'status: REFUSED')" 1
+owner_sql "UPDATE dns_zones SET status = 'active', active_at = now() WHERE domain = '$ZONE'; SELECT pg_notify('deployments', 'dns')" >/dev/null   # stands in for the registrar delegation
+check "active zone answers on the public address (A, TXT, NS)" "$(for _ in $(seq 1 15); do [ "$(qdns "$ZONE" A)" = 203.0.113.5 ] && { echo yes; break; }; sleep 1; done):$(qdns "$ZONE" TXT | grep -c "e2e-$RUN"):$(qdns "$ZONE" NS | wc -l | tr -d ' ')" "yes:1:2"
+check "a domain not hosted here is refused (not an open resolver)" "$(dig +time=3 +tries=2 "@$PUBIP" example.org A | grep -c 'status: REFUSED')" 1
+check "[B->A] B cannot open A's zone (404)" "$(code_of jb "$BASE/o/$A/dns/$ZONE")" 404
+check "[A] zone deleted and no longer served" "$(code_of ja -X POST "$BASE/o/$A/dns/$ZONE" -d csrf=$CSRF_A -d action=remove -d "confirm=$ZONE"):$(sleep 2; dig +time=3 +tries=2 "@$PUBIP" "$ZONE" A | grep -c 'status: REFUSED')" "303:1"
+
+section "Edge cache (CDN)"
+code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=cdn -d image=nginx:1.27-alpine >/dev/null
+check "[A] edge cache turned on" "$(code_of ja -X POST "$BASE/o/$A/p/shop/s/cdn/settings" -d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=80 -d health_path=%2F -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d edge_cache=1):$(owner_sql "SELECT s.edge_cache FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'cdn'")" "303:t"
+mkdir -p "$TMP/cdnapp"
+printf '%s\n' 'FROM nginx:1.27-alpine' 'COPY default.conf /etc/nginx/conf.d/default.conf' > "$TMP/cdnapp/Dockerfile"
+printf '%s\n' 'server {' '  listen 80;' '  location /cached { add_header Cache-Control "public, max-age=60"; return 200 "cached $msec\n"; }' '  location / { return 200 "fresh $msec\n"; }' '}' > "$TMP/cdnapp/default.conf"
+OUT=$(pctl zip shop/cdn "$TMP/cdnapp" --wait)
+CDNH=cdn-shop-$A.$APPS
+cget() { curl -sS --max-time 20 -D - -o "$TMP/cdn.body" --resolve "$CDNH:443:127.0.0.1" "https://$CDNH$1" | tr -d '\r'; }
+C1=; for _ in $(seq 1 45); do C1=$(cget /cached); grep -qi '^cache-status:' <<<"$C1" && grep -q cached "$TMP/cdn.body" && break; sleep 2; done
+B1=$(cat "$TMP/cdn.body"); C2=$(cget /cached); B2=$(cat "$TMP/cdn.body")
+check "a cacheable response is served from the edge cache (same body, hit)" "$(grep -ci '^cache-status:.*hit' <<<"$C2"):$([ "$B1" = "$B2" ] && echo same)" "1:same"
+cget /page >/dev/null; FB1=$(cat "$TMP/cdn.body"); sleep 1; F2=$(cget /page); FB2=$(cat "$TMP/cdn.body")
+check "a response without Cache-Control is never kept" "$(grep -ci '^cache-status:.*hit' <<<"$F2"):$([ "$FB1" != "$FB2" ] && echo fresh)" "0:fresh"
+
+section "Bulk actions on the lists"
+for f in bulka bulkb; do fn PUT "$f" -o /dev/null -d "$(python3 -c 'import json,sys; print(json.dumps({"runtime": "nodejs22", "code": sys.argv[1], "url_enabled": True, "url_auth": "none"}))' "$CODE")"; done
+check "[bulk] URLs of two functions turned off" "$(code_of ja -X POST "$BASE/o/$A/functions/actions" -d csrf=$CSRF_A -d action=url-off -d sel=shop/bulka -d sel=shop/bulkb):$(owner_sql "SELECT count(*) FROM functions f JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug IN ('bulka', 'bulkb') AND f.url_enabled")" "303:0"
+check "[bulk] deleting needs the typed confirmation" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/functions/actions" -d csrf=$CSRF_A -d action=delete -d sel=shop/bulka | grep -c 'err=')" 1
+check "[bulk] two functions deleted" "$(code_of ja -X POST "$BASE/o/$A/functions/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/bulka -d sel=shop/bulkb):$(owner_sql "SELECT count(*) FROM functions f JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug IN ('bulka', 'bulkb')")" "303:0"
+check "[B->A] B's bulk action cannot touch A's bucket" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/storage/actions" -d csrf=$CSRF_B -d action=delete -d confirm=delete -d sel=media | grep -c 'Skipped'):$(owner_sql "SELECT count(*) FROM buckets b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.name = 'media'")" "1:1"
+check "[bulk] bucket deleted from the list" "$(code_of ja -X POST "$BASE/o/$A/storage/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=media):$(owner_sql "SELECT count(*) FROM buckets b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.name = 'media'")" "303:0"
+check "the lists show selection checkboxes" "$(for p in functions storage; do c ja "$BASE/o/$A/$p" | grep -c 'data-bulk=' ; done | tr -d '\n')" "11"
 
 section "Operator and admin panel"
 admin make-operator --email "owner@$A.test" >/dev/null
