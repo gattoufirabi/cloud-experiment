@@ -234,7 +234,7 @@ GH=grafana-shop-$A.$APPS
 gget() { curl -sS --max-time 20 --resolve "$GH:443:127.0.0.1" -u "admin:$GPW" "https://$GH$1"; }
 check "Grafana answers over HTTPS and signs in" "$(for _ in $(seq 1 20); do r=$(gget /api/user); grep -q '"login":"admin"' <<<"$r" && { echo yes; break; }; sleep 3; done)" yes
 check "its data source reaches the platform's metrics" "$(gget '/api/datasources/proxy/uid/platform/api/v1/query?query=count(platform_container_memory_bytes)' | grep -o '"status":"success"')" '"status":"success"'
-check "the Services dashboard is provisioned" "$(gget /api/dashboards/uid/platform-services | grep -o '"title":"Services"' | head -1)" '"title":"Services"'
+check "the Services dashboard is provisioned" "$(for _ in $(seq 1 20); do r=$(gget /api/dashboards/uid/platform-services | grep -o '"title":"Services"' | head -1); [ -n "$r" ] && { echo "$r"; break; }; sleep 3; done)" '"title":"Services"'
 
 section "Zip deployment"
 mkdir -p "$TMP/zipapp/site"; printf '%s\n' 'FROM nginx:1.27-alpine' 'COPY site/index.html /usr/share/nginx/html/index.html' > "$TMP/zipapp/Dockerfile"
