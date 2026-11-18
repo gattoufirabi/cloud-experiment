@@ -30,6 +30,7 @@ type serviceInfo struct {
 	MetricsPort                             int    // 0 = the service's port
 	AnalyticsKey                            string // web analytics script key ("" = off)
 	EdgeCache                               bool   // the proxy caches responses that allow it
+	Public                                  bool   // has a public address (false: only its .internal name)
 	PreviewName, ParentSlug                 string // set for preview environments
 	Expires                                 *time.Time
 }
@@ -56,12 +57,12 @@ func (s *Server) loadService(r *http.Request, tx pgx.Tx, projectID string) (*ser
 	err := tx.QueryRow(r.Context(), `
 		SELECT s.id, s.slug, s.image, s.health_path, s.volume_path, s.port, s.cpu_millis, s.memory_mb, s.env,
 		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker, s.instances, s.ports,
-		       s.autoscale_min, s.autoscale_max, s.autoscale_cpu, s.metrics_path, s.metrics_port, coalesce(s.analytics_key, ''), s.edge_cache
+		       s.autoscale_min, s.autoscale_max, s.autoscale_cpu, s.metrics_path, s.metrics_port, coalesce(s.analytics_key, ''), s.edge_cache, s.public
 		FROM services s LEFT JOIN services ps ON ps.id = s.preview_of
 		WHERE s.project_id = $1 AND s.slug = $2`, projectID, r.PathValue("service")).
 		Scan(&sv.ID, &sv.Slug, &sv.Image, &sv.HealthPath, &sv.VolumePath, &sv.Port, &sv.CPUMillis, &sv.MemoryMB, &sv.Env,
 			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker, &sv.Instances, &sv.Ports, &sv.AutoMin, &sv.AutoMax, &sv.AutoCPU,
-			&sv.MetricsPath, &sv.MetricsPort, &sv.AnalyticsKey, &sv.EdgeCache)
+			&sv.MetricsPath, &sv.MetricsPort, &sv.AnalyticsKey, &sv.EdgeCache, &sv.Public)
 	if sv.Env == nil {
 		sv.Env = map[string]string{}
 	}
@@ -173,6 +174,9 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 	var projectVars []projectVar
 	var domains []domainView
 	var schedules []scheduleView
+	var extraPorts []portView
+	var domainPaths map[string][]pathView
+	var pathTargets []string
 	var scan *scanSummary
 	var findings []finding
 	var backups *backupView
@@ -241,6 +245,20 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		if domains, err = pgx.CollectRows(rows, pgx.RowToStructByPos[domainView]); err != nil {
 			return err
 		}
+		if extraPorts, err = s.loadServicePorts(r.Context(), tx, o, p, sv); err != nil {
+			return err
+		}
+		if domainPaths, err = loadDomainPaths(r.Context(), tx, sv.ID); err != nil {
+			return err
+		}
+		trow, err := tx.Query(r.Context(), `SELECT tp.slug || '/' || t.slug FROM services t JOIN projects tp ON tp.id = t.project_id
+			WHERE t.preview_of IS NULL AND NOT t.worker AND t.id <> $1 ORDER BY 1`, sv.ID)
+		if err != nil {
+			return err
+		}
+		if pathTargets, err = pgx.CollectRows(trow, pgx.RowTo[string]); err != nil {
+			return err
+		}
 		schedules, err = loadSchedules(r.Context(), tx, sv.ID)
 		return err
 	})
@@ -268,7 +286,7 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 	}
 	host := s.serviceHost(o, p, sv)
 	s.render(w, r, "service", http.StatusOK, data{
-		"Jobs": jobs, "JobRuns": jobRuns, "Schedules": schedules,
+		"Jobs": jobs, "JobRuns": jobRuns, "Schedules": schedules, "ExtraPorts": extraPorts, "DomainPaths": domainPaths, "PathTargets": pathTargets,
 		"Org": o, "Project": p, "Service": sv, "EnvText": model.FormatEnv(sv.Env),
 		"Deployments": deps, "Secrets": secrets, "Domains": domains, "ProjectVars": projectVars,
 		"URL": s.appURL(host), "Path": svcPath(o, p, sv), "AppsDomain": s.cfg.AppsDomain,
@@ -389,8 +407,9 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			formErr = "Metrics: a path such as /metrics, and a port from 1 to 65535 (empty: the service's port)."
 			return nil
 		}
-		if _, err := tx.Exec(r.Context(), `UPDATE services SET autoscale_min = $2, autoscale_max = $3, autoscale_cpu = $4, metrics_path = $5, metrics_port = $6, edge_cache = $7 WHERE id = $1`,
-			sv.ID, autoMin, autoMax, autoCPU, metricsPath, metricsPort, r.PostFormValue("edge_cache") == "1"); err != nil {
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET autoscale_min = $2, autoscale_max = $3, autoscale_cpu = $4, metrics_path = $5, metrics_port = $6, edge_cache = $7, public = $8 WHERE id = $1`,
+			sv.ID, autoMin, autoMax, autoCPU, metricsPath, metricsPort, r.PostFormValue("edge_cache") == "1",
+			sv.isPreview() || r.PostFormValue("private") != "1"); err != nil {
 			return err
 		}
 		if next.Ports, err = s.allocatePorts(r, tx, o, sv.ID, next.Ports); err != nil {

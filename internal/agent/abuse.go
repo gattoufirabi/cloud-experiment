@@ -152,7 +152,7 @@ func (a *Agent) expireTrials(ctx context.Context) {
 				r.Close()
 			}
 			for _, to := range owners {
-				if err := mail.Send(a.cfg, to, "Your trial has ended",
+				if err := a.sendMail(ctx, to, "Your trial has ended",
 					"The free trial of "+e.name+" has ended. Your applications are stopped and your data is kept.\n\n"+
 						"To continue, reply to this message or contact the platform operator to choose a plan.\n\n"+a.cfg.BaseURL+"\n"); err != nil {
 					a.log.Warn("trial email", "err", err)

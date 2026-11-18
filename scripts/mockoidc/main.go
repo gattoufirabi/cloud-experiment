@@ -43,11 +43,16 @@ func main() {
 	secret := flag.String("client-secret", "e2e-client-secret", "client secret")
 	sinkSecret := flag.String("sink-secret", "e2e-sink-secret", "secret that signs log exports")
 	dnsAddr := flag.String("dns", "", "UDP address of the test DNS server (off when empty)")
+	smtpAddr := flag.String("smtp", "", "address of the test mail server (off when empty)")
 	flag.Parse()
-	store := &txtStore{recs: map[string][]string{}}
+	store := &txtStore{recs: map[string][]rec{}}
 	store.handlers()
+	(&hookLog{}).handlers()
 	if *dnsAddr != "" {
 		go serveDNS(*dnsAddr, store)
+	}
+	if *smtpAddr != "" {
+		go serveSMTP(*smtpAddr)
 	}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

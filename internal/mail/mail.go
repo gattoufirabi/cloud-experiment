@@ -1,17 +1,15 @@
-// Package mail sends plain-text email through any SMTP server (your own Postfix,
-// Stalwart, Mailcow… or a relay). Standard library only.
+// Package mail composes, signs and delivers email: the platform's own notices and the
+// messages tenants send. Delivery goes through an SMTP relay (SMTP_HOST: your own
+// Postfix, Stalwart, Mailcow… or a provider) or straight to the recipients' mail servers
+// (deliver.go). Standard library only.
 package mail
 
 import (
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"mime"
-	"net"
-	"net/smtp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -20,90 +18,66 @@ import (
 
 var ErrNotConfigured = errors.New("no SMTP server configured (SMTP_HOST, SMTP_FROM)")
 
-func Configured(cfg config.Config) bool { return cfg.SMTPHost != "" && cfg.SMTPFrom != "" }
+// Configured reports whether the platform can send its own emails: a sender address
+// (SMTP_FROM) and a way out (a relay, or direct delivery).
+func Configured(cfg config.Config) bool {
+	return cfg.SMTPFrom != "" && (cfg.SMTPHost != "" || cfg.EmailMode() == "direct")
+}
 
-// Send delivers one message. Header injection is impossible: addresses and the
-// subject are refused if they contain line breaks.
-func Send(cfg config.Config, to, subject, body string) error {
-	if !Configured(cfg) {
-		return ErrNotConfigured
-	}
+// Relay reports whether the platform's own emails go through the SMTP relay (sent at
+// once); otherwise they are queued and delivered directly by the agent.
+func Relay(cfg config.Config) bool { return cfg.SMTPHost != "" && cfg.SMTPFrom != "" }
+
+// Plain composes a plain-text notice from SMTP_FROM. It returns the message, the
+// envelope sender and the sender's domain. Header injection is impossible: the address
+// and the subject are refused if they contain line breaks.
+func Plain(cfg config.Config, to, subject, body string) (msg, envFrom, domain string, err error) {
 	for _, v := range []string{to, subject, cfg.SMTPFrom} {
 		if strings.ContainsAny(v, "\r\n") {
-			return errors.New("invalid header value")
+			return "", "", "", errors.New("invalid header value")
 		}
 	}
+	envFrom = cfg.SMTPFrom
+	if i := strings.LastIndex(envFrom, "<"); i >= 0 {
+		envFrom = strings.TrimSuffix(envFrom[i+1:], ">")
+	}
+	domain = strings.ToLower(envFrom[strings.LastIndex(envFrom, "@")+1:])
 	idBytes := make([]byte, 12)
 	_, _ = rand.Read(idBytes)
-	domain := cfg.SMTPFrom[strings.LastIndex(cfg.SMTPFrom, "@")+1:]
-	msg := "From: " + cfg.SMTPFrom + "\r\n" +
+	msg = "From: " + cfg.SMTPFrom + "\r\n" +
 		"To: " + to + "\r\n" +
 		"Subject: " + mime.QEncoding.Encode("utf-8", subject) + "\r\n" +
 		"Date: " + time.Now().UTC().Format(time.RFC1123Z) + "\r\n" +
-		"Message-ID: <" + hex.EncodeToString(idBytes) + "@" + strings.TrimSuffix(domain, ">") + ">\r\n" +
+		"Message-ID: <" + hex.EncodeToString(idBytes) + "@" + domain + ">\r\n" +
 		"MIME-Version: 1.0\r\n" +
 		"Content-Type: text/plain; charset=utf-8\r\n" +
 		"Content-Transfer-Encoding: 8bit\r\n\r\n" +
 		strings.ReplaceAll(body, "\n", "\r\n")
-	from := cfg.SMTPFrom
-	if i := strings.LastIndex(from, "<"); i >= 0 {
-		from = strings.TrimSuffix(from[i+1:], ">")
-	}
-	return SendRaw(cfg, from, []string{to}, msg)
+	return msg, envFrom, domain, nil
 }
 
-// SendRaw hands a complete CRLF message to the SMTP server for the given envelope.
+// Send delivers one notice through the relay at once.
+func Send(cfg config.Config, to, subject, body string) error {
+	if !Relay(cfg) {
+		return ErrNotConfigured
+	}
+	msg, envFrom, _, err := Plain(cfg, to, subject, body)
+	if err != nil {
+		return err
+	}
+	return SendRaw(cfg, envFrom, []string{to}, msg)
+}
+
+// SendRaw hands a complete CRLF message to the SMTP relay; it fails unless every
+// recipient was accepted.
 func SendRaw(cfg config.Config, envelopeFrom string, to []string, msg string) error {
 	if cfg.SMTPHost == "" {
 		return ErrNotConfigured
 	}
-	host := cfg.SMTPHost
-	addr := net.JoinHostPort(host, strconv.Itoa(cfg.SMTPPort))
-	dialer := &net.Dialer{Timeout: 15 * time.Second}
-	var conn net.Conn
-	var err error
-	if cfg.SMTPTLS == "tls" {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
-	} else {
-		conn, err = dialer.Dial("tcp", addr)
-	}
-	if err != nil {
-		return fmt.Errorf("connect to %s: %w", addr, err)
-	}
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
-	c, err := smtp.NewClient(conn, host)
-	if err != nil {
-		conn.Close()
-		return err
-	}
-	defer c.Close()
-	if cfg.SMTPTLS == "starttls" {
-		if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
-			return fmt.Errorf("starttls: %w", err)
+	for _, r := range SendRelay(cfg, envelopeFrom, to, msg) {
+		if r.Status != Delivered {
+			return fmt.Errorf("recipient %s: %s", r.Addr, r.Detail)
 		}
 	}
-	if cfg.SMTPUser != "" {
-		if err := c.Auth(smtp.PlainAuth("", cfg.SMTPUser, cfg.SMTPPassword, host)); err != nil {
-			return fmt.Errorf("smtp auth: %w", err)
-		}
-	}
-	if err := c.Mail(envelopeFrom); err != nil {
-		return err
-	}
-	for _, rcpt := range to {
-		if err := c.Rcpt(rcpt); err != nil {
-			return fmt.Errorf("recipient %s: %w", rcpt, err)
-		}
-	}
-	w, err := c.Data()
-	if err != nil {
-		return err
-	}
-	if _, err := w.Write([]byte(msg)); err != nil {
-		return err
-	}
-	if err := w.Close(); err != nil {
-		return err
-	}
-	return c.Quit()
+	return nil
 }

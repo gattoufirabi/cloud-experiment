@@ -201,7 +201,7 @@ func (s *Server) operatorCreateUser(w http.ResponseWriter, r *http.Request) {
 	if r.PostFormValue("send_email") == "1" && platmail.Configured(s.cfg) {
 		mailed = true
 		go func(to, link, org, role string) {
-			if err := platmail.Send(s.cfg, to, "You are invited to "+org,
+			if err := s.sendMail(r.Context(), to, "You are invited to "+org,
 				"You have been invited to the organization "+org+" ("+role+") on the platform.\n\n"+
 					"Create your account here (the link works once, within 7 days):\n\n"+link+"\n"); err != nil {
 				s.log.Error("send invite email", "err", err)
@@ -401,7 +401,7 @@ func (s *Server) operatorUserResetPassword(w http.ResponseWriter, r *http.Reques
 	if r.PostFormValue("send_email") == "1" && platmail.Configured(s.cfg) {
 		mailed = true
 		go func(to, link string) {
-			if err := platmail.Send(s.cfg, to, "Reset your password",
+			if err := s.sendMail(r.Context(), to, "Reset your password",
 				"The platform's support created a password reset for your account.\n\n"+
 					"Choose a new password here (the link works once, within 1 hour):\n\n"+link+"\n\n"+
 					"If you did not ask for this, contact the support.\n"); err != nil {

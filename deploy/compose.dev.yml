@@ -46,6 +46,15 @@ x-app: &app
     OIDC_ALLOW_INSECURE: "true"
     EMAIL_DNS_RESOLVER: e2e-dns:53     # dev only: the e2e test's DNS server (mockoidc -dns)
     EMAIL_SPF_INCLUDE: spf.example.test
+    # Dev: tenants' email is delivered directly to the recipients' "mail servers", which
+    # the e2e test's DNS points at Mailpit and a refusing test server (port 1025).
+    EMAIL_DELIVERY: direct
+    EMAIL_DIRECT_PORT: "1025"
+    EMAIL_DIRECT_ALLOW_PRIVATE: "true"
+    SMTP_SUBMISSION_LISTEN: ":2587"
+    SMTP_SUBMISSION_UPSTREAM: "api:2587"
+    # Public database endpoints: the agent runs this image in mode "dbproxy".
+    DBPROXY_IMAGE: "platform:dev"
     DNS_NAMESERVERS: ns1.platform.test,ns2.platform.test
     PUBLIC_IP: 127.0.0.1
     SIGNUPS_PER_HOUR: "100"            # dev only: the e2e test signs up several times per run
@@ -195,12 +204,12 @@ services:
     restart: "no"
 
   caddy:
-    image: platform-caddy:2.11.9-cache
+    image: platform-caddy:2.11.9-cache-l4
     build: ./caddy   # Caddy + Coraza WAF + rate limit (see caddy/Dockerfile)
     container_name: platform-caddy
     restart: unless-stopped
     command: ["caddy", "run", "--config", "/etc/caddy/initial.json"]
-    ports: ["8088:80"]
+    ports: ["8088:80", "1465:465"]
     volumes:
       - ./caddy/initial.json:/etc/caddy/initial.json:ro
       - caddy-admin:/run/caddy

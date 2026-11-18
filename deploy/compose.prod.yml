@@ -31,6 +31,16 @@ x-app: &app
     SMTP_FROM: ${SMTP_FROM:-}
     SMTP_TLS: ${SMTP_TLS:-starttls}
     EMAIL_SPF_INCLUDE: ${EMAIL_SPF_INCLUDE:-}
+    # Tenants' email: "direct" to recipients' mail servers (port 25; the server's reverse
+    # DNS should name MAIL_HOSTNAME, by default the console host), "relay" through
+    # SMTP_HOST, or "off". Default: relay when SMTP_HOST is set, direct otherwise.
+    EMAIL_DELIVERY: ${EMAIL_DELIVERY:-}
+    MAIL_HOSTNAME: ${MAIL_HOSTNAME:-}
+    # SMTP submission for tenants' apps: Caddy ends TLS on port 465 and forwards to the API.
+    SMTP_SUBMISSION_LISTEN: ":2587"
+    SMTP_SUBMISSION_UPSTREAM: "api:2587"
+    # Public database endpoints: the agent runs this image in mode "dbproxy".
+    DBPROXY_IMAGE: "platform:${PLATFORM_VERSION:-local}"
     DNS_NAMESERVERS: ${DNS_NAMESERVERS:-}
     PUBLIC_IP: ${PUBLIC_IP:-}
     OPERATOR_NTFY_URL: ${OPERATOR_NTFY_URL:-}
@@ -160,7 +170,7 @@ services:
     restart: "no"
 
   caddy:
-    image: platform-caddy:2.11.9-cache
+    image: platform-caddy:2.11.9-cache-l4
     build: ./caddy   # Caddy + Coraza WAF + rate limit (see caddy/Dockerfile)
     container_name: platform-caddy
     restart: unless-stopped
@@ -169,7 +179,7 @@ services:
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
-    ports: ["80:80", "443:443", "443:443/udp"]
+    ports: ["80:80", "443:443", "443:443/udp", "465:465"]
     volumes:
       - ./caddy/initial-prod.json:/etc/caddy/initial.json:ro
       - caddy-admin:/run/caddy

@@ -2,17 +2,16 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"strings"
 	"time"
-
-	"platform/internal/mail"
 )
 
 // Outgoing email: the primary verifies sending domains through DNS (an ownership TXT
 // record and the DKIM key) and delivers queued messages, signed with the domain's
-// DKIM key, through the platform's SMTP relay. Retries back off: 2, 4, 8, 16 minutes.
+// DKIM key, to each recipient's mail servers (or through the platform's SMTP relay).
+// Each recipient has its own result; temporary failures are retried with back-off
+// (2, 4, 8, 16 minutes). See emailsend.go.
 
 const (
 	emailMaxAttempts = 5
@@ -35,13 +34,16 @@ func (a *Agent) emailLoop(ctx context.Context) {
 	var lastPrune time.Time
 	for {
 		a.verifyEmailDomains(ctx)
-		if a.cfg.SMTPHost != "" {
+		if a.cfg.EmailMode() != "off" {
 			for a.sendEmails(ctx) == emailBatch && ctx.Err() == nil {
 			}
+			a.sendEmailEvents(ctx)
 		}
+		a.sendPlatformMail(ctx) // the platform's own notices, when there is no relay
 		if time.Since(lastPrune) > time.Hour {
 			lastPrune = time.Now()
 			_, _ = a.pool.Exec(ctx, `DELETE FROM email_messages WHERE created_at < now() - interval '30 days'`)
+			_, _ = a.pool.Exec(ctx, `DELETE FROM email_events WHERE created_at < now() - interval '7 days'`)
 		}
 		select {
 		case <-ctx.Done():
@@ -127,97 +129,4 @@ func (a *Agent) verifyEmailDomains(ctx context.Context) {
 			_ = auditAgent(ctx, a, d.OrgID, "email.domain_"+status, "email-domain:"+d.Domain, nil)
 		}
 	}
-}
-
-type outgoing struct {
-	ID, OrgID, From, ReplyTo, Subject, Text, HTML string
-	DomainID                                      *string
-	To                                            []string
-	Attempts                                      int
-}
-
-// sendEmails delivers one batch; returns how many messages it claimed.
-func (a *Agent) sendEmails(ctx context.Context) int {
-	// Messages left "sending" by a crash go back to the queue.
-	_, _ = a.pool.Exec(ctx, `UPDATE email_messages SET status = 'queued' WHERE status = 'sending' AND next_attempt_at < now()`)
-	rows, err := a.pool.Query(ctx, `
-		UPDATE email_messages SET status = 'sending', attempts = attempts + 1, next_attempt_at = now() + interval '10 minutes'
-		WHERE id IN (SELECT id FROM email_messages WHERE status = 'queued' AND next_attempt_at <= now()
-		             ORDER BY next_attempt_at LIMIT $1 FOR UPDATE SKIP LOCKED)
-		RETURNING id, org_id, domain_id::text, from_addr, to_addrs, reply_to, subject, body_text, body_html, attempts`, emailBatch)
-	if err != nil {
-		a.log.Warn("email claim", "err", err)
-		return 0
-	}
-	var batch []outgoing
-	for rows.Next() {
-		var m outgoing
-		if err := rows.Scan(&m.ID, &m.OrgID, &m.DomainID, &m.From, &m.To, &m.ReplyTo, &m.Subject, &m.Text, &m.HTML, &m.Attempts); err == nil {
-			batch = append(batch, m)
-		}
-	}
-	rows.Close()
-	for _, m := range batch {
-		err := a.deliverEmail(ctx, m)
-		switch {
-		case err == nil:
-			_, _ = a.pool.Exec(ctx, `UPDATE email_messages SET status = 'sent', sent_at = now(), error = '', body_text = '', body_html = '' WHERE id = $1`, m.ID)
-			if m.DomainID != nil {
-				hour := time.Now().UTC().Truncate(time.Hour)
-				_, _ = a.pool.Exec(ctx, `
-					INSERT INTO usage_hourly (org_id, resource_id, kind, name, hour, emails)
-					SELECT $1, $2, 'email', d.domain, $3, $4 FROM email_domains d WHERE d.id = $2
-					ON CONFLICT (resource_id, hour) DO UPDATE SET emails = usage_hourly.emails + EXCLUDED.emails`,
-					m.OrgID, *m.DomainID, hour, len(m.To))
-			}
-		case m.Attempts >= emailMaxAttempts || permanent(err):
-			_, _ = a.pool.Exec(ctx, `UPDATE email_messages SET status = 'failed', error = $2, body_text = '', body_html = '' WHERE id = $1`, m.ID, truncate(err.Error(), 500))
-		default:
-			_, _ = a.pool.Exec(ctx, `UPDATE email_messages SET status = 'queued', error = $2, next_attempt_at = now() + make_interval(mins => $3) WHERE id = $1`,
-				m.ID, truncate(err.Error(), 500), 1<<m.Attempts)
-		}
-	}
-	return len(batch)
-}
-
-type permanentErr struct{ error }
-
-func permanent(err error) bool { _, ok := err.(permanentErr); return ok }
-
-func (a *Agent) deliverEmail(ctx context.Context, m outgoing) error {
-	if m.DomainID == nil {
-		return permanentErr{fmt.Errorf("the sending domain was deleted")}
-	}
-	var domain, selector, status string
-	var keyEnc []byte
-	if err := a.pool.QueryRow(ctx, `SELECT domain, dkim_selector, dkim_key_enc, status FROM email_domains WHERE id = $1`, *m.DomainID).
-		Scan(&domain, &selector, &keyEnc, &status); err != nil {
-		return permanentErr{fmt.Errorf("the sending domain was deleted")}
-	}
-	if status != "verified" {
-		return permanentErr{fmt.Errorf("the domain %s is not verified", domain)}
-	}
-	key, err := a.box.Open(keyEnc, "emaildkim:"+*m.DomainID)
-	if err != nil {
-		return err
-	}
-	_, envFrom, err := mail.ParseAddress(m.From)
-	if err != nil {
-		return permanentErr{err}
-	}
-	now := time.Now()
-	msg := mail.Compose(mail.Message{From: m.From, ReplyTo: m.ReplyTo, To: m.To, Subject: m.Subject, Text: m.Text, HTML: m.HTML}, domain, now)
-	sig, err := mail.DKIMSign(msg, domain, selector, key, now)
-	if err != nil {
-		return err
-	}
-	rcpts := make([]string, 0, len(m.To))
-	for _, t := range m.To {
-		_, addr, err := mail.ParseAddress(t)
-		if err != nil {
-			return permanentErr{err}
-		}
-		rcpts = append(rcpts, addr)
-	}
-	return mail.SendRaw(a.cfg, envFrom, rcpts, sig+msg)
 }

@@ -132,6 +132,8 @@
       <label>Maximum instances<input type="number" name="autoscale_max" min="1" max="10" value="{{if .Service.AutoMax}}{{.Service.AutoMax}}{{else}}3{{end}}"></label>
       <label>CPU target <span class="hint">% of the CPU you give each instance</span><input type="number" name="autoscale_cpu" min="10" max="95" value="{{.Service.AutoCPU}}"></label>
       {{end}}
+      {{if not .Service.PreviewName}}<label class="check wide"><input type="checkbox" name="private" value="1" {{if not .Service.Public}}checked{{end}}> Private: no public address
+        <span class="hint">the service is only reachable from your other services, at <code>{{.Service.Slug}}.{{.Project.Slug}}.internal</code>; its platform address and custom domains stop answering</span></label>{{end}}
       <label class="check wide"><input type="checkbox" name="edge_cache" value="1" {{if .Service.EdgeCache}}checked{{end}}> Edge cache (CDN)
         <span class="hint">the proxy keeps responses your app marks as cacheable (<code>Cache-Control: public, max-age=…</code> or <code>s-maxage</code>) and answers repeat requests itself; others are never kept. The <code>Cache-Status</code> header shows hits</span></label>
       <label>Metrics path <span class="hint">optional: your app's Prometheus endpoint, such as /metrics; scraped every 30 s, then queried in Grafana or with the Prometheus API</span><input name="metrics_path" value="{{.Service.MetricsPath}}" placeholder="/metrics" maxlength="200"></label>
@@ -225,9 +227,37 @@
 
   <div class="section">
     <h2>Platform address</h2>
+    {{if .Service.Public}}
     <p><a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a></p>
-    <p class="small muted">Always available. HTTPS is automatic.</p>
+    <p class="small muted">Always available. HTTPS is automatic. Other services reach it privately at <code>http://{{.Service.Slug}}.{{.Project.Slug}}.internal</code>.</p>
+    {{else}}
+    <p><span class="badge">private</span> No public address: other services reach it at <code>http://{{.Service.Slug}}.{{.Project.Slug}}.internal</code>. Untick <strong>Private</strong> in the settings to publish it.</p>
+    {{end}}
   </div>
+  {{if and .Service.Public (not .Service.PreviewName) (not .Service.Worker)}}
+  <div class="section" id="ports">
+    <h2>More public ports</h2>
+    <p class="small muted">Publish another HTTP port of the service on its own address, for example an admin interface on port 9000 at <code>admin.{{.PortHost}}</code>. HTTPS is automatic.</p>
+    {{if .ExtraPorts}}
+    <table id="ports-table">
+      <thead><tr><th>Address</th><th class="num">Port</th><th></th></tr></thead>
+      <tbody>
+      {{range .ExtraPorts}}<tr><td><a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a></td><td class="num">{{.Port}}</td>
+        <td>{{if $.CanEdit}}<form method="post" action="{{$.Path}}/ports/{{.Label}}/delete" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="link">unpublish</button></form>{{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
+    {{if .CanEdit}}
+    <form method="post" action="{{.Path}}/ports" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="label" placeholder="admin" required pattern="[a-z][a-z0-9]{0,19}" size="10" aria-label="Label (first part of the address)">
+      <input type="number" name="port" min="1" max="65535" placeholder="9000" required aria-label="Port">
+      <button type="submit" class="secondary">Publish port</button>
+    </form>
+    {{end}}
+  </div>
+  {{end}}
   <div class="section">
     <h2>Custom domains</h2>
     {{range .Domains}}
@@ -238,6 +268,25 @@
           <li>TXT record <code class="select">_platform-challenge.{{.Hostname}}</code> with value <code class="select">platform-verify={{.Token}}</code></li>
           <li>CNAME (or A record) for <code>{{.Hostname}}</code> pointing to this platform</li>
         </ul>
+        {{end}}
+        {{with index $.DomainPaths .ID}}
+        <table class="small">
+          <thead><tr><th>Path</th><th>Served by</th><th></th></tr></thead>
+          <tbody>
+          {{range .}}<tr><td><code>{{.Prefix}}</code>{{if .Strip}} <span class="muted">(prefix removed)</span>{{end}}</td><td>{{.Target}}</td>
+            <td>{{if $.CanEdit}}<form method="post" action="{{$.Path}}/domains/paths/{{.ID}}/delete" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="link">remove</button></form>{{end}}</td></tr>
+          {{end}}
+          </tbody>
+        </table>
+        {{end}}
+        {{if and $.CanEdit $.PathTargets}}
+        <form method="post" action="{{$.Path}}/domains/{{.ID}}/paths" class="inline">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input name="prefix" placeholder="/api" required size="12" aria-label="Path">
+          <select name="target" aria-label="Served by">{{range $.PathTargets}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+          <label class="check"><input type="checkbox" name="strip" value="1"> remove the prefix</label>
+          <button type="submit" class="secondary small">Route path</button>
+        </form>
         {{end}}
         {{if $.CanEdit}}
         <div class="inline">

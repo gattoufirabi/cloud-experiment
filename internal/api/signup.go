@@ -218,7 +218,7 @@ func (s *Server) signupSubmit(w http.ResponseWriter, r *http.Request) {
 	if exists {
 		// Same answer on screen; the owner of the address learns it already has an account.
 		go func() {
-			_ = platmail.Send(s.cfg, email, "Your Platform account",
+			_ = s.sendMail(r.Context(), email, "Your Platform account",
 				"Someone (maybe you) tried to sign up with this address, but it already has an account.\n\n"+
 					"Log in at "+s.cfg.BaseURL+"/login\n\nIf this wasn't you, you can ignore this message.\n")
 		}()
@@ -242,7 +242,7 @@ func (s *Server) signupSubmit(w http.ResponseWriter, r *http.Request) {
 	body := "Hello " + name + ",\n\nConfirm your email address to create the organization \"" + orgName + "\":\n\n" +
 		s.cfg.BaseURL + "/signup/verify/" + token + "\n\nThe link works once, within 24 hours. " +
 		"If you did not sign up, ignore this message; nothing will be created.\n"
-	if err := platmail.Send(s.cfg, email, "Confirm your email address", body); err != nil {
+	if err := s.sendMail(r.Context(), email, "Confirm your email address", body); err != nil {
 		s.log.Error("send signup email", "err", err)
 		_, _ = s.pool.Exec(r.Context(), `DELETE FROM signups WHERE id = $1`, id)
 		again("We could not send the confirmation email; please try again later.")

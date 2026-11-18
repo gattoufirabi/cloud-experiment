@@ -82,6 +82,10 @@ type route struct {
 	WAF              bool     // OWASP Core Rule Set
 	RPM              int      // requests per minute per visitor IP; 0 = no limit
 	Blocked          []string // CIDR ranges refused with 403
+	Public           bool     // false: no public address (only the private name)
+	Names            []string // local instance container names (none when it runs on another node)
+	ZoneSuffix       string   // extra port routes: their own rate-limit zone
+	PathRules        []pathRule
 }
 
 func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
@@ -89,7 +93,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		SELECT d.container_name, (d.spec->>'port')::int, s.slug, p.slug, o.slug,
 		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}'),
 		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.blocked_ips::text[],
-		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances, o.id, p.id, s.edge_cache
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances, o.id, p.id, s.edge_cache, coalesce(ps.public, s.public)
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
 		LEFT JOIN services ps ON ps.id = s.preview_of
@@ -110,7 +114,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		var previewName, parentSlug, upstream string
 		var insts []instance
 		rt := route{}
-		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream, &insts, &rt.OrgID, &rt.ProjectID, &rt.Cache); err != nil {
+		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream, &insts, &rt.OrgID, &rt.ProjectID, &rt.Cache, &rt.Public); err != nil {
 			return route{}, err
 		}
 		host := model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)
@@ -129,6 +133,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 				rt.Dials = append(rt.Dials, in.Upstream)
 			} else {
 				rt.Dials = append(rt.Dials, in.Name+":"+strconv.Itoa(port))
+				rt.Names = append(rt.Names, in.Name)
 			}
 		}
 		rt.Blocked = blocked
@@ -146,6 +151,7 @@ func (a *Agent) syncCaddy(ctx context.Context, force bool) {
 		return
 	}
 	a.fillInternal(ctx, routes)
+	routes = a.expandRoutes(ctx, routes)
 	idx := make(map[string]hostRef, len(routes))
 	for _, r := range routes {
 		for _, h := range r.Hosts {
@@ -245,6 +251,9 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 		})
 	}
 	for _, r := range routes {
+		if len(r.Hosts) == 0 { // private: only its .internal name (see internalRoutes)
+			continue
+		}
 		var sub []any
 		if len(r.Blocked) > 0 {
 			sub = append(sub, obj{
@@ -255,7 +264,7 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 		if r.RPM > 0 {
 			sub = append(sub, obj{"handle": []any{obj{
 				"handler": "rate_limit",
-				"rate_limits": obj{"svc-" + r.Zone: obj{
+				"rate_limits": obj{"svc-" + r.Zone + r.ZoneSuffix: obj{
 					"key": "{http.request.remote.host}", "window": "1m", "max_events": r.RPM,
 				}},
 			}}})
@@ -271,6 +280,21 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 			// proxy) is skipped for 20 s and the request is retried on another one; a whole node
 			// going silent is handled by node failover (scaling.go).
 			rp["health_checks"] = obj{"passive": obj{"fail_duration": "20s", "max_fails": 1, "unhealthy_status": []int{502, 503, 504}}}
+		}
+		for _, pr := range r.PathRules { // a path of this domain served by another service
+			h := []any{}
+			if pr.Strip {
+				h = append(h, obj{"handler": "rewrite", "strip_path_prefix": pr.Prefix})
+			}
+			pups := make([]any, 0, len(pr.Dials))
+			for _, d := range pr.Dials {
+				pups = append(pups, obj{"dial": d})
+			}
+			prp := obj{"handler": "reverse_proxy", "upstreams": pups}
+			if len(pups) > 1 {
+				prp["load_balancing"] = obj{"selection_policy": obj{"policy": "round_robin"}, "try_duration": "3s", "try_interval": "250ms"}
+			}
+			sub = append(sub, obj{"match": []any{obj{"path": []string{pr.Prefix, pr.Prefix + "/*"}}}, "handle": append(h, prp)})
 		}
 		if r.Cache { // edge cache in front of the application (keyed by host, so never shared between services)
 			sub = append(sub, obj{"handle": []any{obj{"handler": "cache"}, rp}})
@@ -312,6 +336,15 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 			apps["cache"] = obj{"ttl": "120s", "mode": "strict", "default_cache_control": "private", "max_cacheable_body_bytes": 10 << 20}
 			break
 		}
+	}
+	if cfg.SMTPSubmissionUpstream != "" {
+		// SMTP submission for tenants' apps: port 465, TLS ended here with the console's
+		// certificate (plain SMTP in development), then forwarded to the API.
+		handle := []any{obj{"handler": "proxy", "upstreams": []any{obj{"dial": []string{cfg.SMTPSubmissionUpstream}}}}}
+		if cfg.TLSMode == "acme" {
+			handle = append([]any{obj{"handler": "tls"}}, handle...)
+		}
+		apps["layer4"] = obj{"servers": obj{"smtp": obj{"listen": []string{":465"}, "routes": []any{obj{"handle": handle}}}}}
 	}
 	internal := internalRoutes(routes)
 	if cfg.TLSMode == "acme" {

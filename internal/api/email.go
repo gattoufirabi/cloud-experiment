@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"regexp"
 	"strings"
@@ -28,7 +30,21 @@ var emailDomainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+
 
 const maxEmailBytes = 256 << 10
 
-func (s *Server) emailEnabled() bool { return s.cfg.SMTPHost != "" }
+func (s *Server) emailEnabled() bool { return s.cfg.EmailMode() != "off" }
+
+// spfMechanism is what tenants add to their domain's SPF record: the relay's include, or
+// this server's address when it delivers directly.
+func (s *Server) spfMechanism() string {
+	switch {
+	case s.cfg.EmailSPFInclude != "":
+		return "include:" + s.cfg.EmailSPFInclude
+	case s.cfg.EmailMode() == "direct" && strings.Contains(s.cfg.PublicIP, ":"):
+		return "ip6:" + s.cfg.PublicIP
+	case s.cfg.EmailMode() == "direct" && s.cfg.PublicIP != "":
+		return "ip4:" + s.cfg.PublicIP
+	}
+	return ""
+}
 
 type sendDomain struct {
 	ID, Domain, Selector, Token, TXT, Status, Message string
@@ -38,13 +54,13 @@ type sendDomain struct {
 
 type dnsRecord struct{ Name, Type, Value, Purpose string }
 
-func (d *sendDomain) Records(spfInclude string) []dnsRecord {
+func (d *sendDomain) Records(spf string) []dnsRecord {
 	recs := []dnsRecord{
 		{"_platform-verify." + d.Domain, "TXT", "platform-verify=" + d.Token, "proves you own the domain"},
 		{d.Selector + "._domainkey." + d.Domain, "TXT", d.TXT, "DKIM key: receivers check the signature of each message"},
 	}
-	if spfInclude != "" {
-		recs = append(recs, dnsRecord{d.Domain, "TXT", "v=spf1 include:" + spfInclude + " ~all", "SPF (recommended): merge with an existing v=spf1 record"})
+	if spf != "" {
+		recs = append(recs, dnsRecord{d.Domain, "TXT", "v=spf1 " + spf + " ~all", "SPF (recommended): merge with an existing v=spf1 record"})
 	}
 	return append(recs, dnsRecord{"_dmarc." + d.Domain, "TXT", "v=DMARC1; p=none", "DMARC (recommended)"})
 }
@@ -135,12 +151,19 @@ func (s *Server) deleteEmailDomainTx(r *http.Request, tx pgx.Tx, o *orgInfo, d *
 }
 
 type sendRequest struct {
-	From    string   `json:"from"`
-	To      []string `json:"to"`
-	ReplyTo string   `json:"reply_to"`
-	Subject string   `json:"subject"`
-	Text    string   `json:"text"`
-	HTML    string   `json:"html"`
+	From        string           `json:"from"`
+	To          []string         `json:"to"`
+	ReplyTo     string           `json:"reply_to"`
+	Subject     string           `json:"subject"`
+	Text        string           `json:"text"`
+	HTML        string           `json:"html"`
+	Attachments []sendAttachment `json:"attachments"`
+}
+
+type sendAttachment struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Content     string `json:"content"` // base64
 }
 
 // queueEmailTx checks a message and queues it for the agent; returns its id.
@@ -181,39 +204,120 @@ func (s *Server) queueEmailTx(r *http.Request, tx pgx.Tx, o *orgInfo, m sendRequ
 	case m.Text == "" && m.HTML == "":
 		return bad("give a text or html body")
 	}
-	size := len(m.Subject) + len(m.Text) + len(m.HTML)
-	if size > maxEmailBytes {
-		return bad("the message is larger than 256 KB")
+	if len(m.Text)+len(m.HTML) > maxEmailBytes {
+		return bad("the text and html bodies together are larger than 256 KB")
 	}
-	var sent, max int
-	if err := tx.QueryRow(r.Context(), `
-		SELECT coalesce((SELECT sum(cardinality(to_addrs)) FROM email_messages WHERE created_at > now() - interval '1 day'), 0), max_emails_day
-		FROM plans WHERE id = $1`, o.PlanID).Scan(&sent, &max); err != nil {
+	atts, msg := parseAttachments(m.Attachments)
+	if msg != "" {
+		return bad(msg)
+	}
+	var raw []byte
+	size := len(m.Subject) + len(m.Text) + len(m.HTML)
+	if len(atts) > 0 {
+		raw = []byte(mail.Compose(mail.Message{From: from, ReplyTo: replyTo, To: to, Subject: m.Subject, Text: m.Text, HTML: m.HTML, Attachments: atts}, domain, time.Now()))
+		size = len(raw)
+	}
+	source := "api"
+	if r.URL.Path != "" && !strings.HasPrefix(r.URL.Path, "/api/") {
+		source = "console"
+	}
+	return s.enqueueEmailTx(r.Context(), tx, o, queued{DomainID: domainID, From: from, To: to, ReplyTo: replyTo, Subject: m.Subject,
+		Text: m.Text, HTML: m.HTML, Raw: raw, Size: size, Source: source})
+}
+
+// queued is a checked message ready to be stored.
+type queued struct {
+	DomainID, From, ReplyTo, Subject, Text, HTML, Source string
+	To                                                   []string
+	Raw                                                  []byte
+	Size                                                 int
+}
+
+// enqueueEmailTx applies the plan's limits and stores the message and its recipients.
+func (s *Server) enqueueEmailTx(ctx context.Context, tx pgx.Tx, o *orgInfo, q queued) (string, error) {
+	var sent, maxDay, maxBytes int
+	if err := tx.QueryRow(ctx, `
+		SELECT coalesce((SELECT sum(cardinality(to_addrs)) FROM email_messages WHERE created_at > now() - interval '1 day'), 0), max_emails_day, max_email_bytes
+		FROM plans WHERE id = $1`, o.PlanID).Scan(&sent, &maxDay, &maxBytes); err != nil {
 		return "", err
 	}
-	if sent+len(to) > max {
-		return "", apiErr{http.StatusTooManyRequests, fmt.Sprintf("your plan sends at most %d emails a day", max)}
+	if q.Size > maxBytes {
+		return "", apiErr{http.StatusRequestEntityTooLarge, fmt.Sprintf("the message is larger than %d MB", maxBytes>>20)}
+	}
+	if sent+len(q.To) > maxDay {
+		return "", apiErr{http.StatusTooManyRequests, fmt.Sprintf("your plan sends at most %d emails a day", maxDay)}
 	}
 	var id string
-	if err := tx.QueryRow(r.Context(), `
-		INSERT INTO email_messages (org_id, domain_id, from_addr, to_addrs, reply_to, subject, body_text, body_html, size_bytes)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		o.ID, domainID, from, to, replyTo, m.Subject, m.Text, m.HTML, size).Scan(&id); err != nil {
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO email_messages (org_id, domain_id, from_addr, to_addrs, reply_to, subject, body_text, body_html, raw, size_bytes, source)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+		o.ID, q.DomainID, q.From, q.To, q.ReplyTo, q.Subject, q.Text, q.HTML, q.Raw, q.Size, q.Source).Scan(&id); err != nil {
 		return "", err
 	}
-	_, err = tx.Exec(r.Context(), `SELECT pg_notify('deployments', 'email')`)
+	seen := map[string]bool{}
+	for _, t := range q.To {
+		_, addr, err := mail.ParseAddress(t)
+		if err != nil || seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		if _, err := tx.Exec(ctx, `INSERT INTO email_recipients (message_id, org_id, address) VALUES ($1, $2, $3)`, id, o.ID, addr); err != nil {
+			return "", err
+		}
+	}
+	_, err := tx.Exec(ctx, `SELECT pg_notify('deployments', 'email')`)
 	return id, err
 }
 
+// blockedExtensions are attachment types mail providers refuse (programs, scripts).
+var blockedExtensions = map[string]bool{"exe": true, "bat": true, "cmd": true, "com": true, "scr": true, "pif": true, "vbs": true,
+	"js": true, "jse": true, "wsf": true, "msi": true, "jar": true, "ps1": true, "cpl": true, "hta": true, "lnk": true}
+
+// parseAttachments decodes and checks attachments; msg explains a refusal.
+func parseAttachments(in []sendAttachment) (out []mail.Attachment, msg string) {
+	if len(in) > 20 {
+		return nil, "attachments: at most 20"
+	}
+	for i, a := range in {
+		name := strings.TrimSpace(a.Filename)
+		if name == "" || len(name) > 200 || strings.ContainsAny(name, "\r\n\"/\\") {
+			return nil, fmt.Sprintf("attachments[%d].filename: 1 to 200 characters, no slashes or quotes", i)
+		}
+		if ext := strings.ToLower(name[strings.LastIndex(name, ".")+1:]); strings.Contains(name, ".") && blockedExtensions[ext] {
+			return nil, fmt.Sprintf("attachments[%d]: .%s files are refused by mail providers", i, ext)
+		}
+		ct := strings.TrimSpace(a.ContentType)
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		if mt, _, err := mime.ParseMediaType(ct); err != nil || !strings.Contains(mt, "/") || strings.ContainsAny(ct, "\r\n") {
+			return nil, fmt.Sprintf("attachments[%d].content_type: a media type such as application/pdf", i)
+		} else {
+			ct = mt
+		}
+		data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(a.Content))
+		if err != nil || len(data) == 0 {
+			return nil, fmt.Sprintf("attachments[%d].content: the file's bytes in base64", i)
+		}
+		out = append(out, mail.Attachment{Filename: name, ContentType: ct, Data: data})
+	}
+	return out, ""
+}
+
 type emailMessage struct {
-	ID, From, Subject, Status, Error string
-	To                               []string
-	Created                          time.Time
-	Sent                             *time.Time
+	ID, From, Subject, Status, Error, Source string
+	To                                       []string
+	Created                                  time.Time
+	Sent                                     *time.Time
+	Delivered, Bounced, Suppressed, Failed   int
 }
 
 func loadEmailMessages(ctx context.Context, tx pgx.Tx, where string, args ...any) ([]emailMessage, error) {
-	rows, err := tx.Query(ctx, `SELECT id, from_addr, to_addrs, subject, status, error, created_at, sent_at FROM email_messages `+where, args...)
+	rows, err := tx.Query(ctx, `
+		SELECT m.id, m.from_addr, m.to_addrs, m.subject, m.status, m.error, m.source, m.created_at, m.sent_at,
+		       count(r.*) FILTER (WHERE r.status = 'delivered')::int, count(r.*) FILTER (WHERE r.status = 'bounced')::int,
+		       count(r.*) FILTER (WHERE r.status = 'suppressed')::int, count(r.*) FILTER (WHERE r.status = 'failed')::int
+		FROM email_messages m LEFT JOIN email_recipients r ON r.message_id = m.id `+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +325,8 @@ func loadEmailMessages(ctx context.Context, tx pgx.Tx, where string, args ...any
 	out := []emailMessage{}
 	for rows.Next() {
 		var m emailMessage
-		if err := rows.Scan(&m.ID, &m.From, &m.To, &m.Subject, &m.Status, &m.Error, &m.Created, &m.Sent); err != nil {
+		if err := rows.Scan(&m.ID, &m.From, &m.To, &m.Subject, &m.Status, &m.Error, &m.Source, &m.Created, &m.Sent,
+			&m.Delivered, &m.Bounced, &m.Suppressed, &m.Failed); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -240,7 +345,7 @@ type apiEmailDomain struct {
 }
 
 func (s *Server) sendDomainView(d *sendDomain) apiEmailDomain {
-	return apiEmailDomain{d.Domain, d.Status, d.Message, d.Records(s.cfg.EmailSPFInclude), d.Verified}
+	return apiEmailDomain{d.Domain, d.Status, d.Message, d.Records(s.spfMechanism()), d.Verified}
 }
 
 func (s *Server) apiEmailDomains(w http.ResponseWriter, r *http.Request, o *orgInfo) {
@@ -298,7 +403,7 @@ func (s *Server) apiDeleteEmailDomain(w http.ResponseWriter, r *http.Request, o 
 
 func (s *Server) apiSendEmail(w http.ResponseWriter, r *http.Request, o *orgInfo) {
 	var m sendRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxEmailBytes+16<<10)).Decode(&m); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&m); err != nil { // 10 MB of attachments in base64
 		apiError(w, http.StatusBadRequest, `body must be JSON: {"from": "...", "to": ["..."], "subject": "...", "text": "..."}`)
 		return
 	}
@@ -317,9 +422,13 @@ func (s *Server) apiSendEmail(w http.ResponseWriter, r *http.Request, o *orgInfo
 
 func (s *Server) apiEmailMessage(w http.ResponseWriter, r *http.Request, o *orgInfo) {
 	var ms []emailMessage
+	var rcpts []recipientView
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		var err error
-		ms, err = loadEmailMessages(r.Context(), tx, `WHERE id::text = $1`, r.PathValue("id"))
+		if ms, err = loadEmailMessages(r.Context(), tx, `WHERE m.id::text = $1 GROUP BY m.id`, r.PathValue("id")); err != nil || len(ms) == 0 {
+			return err
+		}
+		rcpts, err = loadRecipients(r.Context(), tx, ms[0].ID)
 		return err
 	})
 	if !apiTx(w, s, err) {
@@ -330,7 +439,8 @@ func (s *Server) apiEmailMessage(w http.ResponseWriter, r *http.Request, o *orgI
 		return
 	}
 	m := ms[0]
-	writeJSON(w, map[string]any{"id": m.ID, "from": m.From, "to": m.To, "subject": m.Subject, "status": m.Status, "error": m.Error, "created_at": m.Created, "sent_at": m.Sent})
+	writeJSON(w, map[string]any{"id": m.ID, "from": m.From, "to": m.To, "subject": m.Subject, "status": m.Status, "error": m.Error,
+		"source": m.Source, "created_at": m.Created, "sent_at": m.Sent, "recipients": rcpts})
 }
 
 // ---------- console ----------
@@ -340,7 +450,13 @@ func (s *Server) emailPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.renderEmailPage(w, r, o, nil)
+}
+
+func (s *Server) renderEmailPage(w http.ResponseWriter, r *http.Request, o *orgInfo, extra data) {
 	var ds []*sendDomain
+	var supps []suppression
+	var hook *webhookView
 	var msgs []emailMessage
 	var services []string
 	var sent, max int
@@ -349,7 +465,13 @@ func (s *Server) emailPage(w http.ResponseWriter, r *http.Request) {
 		if ds, err = loadSendDomains(r.Context(), tx); err != nil {
 			return err
 		}
-		if msgs, err = loadEmailMessages(r.Context(), tx, `ORDER BY created_at DESC LIMIT 100`); err != nil {
+		if msgs, err = loadEmailMessages(r.Context(), tx, `GROUP BY m.id ORDER BY m.created_at DESC LIMIT 100`); err != nil {
+			return err
+		}
+		if supps, err = loadSuppressions(r.Context(), tx, 200); err != nil {
+			return err
+		}
+		if hook, err = loadEmailWebhook(r.Context(), tx); err != nil {
 			return err
 		}
 		if err := tx.QueryRow(r.Context(), `
@@ -380,8 +502,14 @@ func (s *Server) emailPage(w http.ResponseWriter, r *http.Request) {
 			verified = append(verified, d.Domain)
 		}
 	}
-	s.render(w, r, "email", http.StatusOK, data{"Org": o, "Domains": ds, "Verified": verified, "Messages": msgs, "Services": services,
-		"SentToday": sent, "MaxDay": max, "Enabled": s.emailEnabled(), "CanEdit": model.RoleAtLeast(o.Role, "developer")})
+	d := data{"Org": o, "Domains": ds, "Verified": verified, "Messages": msgs, "Services": services,
+		"SentToday": sent, "MaxDay": max, "Enabled": s.emailEnabled(), "CanEdit": model.RoleAtLeast(o.Role, "developer"),
+		"Suppressions": supps, "Webhook": hook, "Events": emailEvents, "Mode": s.cfg.EmailMode(),
+		"SMTPHost": s.cfg.MailHost(), "SMTPEnabled": s.cfg.SMTPSubmissionListen != "", "APIURL": s.cfg.BaseURL + "/api/v1/email/send"}
+	for k, v := range extra {
+		d[k] = v
+	}
+	s.render(w, r, "email", http.StatusOK, d)
 }
 
 func (s *Server) addEmailDomain(w http.ResponseWriter, r *http.Request) {
@@ -431,7 +559,7 @@ func (s *Server) emailDomainPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "email_domain", http.StatusOK, data{"Org": o, "Domain": d, "Records": d.Records(s.cfg.EmailSPFInclude), "CanEdit": model.RoleAtLeast(o.Role, "developer")})
+	s.render(w, r, "email_domain", http.StatusOK, data{"Org": o, "Domain": d, "Records": d.Records(s.spfMechanism()), "CanEdit": model.RoleAtLeast(o.Role, "developer")})
 }
 
 func (s *Server) checkEmailDomain(w http.ResponseWriter, r *http.Request) {
@@ -517,6 +645,9 @@ func (s *Server) emailAttach(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		vars := map[string]string{"EMAIL_API_URL": s.cfg.BaseURL + "/api/v1/email/send", "EMAIL_TOKEN": token}
+		if s.cfg.SMTPSubmissionListen != "" { // for software that only speaks SMTP
+			vars["SMTP_HOST"], vars["SMTP_PORT"], vars["SMTP_USERNAME"], vars["SMTP_PASSWORD"] = s.cfg.MailHost(), "465", "token", token
+		}
 		for name, value := range vars {
 			enc, err := s.box.Seal([]byte(value), "secret:"+serviceID+":"+name)
 			if err != nil {
@@ -537,6 +668,10 @@ func (s *Server) emailAttach(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.serverError(w, r, err)
 	default:
-		back(w, r, o.Path()+"/email#connect", "Secrets EMAIL_API_URL and EMAIL_TOKEN added to "+target+". Redeploy it to apply them.", "")
+		names := "EMAIL_API_URL and EMAIL_TOKEN"
+		if s.cfg.SMTPSubmissionListen != "" {
+			names = "EMAIL_API_URL, EMAIL_TOKEN and SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD"
+		}
+		back(w, r, o.Path()+"/email#connect", "Secrets "+names+" added to "+target+". Redeploy it to apply them.", "")
 	}
 }

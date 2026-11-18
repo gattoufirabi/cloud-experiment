@@ -58,6 +58,7 @@ const dbColumns = `d.id, d.org_id, d.project_id, d.engine, d.version, d.cpu_mill
 	d.password_enc, d.status, coalesce(d.container_id, ''), o.suspended`
 
 func (a *Agent) reconcileDatabases(ctx context.Context) {
+	defer a.syncDBProxies(ctx) // public endpoints follow their databases
 	rows, err := a.pool.Query(ctx, `SELECT `+dbColumns+` FROM databases d JOIN orgs o ON o.id = d.org_id
 		JOIN projects p ON p.id = d.project_id WHERE `+mineSQL, a.mineArgs()...)
 	if err != nil {

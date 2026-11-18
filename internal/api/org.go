@@ -420,9 +420,25 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.audit(r, s.pool, o.ID, "invite.created", "email:"+email, map[string]string{"role": role})
-	// Shown once, never stored in clear: the admin sends it to the person over a channel they trust.
-	s.renderOrg(w, r, o, http.StatusOK, data{"InviteLink": s.cfg.BaseURL + "/invite/" + token, "InviteEmail": email, "Tab": "members", "Page": "iam"})
+	link := s.cfg.BaseURL + "/invite/" + token
+	emailed := false
+	if r.PostFormValue("send_email") == "1" && platmail.Configured(s.cfg) {
+		inviter := sessionFrom(r).Name
+		if inviter == "" {
+			inviter = sessionFrom(r).Email
+		}
+		body := inviter + " invited you to join " + o.Name + " on the platform, as " + role + ".\n\n" +
+			"Accept the invitation and create your account (or sign in with " + email + " if you already have one):\n\n" +
+			link + "\n\nThe link works once and expires in 7 days. If you did not expect this invitation, ignore this email."
+		if err := s.sendMail(r.Context(), email, inviter+" invited you to "+o.Name, body); err != nil {
+			s.log.Warn("invitation email", "err", err)
+		} else {
+			emailed = true
+		}
+	}
+	s.audit(r, s.pool, o.ID, "invite.created", "email:"+email, map[string]any{"role": role, "emailed": emailed})
+	// Shown once, never stored in clear: the admin can also send it over a channel they trust.
+	s.renderOrg(w, r, o, http.StatusOK, data{"InviteLink": link, "InviteEmail": email, "InviteEmailed": emailed, "Tab": "members", "Page": "iam"})
 }
 
 func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {

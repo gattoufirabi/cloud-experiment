@@ -131,6 +131,27 @@ type Config struct {
 	// resolver for domain verification (tests); EMAIL_SPF_INCLUDE is the domain tenants
 	// add to their SPF record (shown in the console when set).
 	EmailDNSResolver, EmailSPFInclude string
+	// EMAIL_DELIVERY: "direct" (to each recipient's mail servers, port 25), "relay"
+	// (through SMTP_HOST) or "off". Default: relay when SMTP_HOST is set, direct otherwise.
+	EmailDelivery string
+	// MAIL_HOSTNAME: the name this server greets other mail servers with; its reverse
+	// DNS (PTR) should point to it. Default: the console host.
+	MailHostname string
+	// EMAIL_DIRECT_PORT (25) and EMAIL_DIRECT_ALLOW_PRIVATE: test settings only.
+	EmailDirectPort         int
+	EmailDirectAllowPrivate bool
+	// SMTP submission for tenants' applications: SMTP_SUBMISSION_LISTEN (":2587" inside
+	// the API container; empty = off), the folder of the proxy's certificates
+	// (SMTP_SUBMISSION_CERT_DIR, Caddy's data directory) for STARTTLS on MAIL_HOSTNAME,
+	// and SMTP_SUBMISSION_INSECURE (development: sign-in allowed without TLS).
+	SMTPSubmissionListen, SMTPSubmissionCertDir string
+	SMTPSubmissionInsecure                      bool
+	// SMTP_SUBMISSION_UPSTREAM (agent): where the proxy forwards port 465 (implicit TLS,
+	// terminated by the proxy with the console's certificate), such as "api:2587".
+	SMTPSubmissionUpstream string
+	// DBPROXY_IMAGE: the platform's own image, run as the public endpoint of databases
+	// opened to the internet (mode "dbproxy").
+	DBProxyImage string
 
 	// SignupsPerHour limits self-signups from one address (SIGNUPS_PER_HOUR, default 5).
 	SignupsPerHour int
@@ -179,6 +200,31 @@ func (c Config) S3Endpoint() string {
 
 // WebDomain hosts public website buckets: <bucket>.<WebDomain>.
 func (c Config) WebDomain() string { return "web." + c.AppsDomain }
+
+// EmailMode is how tenants' email leaves: "direct", "relay" or "off".
+func (c Config) EmailMode() string {
+	switch c.EmailDelivery {
+	case "direct", "relay", "off":
+		return c.EmailDelivery
+	}
+	if c.SMTPHost != "" {
+		return "relay"
+	}
+	return "direct"
+}
+
+// MailHost is the name this server uses towards other mail servers (and for SMTP
+// submission): MAIL_HOSTNAME, or the console host without its port.
+func (c Config) MailHost() string {
+	if c.MailHostname != "" {
+		return c.MailHostname
+	}
+	h := c.ConsoleHost
+	if i := strings.LastIndex(h, ":"); i > 0 && !strings.Contains(h[i:], "]") {
+		h = h[:i]
+	}
+	return h
+}
 
 func Load() Config {
 	return Config{
@@ -237,16 +283,25 @@ func Load() Config {
 		GarageAdminURL:   strings.TrimRight(env("GARAGE_ADMIN_URL", "http://garage:3903"), "/"),
 		GarageAdminToken: env("GARAGE_ADMIN_TOKEN", ""),
 
-		OIDCAllowInsecure:    envBool("OIDC_ALLOW_INSECURE", false),
-		EmailDNSResolver:     env("EMAIL_DNS_RESOLVER", ""),
-		EmailSPFInclude:      env("EMAIL_SPF_INCLUDE", ""),
-		SignupsPerHour:       envInt("SIGNUPS_PER_HOUR", 5),
-		DNSListen:            env("DNS_LISTEN", ""),
-		DNSNameservers:       envList("DNS_NAMESERVERS"),
-		PublicIP:             env("PUBLIC_IP", ""),
-		MovesSharedLocalRepo: envBool("MOVES_SHARED_LOCAL_REPO", false),
-		PublicPortMin:        envInt("PUBLIC_PORT_MIN", 20000),
-		PublicPortMax:        envInt("PUBLIC_PORT_MAX", 20999),
+		OIDCAllowInsecure:       envBool("OIDC_ALLOW_INSECURE", false),
+		EmailDNSResolver:        env("EMAIL_DNS_RESOLVER", ""),
+		EmailSPFInclude:         env("EMAIL_SPF_INCLUDE", ""),
+		EmailDelivery:           env("EMAIL_DELIVERY", ""),
+		MailHostname:            env("MAIL_HOSTNAME", ""),
+		EmailDirectPort:         envInt("EMAIL_DIRECT_PORT", 25),
+		EmailDirectAllowPrivate: envBool("EMAIL_DIRECT_ALLOW_PRIVATE", false),
+		SMTPSubmissionListen:    env("SMTP_SUBMISSION_LISTEN", ""),
+		SMTPSubmissionCertDir:   env("SMTP_SUBMISSION_CERT_DIR", ""),
+		SMTPSubmissionInsecure:  envBool("SMTP_SUBMISSION_INSECURE", false),
+		SMTPSubmissionUpstream:  env("SMTP_SUBMISSION_UPSTREAM", ""),
+		DBProxyImage:            env("DBPROXY_IMAGE", "platform:local"),
+		SignupsPerHour:          envInt("SIGNUPS_PER_HOUR", 5),
+		DNSListen:               env("DNS_LISTEN", ""),
+		DNSNameservers:          envList("DNS_NAMESERVERS"),
+		PublicIP:                env("PUBLIC_IP", ""),
+		MovesSharedLocalRepo:    envBool("MOVES_SHARED_LOCAL_REPO", false),
+		PublicPortMin:           envInt("PUBLIC_PORT_MIN", 20000),
+		PublicPortMax:           envInt("PUBLIC_PORT_MAX", 20999),
 
 		TenantResolvConf:    env("TENANT_RESOLV_CONF", ""),
 		NodeID:              env("NODE_ID", ""),

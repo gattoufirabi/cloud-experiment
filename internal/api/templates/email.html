@@ -11,7 +11,16 @@
   <a role="tab" href="#log">Sending log</a>
   <a role="tab" href="#domains">Domains</a>
   <a role="tab" href="#connect">Use from code</a>
+  <a role="tab" href="#suppressions">Suppressions <span class="count">{{len .Suppressions}}</span></a>
+  <a role="tab" href="#webhook">Webhook</a>
 </nav>
+{{with .WebhookSecret}}
+<div class="panel" id="webhook-secret">
+  <p><strong>Signing secret of your delivery webhook</strong>, shown this once: store it with your receiver.</p>
+  <pre class="cmd select">{{.}}</pre>
+  <p class="small muted">Each call carries <code>X-Platform-Signature: sha256=&lt;HMAC-SHA256 of the raw body with this secret&gt;</code>; compare it before trusting the body.</p>
+</div>
+{{end}}
 
 <section class="pane" id="log" role="tabpanel" aria-label="Sending log">
   <div class="section">
@@ -22,16 +31,17 @@
     {{if .Messages}}
     <div class="scroll-x">
     <table id="email-log" class="resources">
-      <thead><tr><th>Queued</th><th>From</th><th>To</th><th>Subject</th><th>Status</th></tr></thead>
+      <thead><tr><th>Queued</th><th>From</th><th>To</th><th>Subject</th><th>Status</th><th>Recipients</th></tr></thead>
       <tbody>
       {{range .Messages}}
         <tr><td class="nowrap">{{ago .Created}}</td><td>{{.From}}</td><td>{{range $i, $t := .To}}{{if $i}}, {{end}}{{$t}}{{end}}</td><td>{{.Subject}}</td>
-          <td>{{if eq .Status "sent"}}<span class="badge">sent</span>{{else if eq .Status "failed"}}<span class="error-text">failed</span> <span class="small muted">{{.Error}}</span>{{else}}{{.Status}}{{with .Error}} <span class="small muted">(retrying: {{.}})</span>{{end}}{{end}}</td></tr>
+          <td>{{if eq .Status "sent"}}<span class="badge">sent</span>{{else if eq .Status "partial"}}<span class="badge">partly sent</span> <span class="small muted">{{.Error}}</span>{{else if eq .Status "failed"}}<span class="error-text">failed</span> <span class="small muted">{{.Error}}</span>{{else}}{{.Status}}{{with .Error}} <span class="small muted">(retrying: {{.}})</span>{{end}}{{end}}{{if eq .Source "smtp"}} <span class="small muted">· SMTP</span>{{end}}</td>
+          <td class="small nowrap">{{if .Delivered}}{{.Delivered}} delivered{{end}}{{if .Bounced}} · <span class="error-text">{{.Bounced}} bounced</span>{{end}}{{if .Suppressed}} · {{.Suppressed}} suppressed{{end}}{{if .Failed}} · <span class="error-text">{{.Failed}} failed</span>{{end}}</td></tr>
       {{end}}
       </tbody>
     </table>
     </div>
-    <p class="small muted">The last 100 messages; bodies are deleted once sent. The log keeps 30 days.</p>
+    <p class="small muted">The last 100 messages; bodies are deleted once sent. The log keeps 30 days. <code>GET /api/v1/email/messages/ID</code> gives each recipient's result and the receiving server's answer.</p>
     {{else}}<p class="small muted">Nothing sent yet.</p>{{end}}
   </div>
   {{if and .CanEdit .Verified}}
@@ -74,7 +84,7 @@
       <input name="domain" placeholder="example.com or mail.example.com" required aria-label="Domain">
       <button type="submit" class="arrow">Add domain</button>
     </form>
-    <p class="small muted">You then add two TXT records at your DNS provider.</p>
+    <p class="small muted">You then add two TXT records at your DNS provider.{{if eq .Mode "direct"}} Messages go straight from this platform to each recipient's mail server, signed with your domain's key.{{end}}</p>
     {{else}}<p class="small muted">Outgoing email is not configured on this platform.</p>{{end}}
   </div>
   {{end}}
@@ -86,13 +96,32 @@
     <div class="panel"><pre class="cmd">curl -X POST -H "Authorization: Bearer $EMAIL_TOKEN" -H 'Content-Type: application/json' $EMAIL_API_URL \
   -d '{"from": "Shop &lt;hello@{{if .Verified}}{{index .Verified 0}}{{else}}example.com{{end}}&gt;", "to": ["buyer@example.org"],
        "subject": "Your order", "text": "Thanks!", "html": "&lt;p&gt;Thanks!&lt;/p&gt;"}'</pre></div>
-    <p class="small muted">Answers <code>202</code> with the message id; <code>GET /api/v1/email/messages/ID</code> gives its status. Up to 50 recipients and 256 KB per message.</p>
+    <p class="small muted">Answers <code>202</code> with the message id; <code>GET /api/v1/email/messages/ID</code> gives its status and each recipient's result. Up to 50 recipients; text and HTML up to 256 KB.</p>
   </div>
+  <div class="section">
+    <h2>Attachments</h2>
+    <p class="small muted">Add <code>"attachments"</code>: a list of files with a name, a media type and the bytes in base64 (up to 20 files, 10 MB per message in total; programs and scripts such as <code>.exe</code> or <code>.js</code> are refused).</p>
+    <div class="panel"><pre class="cmd">"attachments": [{"filename": "invoice-1042.pdf", "content_type": "application/pdf", "content": "JVBERi0xLjcK..."}]</pre></div>
+  </div>
+  {{if .SMTPEnabled}}
+  <div class="section" id="smtp">
+    <h2>Send with SMTP</h2>
+    <p class="small muted">For software that only speaks SMTP (WordPress, Django, Rails, Nodemailer…). The same checks and limits apply: the From address must use a verified domain.</p>
+    <div class="panel">
+      <dl class="kv">
+        <dt>host</dt><dd><code class="select">{{.SMTPHost}}</code></dd>
+        <dt>port</dt><dd><code>465</code>, TLS from the start ("SSL/TLS", not STARTTLS)</dd>
+        <dt>user name</dt><dd><code>token</code> (any value)</dd>
+        <dt>password</dt><dd>your email token (<code>EMAIL_TOKEN</code>)</dd>
+      </dl>
+    </div>
+  </div>
+  {{end}}
   {{if .CanEdit}}
   <div class="section">
     <h2>Connect to a service</h2>
     {{if .Services}}
-    <p class="small muted">Stores <code>EMAIL_API_URL</code> and <code>EMAIL_TOKEN</code> as secrets of the service: a token that can only send email. Redeploy the service to apply them.</p>
+    <p class="small muted">Stores <code>EMAIL_API_URL</code> and <code>EMAIL_TOKEN</code>{{if .SMTPEnabled}}, and <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USERNAME</code>, <code>SMTP_PASSWORD</code>,{{end}} as secrets of the service: a token that can only send email. Redeploy the service to apply them.</p>
     <form method="post" action="{{.Org.Path}}/email/attach" class="inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <select name="service" aria-label="Service">{{range .Services}}<option value="{{.}}">{{.}}</option>{{end}}</select>
@@ -101,5 +130,57 @@
     {{else}}<p class="small muted">Create a service first.</p>{{end}}
   </div>
   {{end}}
+</section>
+
+<section class="pane" id="suppressions" role="tabpanel" aria-label="Suppressions">
+  <div class="section">
+    <h2>Suppression list <span class="count">{{len .Suppressions}}</span></h2>
+    <p class="small muted">Addresses nothing is sent to. A recipient's mail server refusing an address for good (a hard bounce, such as an unknown mailbox) adds it here automatically: sending to it again would hurt your domain's reputation. Later messages to it are marked <em>suppressed</em>.</p>
+    {{if .Suppressions}}
+    <div class="scroll-x">
+    <table id="suppressions-table" class="resources">
+      <thead><tr><th>Address</th><th>Why</th><th>Since</th>{{if .CanEdit}}<th></th>{{end}}</tr></thead>
+      <tbody>
+      {{range .Suppressions}}
+        <tr><td><code>{{.Address}}</code></td><td>{{if eq .Reason "bounce"}}bounced{{else}}{{.Reason}}{{end}}{{with .Detail}} <span class="small muted">{{.}}</span>{{end}}</td><td class="nowrap">{{ago .Created}}</td>
+          {{if $.CanEdit}}<td><form method="post" action="{{$.Org.Path}}/email/suppressions" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="address" value="{{.Address}}"><input type="hidden" name="remove" value="1"><button type="submit" class="link">remove</button></form></td>{{end}}</tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}<p class="small muted">No suppressed addresses.</p>{{end}}
+    {{if .CanEdit}}
+    <form method="post" action="{{.Org.Path}}/email/suppressions" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="address" type="email" placeholder="someone@example.org" required aria-label="Address to suppress">
+      <button type="submit" class="secondary">Suppress</button>
+    </form>
+    <p class="small muted">Remove an address only once you know it works again. API: <code>GET/POST /api/v1/email/suppressions</code>, <code>DELETE /api/v1/email/suppressions/ADDRESS</code>.</p>
+    {{end}}
+  </div>
+</section>
+
+<section class="pane" id="webhook" role="tabpanel" aria-label="Webhook">
+  <div class="section">
+    <h2>Delivery webhook</h2>
+    <p class="small muted">The platform calls your URL with a signed JSON body for each recipient's result: <code>email.delivered</code>, <code>email.bounced</code>, <code>email.failed</code>, <code>email.suppressed</code>. Failed calls are retried for about a day.</p>
+    {{with .Webhook}}
+    <p><code>{{.URL}}</code> · {{range $i, $e := .Events}}{{if $i}}, {{end}}{{$e}}{{end}}{{with .LastStatus}} · <span class="small muted">last call: {{.}}</span>{{end}}</p>
+    {{end}}
+    {{if .CanEdit}}
+    <form method="post" action="{{.Org.Path}}/email/webhook" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>URL<input name="url" type="url" placeholder="https://example.com/hooks/email" value="{{with .Webhook}}{{.URL}}{{end}}" required></label>
+      <fieldset class="inline"><legend class="small">Events</legend>
+        {{range .Events}}<label class="check"><input type="checkbox" name="events" value="{{.}}" checked> {{.}}</label>{{end}}
+      </fieldset>
+      <div class="inline"><button type="submit">Save webhook</button></div>
+    </form>
+    {{if .Webhook}}<form method="post" action="{{.Org.Path}}/email/webhook" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="remove" value="1"><button type="submit" class="link">remove the webhook</button></form>{{end}}
+    {{end}}
+    <div class="panel"><pre class="cmd">POST {"id": "…", "type": "email.bounced", "message_id": "…", "recipient": "buyer@example.org",
+      "detail": "550 5.1.1 no such user", "created_at": "2026-11-18T10:00:00Z"}
+X-Platform-Signature: sha256=&lt;hex HMAC-SHA256 of the body&gt;</pre></div>
+  </div>
 </section>
 {{end}}

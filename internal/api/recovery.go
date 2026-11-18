@@ -115,7 +115,7 @@ func (s *Server) forgotSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		if err := platmail.Send(s.cfg, email, "Reset your password",
+		if err := s.sendMail(r.Context(), email, "Reset your password",
 			"Someone (hopefully you) asked to reset the password of your Platform account.\n\n"+
 				"Choose a new password here (the link works once, within 1 hour):\n\n"+link+"\n\n"+
 				"If this wasn't you, ignore this message: your password stays the same.\n"); err != nil {
@@ -211,7 +211,7 @@ func (s *Server) resetSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	go func() {
 		if platmail.Configured(s.cfg) {
-			_ = platmail.Send(s.cfg, email, "Your password was changed",
+			_ = s.sendMail(r.Context(), email, "Your password was changed",
 				"The password of your Platform account was just changed. If this wasn't you, contact the platform operator now.\n")
 		}
 	}()

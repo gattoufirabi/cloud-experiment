@@ -797,8 +797,14 @@ eapi() { local t=$1 m=$2 path=$3; shift 3; curl -sS --resolve "console.localhost
 ecode() { local t=$1 m=$2 path=$3; shift 3; eapi "$t" "$m" "$path" -o /dev/null -w '%{http_code}' "$@"; }
 mkdir -p "$TMP/oidc"; (cd .. && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$TMP/oidc/mockoidc" ./scripts/mockoidc) || bad "mock DNS server did not build"
 docker rm -f e2e-dns >/dev/null 2>&1
-MSYS_NO_PATHCONV=1 docker run -d --name e2e-dns --network platform-core -p 8098:8098 -v "$(cygpath -w "$TMP/oidc"):/m:ro" alpine:3.20 /m/mockoidc -addr :8098 -dns :53 >/dev/null
+MSYS_NO_PATHCONV=1 docker run -d --name e2e-dns --network platform-core -p 8098:8098 -v "$(cygpath -w "$TMP/oidc"):/m:ro" alpine:3.20 /m/mockoidc -addr :8098 -dns :53 -smtp :1025 >/dev/null
 dnsset() { curl -sS -X POST -G "http://127.0.0.1:8098/dns/set" --data-urlencode "name=$1" --data-urlencode "txt=$2"; }
+dnsrec() { curl -sS -X POST -G "http://127.0.0.1:8098/dns/set" --data-urlencode "name=$1" --data-urlencode "$2=$3"; }
+sleep 1
+# Direct delivery: every domain's mail server is Mailpit, except bounce.e2e.test (the mock refuses nobody@)
+ipof() { docker inspect -f '{{(index .NetworkSettings.Networks "platform-core").IPAddress}}' "$1"; }
+dnsrec '*' mx mx.e2e.test; dnsrec mx.e2e.test a "$(ipof platform-dev-mailpit-1)"
+dnsrec bounce.e2e.test mx smtp.bounce.e2e.test; dnsrec smtp.bounce.e2e.test a "$(ipof e2e-dns)"
 ED=$A-mail.example.test
 ESEND() { printf '{"from": "Shop <hello@%s>", "to": ["%s"], "subject": "%s", "text": "Thanks for your order.", "html": "<p>Thanks!</p>"}' "$ED" "$1" "$2"; }
 check "[A] invalid domain refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/email/domains" -d csrf=$CSRF_A -d domain=not_a_domain | grep -c 'err=')" 1
@@ -817,7 +823,7 @@ EM_ID=; for _ in $(seq 1 20); do EM_ID=$(curl -s -G "http://localhost:8025/api/v
 EM=$(curl -s "http://localhost:8025/api/v1/message/$EM_ID/raw")
 check "delivered with a DKIM signature of the domain" "$(grep -o "d=$ED; s=$ESEL" <<<"$EM" | head -1)" "d=$ED; s=$ESEL"
 check "text and HTML parts" "$(grep -c -e 'Thanks for your order.' -e '<p>Thanks!</p>' <<<"$EM" | sed 's/^[1-9][0-9]*$/yes/')" yes
-st=; for _ in $(seq 1 10); do st=$(eapi "$TOK_DEV" GET "/messages/$EID" | grep -o '"status":"[a-z]*"' | cut -d'"' -f4); [ "$st" = sent ] && break; sleep 1; done
+st=; for _ in $(seq 1 10); do st=$(eapi "$TOK_DEV" GET "/messages/$EID" | grep -o '"status":"[a-z]*","subject"' | cut -d'"' -f4); [ "$st" = sent ] && break; sleep 1; done
 check "[API] message status is sent" "$st" sent
 check "the body is deleted once sent" "$(owner_sql "SELECT body_text = '' AND body_html = '' FROM email_messages WHERE id = '$EID'")" t
 check "the sending log shows it" "$(c ja "$BASE/o/$A/email" | grep -c "Order $RUN" | sed 's/^[1-9][0-9]*$/yes/')" yes
@@ -829,6 +835,44 @@ check "an email-only token sends (202)" "$(ecode "$ESCOPED" POST /send -d "$(ESE
 check "an email-only token cannot do anything else (403)" "$(ecode "$ESCOPED" GET /domains):$(curl -sS -o /dev/null -w '%{http_code}' --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $ESCOPED" "$BASE/api/v1/queues")" "403:403"
 check "[A] connect email to a service" "$(code_of ja -X POST "$BASE/o/$A/email/attach" -d csrf=$CSRF_A -d service=shop/files)" 303
 check "the service got EMAIL_API_URL and EMAIL_TOKEN" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id WHERE v.slug = 'files' AND s.org_id = (SELECT id FROM orgs WHERE slug = '$A') AND s.name IN ('EMAIL_API_URL', 'EMAIL_TOKEN')")" 2
+check "[API] each recipient's result is reported (delivered)" "$(eapi "$TOK_DEV" GET "/messages/$EID" | grep -o '"status":"delivered"' | head -1)" '"status":"delivered"'
+check "the SPF record to publish is shown" "$(c ja "$BASE/o/$A/email/d/$ED" | grep -c 'v=spf1 include:spf.example.test ~all')" 1
+# Delivery webhook first, so the results below are reported
+HOOK=$(eapi "$TOK_DEV" PUT /webhook -d '{"url": "http://e2e-dns:8098/hook"}')
+HSEC=$(grep -o '"secret":"whsec_[^"]*"' <<<"$HOOK" | cut -d'"' -f4)
+check "[API] delivery webhook saved, its signing secret given once" "$([ -n "$HSEC" ] && echo yes):$(eapi "$TOK_DEV" GET /webhook | grep -c whsec_)" "yes:0"
+check "[API] the webhook secret is stored encrypted" "$(owner_sql "SELECT count(*) FROM email_webhooks WHERE position(convert_to('$HSEC', 'UTF8') in secret_enc) > 0")" 0
+# Hard bounce: the receiving server refuses one recipient for good
+BID=$(eapi "$TOK_DEV" POST /send -d "$(printf '{"from": "hello@%s", "to": ["nobody-%s@bounce.e2e.test", "ok-%s@bounce.e2e.test"], "subject": "Bounce %s", "text": "hi"}' "$ED" "$RUN" "$RUN" "$RUN")" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+st=; for _ in $(seq 1 30); do st=$(eapi "$TOK_DEV" GET "/messages/$BID" | grep -o '"status":"[a-z]*","subject"' | cut -d'"' -f4); [ "$st" = partial ] && break; sleep 1; done
+check "one recipient bounced, the other delivered: the message is partly sent" "$st" partial
+check "the bounce keeps the receiving server's answer" "$(eapi "$TOK_DEV" GET "/messages/$BID" | grep -c '550 5.1.1')" 1
+check "a hard bounce puts the address on the suppression list" "$(eapi "$TOK_DEV" GET /suppressions | grep -c "\"nobody-$RUN@bounce.e2e.test\",\"reason\":\"bounce\"")" 1
+SID=$(eapi "$TOK_DEV" POST /send -d "$(printf '{"from": "hello@%s", "to": ["nobody-%s@bounce.e2e.test"], "subject": "Again %s", "text": "hi"}' "$ED" "$RUN" "$RUN")" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+st=; for _ in $(seq 1 20); do st=$(eapi "$TOK_DEV" GET "/messages/$SID" | grep -o '"status":"[a-z]*","subject"' | cut -d'"' -f4); [ "$st" = failed ] && break; sleep 1; done
+check "a suppressed address is not sent to again" "$st:$(eapi "$TOK_DEV" GET "/messages/$SID" | grep -c '"status":"suppressed"')" "failed:1"
+check "the webhook received the results, signed with the secret" "$(for _ in $(seq 1 30); do L=$(curl -s http://127.0.0.1:8098/hook/log); grep -q 'email.bounced' <<<"$L" && grep -q 'email.delivered' <<<"$L" && grep -q 'email.suppressed' <<<"$L" && { echo yes; break; }; sleep 2; done)" yes
+check "the webhook signature verifies (HMAC-SHA256 of the body)" "$(curl -s http://127.0.0.1:8098/hook/log | grep 'email.bounced' | head -1 | python -c 'import sys,hmac,hashlib; sig,body=sys.stdin.read().strip().split(" ",1); print(hmac.compare_digest(sig, "sha256="+hmac.new(sys.argv[1].encode(), body.encode(), hashlib.sha256).hexdigest()))' "$HSEC" | tr -d '\r')" True
+check "[B->A] B does not see A's suppression list" "$(eapi "$TOK_B" GET /suppressions | grep -c "nobody-$RUN")" 0
+check "[A] the console lists the suppressed address" "$(c ja "$BASE/o/$A/email" | grep -q "<code>nobody-$RUN@bounce.e2e.test</code>" && echo yes)" yes
+check "[API] suppression removed" "$(ecode "$TOK_DEV" DELETE "/suppressions/nobody-$RUN@bounce.e2e.test"):$(eapi "$TOK_DEV" GET /suppressions | grep -c "nobody-$RUN")" "204:0"
+# Attachments
+ATT=$(printf '%%PDF-1.4 invoice %s' "$RUN" | base64 | tr -d '\n')
+AID=$(eapi "$TOK_DEV" POST /send -d "$(printf '{"from": "hello@%s", "to": ["att-%s@example.org"], "subject": "Invoice %s", "text": "Attached.", "attachments": [{"filename": "invoice-%s.pdf", "content_type": "application/pdf", "content": "%s"}]}' "$ED" "$RUN" "$RUN" "$RUN" "$ATT")" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+AM=; for _ in $(seq 1 20); do AM_ID=$(curl -s -G "http://localhost:8025/api/v1/search" --data-urlencode "query=to:att-$RUN@example.org" | grep -o '"ID":"[^"]*"' | head -1 | cut -d'"' -f4); [ -n "$AM_ID" ] && { AM=$(curl -s "http://localhost:8025/api/v1/message/$AM_ID"); break; }; sleep 1; done
+check "[API] an attachment arrives with the message" "$(grep -o "\"FileName\":\"invoice-$RUN.pdf\"" <<<"$AM" | head -1)" "\"FileName\":\"invoice-$RUN.pdf\""
+check "[API] executable attachments are refused (422)" "$(ecode "$TOK_DEV" POST /send -d "$(printf '{"from": "hello@%s", "to": ["x@example.org"], "subject": "x", "text": "x", "attachments": [{"filename": "run.exe", "content": "TVo="}]}' "$ED")")" 422
+# SMTP submission (port 465 through the proxy; plain SMTP in development)
+printf 'From: Shop <hello@%s>\r\nTo: smtp-%s@example.org\r\nBcc: hidden-%s@example.org\r\nSubject: SMTP %s\r\n\r\nSent over SMTP.\r\n' "$ED" "$RUN" "$RUN" "$RUN" > "$TMP/smtp.eml"
+smtp_send() { curl -sS --max-time 20 "smtp://127.0.0.1:1465" --mail-from "hello@$ED" "$@" --upload-file "$(cygpath -w "$TMP/smtp.eml")" 2>&1; }
+check "[SMTP] a message is accepted with the email token" "$(smtp_send --user "token:$ESCOPED" --mail-rcpt "smtp-$RUN@example.org" --mail-rcpt "hidden-$RUN@example.org" >/dev/null && echo yes)" yes
+SM=; for _ in $(seq 1 20); do SM_ID=$(curl -s -G "http://localhost:8025/api/v1/search" --data-urlencode "query=to:smtp-$RUN@example.org" | grep -o '"ID":"[^"]*"' | head -1 | cut -d'"' -f4); [ -n "$SM_ID" ] && { SM=$(curl -s "http://localhost:8025/api/v1/message/$SM_ID/raw"); break; }; sleep 1; done
+check "[SMTP] delivered, signed with the domain's DKIM key; the Bcc recipient got it too" "$(grep -c "d=$ED; s=$ESEL" <<<"$SM" | sed 's/^[1-9][0-9]*$/yes/'):$(curl -s -G "http://localhost:8025/api/v1/search" --data-urlencode "query=hidden-$RUN" | grep -c '"ID"' | sed 's/^[1-9][0-9]*$/yes/')" "yes:yes"
+check "[SMTP] a wrong token is refused (curl: login denied)" "$(smtp_send --user "token:pla_wrong" --mail-rcpt "x-$RUN@example.org" >/dev/null; echo $?)" 67
+printf 'From: someone@unverified-%s.example\r\nTo: x@example.org\r\nSubject: spoof\r\n\r\nx\r\n' "$RUN" > "$TMP/smtp.eml"
+check "[SMTP] a From address outside the verified domains is refused" "$(smtp_send --user "token:$ESCOPED" --mail-rcpt "x-$RUN@example.org" >/dev/null && echo accepted || echo refused)" refused
+check "[A] connecting a service also gives SMTP settings" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id WHERE v.slug = 'files' AND s.org_id = (SELECT id FROM orgs WHERE slug = '$A') AND s.name IN ('SMTP_HOST', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_PASSWORD')")" 4
+check "[API] delivery webhook removed" "$(ecode "$TOK_DEV" DELETE /webhook)" 204
 EMAX=$(owner_sql "SELECT p.max_emails_day FROM plans p JOIN orgs o ON o.plan_id = p.id WHERE o.slug = '$A'")
 owner_sql "UPDATE plans SET max_emails_day = 2 WHERE id = (SELECT plan_id FROM orgs WHERE slug = '$A')" >/dev/null
 check "[API] the daily limit answers 429" "$(ecode "$TOK_DEV" POST /send -d "$(ESEND buyer3-$RUN@example.org over)")" 429
@@ -1342,6 +1386,14 @@ mail_body() { # mail_body <to> <subject text>: body of the newest matching messa
     id=$(curl -s -G "http://localhost:8025/api/v1/search" --data-urlencode "query=to:$1 subject:\"$2\"" | grep -o '"ID":"[^"]*"' | head -1 | cut -d'"' -f4)
     if [ -n "$id" ]; then curl -s "http://localhost:8025/api/v1/message/$id"; return; fi; sleep 1
   done; }
+# Invitations by email: the person gets the join link and joins with it
+INVM="invited-$RUN@example.org"
+check "[A admin] invitation emailed" "$(c ja -X POST "$BASE/o/$A/invites" -d csrf=$CSRF_A -d "email=$INVM" -d role=viewer -d send_email=1 | grep -c "Invitation emailed to $INVM")" 1
+IBODY=$(mail_body "$INVM" "invited you to")
+ILINK=$(grep -o 'invite/[A-Za-z0-9_-]*' <<<"$IBODY" | head -1)
+check "the email carries the join link and the role" "$([ -n "$ILINK" ] && echo yes):$(grep -c 'as viewer' <<<"$IBODY" | sed 's/^[1-9][0-9]*$/yes/')" "yes:yes"
+check "the invited person joins with the emailed link" "$(code_of jinv -X POST "$BASE/$ILINK" --data-urlencode "name=Invited Viewer" --data-urlencode "password=correct-horse-battery-inv" --data-urlencode "password2=correct-horse-battery-inv"):$(owner_sql "SELECT m.role FROM memberships m JOIN users u ON u.id = m.user_id JOIN orgs o ON o.id = m.org_id WHERE o.slug = '$A' AND u.email = '$INVM'")" "303:viewer"
+check "the emailed link works only once" "$(code_of jinv2 "$BASE/$ILINK")" 404
 signup() { # signup <jar> <email> <slug> <challenge> <nonce> [extra curl args]: prints the page
   local jar=$1 em=$2 sl=$3 ch=$4 n=$5; shift 5
   c "$jar" -X POST "$BASE/signup" --data-urlencode "challenge=$ch" -d "nonce=$n" -d "name=Trial Owner" --data-urlencode "email=$em" \
@@ -1688,6 +1740,68 @@ check "[A] domain added from the Domains page" "$(code_of ja -X POST "$BASE/o/$A
 check "[bulk] domain removed from the list" "$(code_of ja -X POST "$BASE/o/$A/domains/actions" -d csrf=$CSRF_A -d action=remove -d confirm=delete -d sel=bulk-$RUN.example.test):$(owner_sql "SELECT count(*) FROM domains WHERE org_id = '$ORG_A' AND hostname = 'bulk-$RUN.example.test'")" "303:0"
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+section "Exposure: private services, extra ports, path routing, public databases"
+admin set-plan --slug "$A" --plan pro >/dev/null
+code_of ja -X POST "$BASE/o/$A/projects" -d csrf=$CSRF_A -d slug=expo -d name=Expo >/dev/null
+# an image answering on two ports: 80 ("main <path>") and 9000 ("admin <path>")
+mkdir -p "$TMP/multiport"
+printf '%s\n' 'FROM nginx:1.27-alpine' 'COPY default.conf /etc/nginx/conf.d/default.conf' > "$TMP/multiport/Dockerfile"
+printf '%s\n' 'server { listen 80; location / { return 200 "main $uri\n"; } }' 'server { listen 9000; location / { return 200 "admin $uri\n"; } }' > "$TMP/multiport/default.conf"
+docker build -q -t "$REG/$A/multiport:1" "$(cygpath -w "$TMP/multiport")" >/dev/null
+echo "$TOK_MX" | dk login $REG -u "$A" --password-stdin >/dev/null; dk push "$REG/$A/multiport:1" >/dev/null
+ex_svc() { # ex_svc <slug> <image> [extra settings]
+  code_of ja -X POST "$BASE/o/$A/p/expo/services" -d csrf=$CSRF_A -d slug=$1 -d image=nginx:1.27-alpine >/dev/null
+  code_of ja -X POST "$BASE/o/$A/p/expo/s/$1/settings" -d csrf=$CSRF_A -d "image=$2" -d port=80 -d health_path=%2F \
+    -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d deploy=1 "${@:3}" >/dev/null; }
+ex_svc front nginx:1.27-alpine; ex_svc api "$REG/$A/multiport:1" -d private=1
+check "[A] two services live, api set to private" "$(wait_status ja /o/$A/p/expo/s/front):$(wait_status ja /o/$A/p/expo/s/api):$(owner_sql "SELECT public FROM services s JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'expo' AND s.slug = 'api'")" "live:live:f"
+ex_get() { curl -s --max-time 10 --resolve "$1:$PORT:127.0.0.1" "http://$1:$PORT$2"; }
+API_HOST=api-expo-$A.apps.localhost
+check "a private service has no public address" "$(sleep 3; ex_get "$API_HOST" / | grep -c 'No application is published')" 1
+EX_FRONT=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'expo' AND s.slug = 'front' AND d.status = 'live'")
+check "but its project's services reach it at its private name" "$(until_is 1 30 sh -c "MSYS_NO_PATHCONV=1 docker exec '$EX_FRONT' wget -qO- -T 5 http://api.expo.internal/hello 2>/dev/null | grep -c 'main /hello'")" 1
+check "the service page says it is private" "$(c ja "$BASE/o/$A/p/expo/s/api" | grep -c '<span class="badge">private</span>')" 1
+# extra public port: make api public again, publish port 9000 as admin.<address>
+code_of ja -X POST "$BASE/o/$A/p/expo/s/api/settings" -d csrf=$CSRF_A -d "image=$REG/$A/multiport:1" -d port=80 -d health_path=%2F -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= >/dev/null
+check "[A] port 9000 published as admin" "$(code_of ja -X POST "$BASE/o/$A/p/expo/s/api/ports" -d csrf=$CSRF_A -d label=admin -d port=9000)" 303
+check "invalid ports refused (the main port, a label starting with pr)" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/expo/s/api/ports" -d csrf=$CSRF_A -d label=other -d port=80 | grep -c 'err='):$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/expo/s/api/ports" -d csrf=$CSRF_A -d label=pr1 -d port=9001 | grep -c 'err=')" "1:1"
+check "the main address and the extra port answer (public again)" "$(until_is 'main /x' 30 sh -c "curl -s --max-time 5 --resolve '$API_HOST:$PORT:127.0.0.1' 'http://$API_HOST:$PORT/x'"):$(until_is 'admin /y' 30 sh -c "curl -s --max-time 5 --resolve 'admin.$API_HOST:$PORT:127.0.0.1' 'http://admin.$API_HOST:$PORT/y'")" "main /x:admin /y"
+check "[API] ports listed" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/expo/services/api/ports" | grep -c '"label":"admin","port":9000')" 1
+check "[B->A] B cannot publish a port on A's service" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_B" -H 'Content-Type: application/json' -d '{"label":"x","port":9100}' "$BASE/api/v1/projects/expo/services/api/ports")" 404
+# path routing: shop-<run>.example.test serves front, /api goes to api with the prefix removed
+EXD=expo-$RUN.example.test
+code_of ja -X POST "$BASE/o/$A/p/expo/s/front/domains" -d csrf=$CSRF_A -d "hostname=$EXD" >/dev/null
+owner_sql "UPDATE domains SET verified_at = now() WHERE hostname = '$EXD'" >/dev/null   # stands in for the DNS check
+EXD_ID=$(owner_sql "SELECT id FROM domains WHERE hostname = '$EXD'")
+check "[A] path /api routed to the api service (prefix removed)" "$(code_of ja -X POST "$BASE/o/$A/p/expo/s/front/domains/$EXD_ID/paths" -d csrf=$CSRF_A -d prefix=/api -d target=expo/api -d strip=1)" 303
+check "an invalid path is refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/expo/s/front/domains/$EXD_ID/paths" -d csrf=$CSRF_A -d prefix=api/ -d target=expo/api | grep -c 'err=')" 1
+owner_sql "SELECT pg_notify('deployments', '')" >/dev/null
+check "the domain sends /api/... to api without the prefix, the rest to front" "$(until_is 'main /orders/7' 30 sh -c "curl -s --max-time 5 --resolve '$EXD:$PORT:127.0.0.1' 'http://$EXD:$PORT/api/orders/7'"):$(ex_get "$EXD" / | grep -c 'Welcome to nginx' | sed 's/^[1-9][0-9]*$/yes/')" "main /orders/7:yes"
+check "a path route works to a private service too" "$(code_of ja -X POST "$BASE/o/$A/p/expo/s/api/settings" -d csrf=$CSRF_A -d "image=$REG/$A/multiport:1" -d port=80 -d health_path=%2F -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d private=1):$(sleep 3; ex_get "$EXD" /api/z)" "303:main /z"
+check "path changes audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE org_id = '$ORG_A' AND action IN ('domain.path_added', 'service.port_published')")" 2
+# public database: PostgreSQL over TLS, only from allowed addresses
+code_of ja -X POST "$BASE/o/$A/p/expo/databases" -d csrf=$CSRF_A -d slug=pubdb -d engine=postgres:17 >/dev/null
+st=; for _ in $(seq 1 90); do st=$(owner_sql "SELECT status FROM databases d WHERE d.org_id = '$ORG_A' AND d.slug = 'pubdb'"); [ "$st" = running ] && break; sleep 2; done
+check "[A] database running" "$st" running
+check "an empty or invalid allow-list is refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/expo/d/pubdb/public" -d csrf=$CSRF_A -d allow=not-an-ip | grep -c 'err=')" 1
+check "[A] public access opened" "$(code_of ja -X POST "$BASE/o/$A/p/expo/d/pubdb/public" -d csrf=$CSRF_A -d 'allow=0.0.0.0/0')" 303
+PUBPORT=$(owner_sql "SELECT pp.public_port FROM public_ports pp JOIN databases d ON d.id = pp.database_id WHERE d.org_id = '$ORG_A' AND d.slug = 'pubdb'")
+DBPAGE=$(c ja "$BASE/o/$A/p/expo/d/pubdb")
+DBPW=$(grep -o '<summary>show</summary><code class="select">[^<]*' <<<"$DBPAGE" | head -1 | sed 's/.*">//')
+check "the page shows the endpoint and its certificate" "$(grep -c "<code class=\"select\">$PUBPORT</code>" <<<"$DBPAGE"):$(grep -c 'BEGIN CERTIFICATE' <<<"$DBPAGE")" "1:1"
+check "the endpoint's key is stored encrypted" "$(owner_sql "SELECT count(*) FROM databases WHERE slug = 'pubdb' AND org_id = '$ORG_A' AND position(convert_to('PRIVATE KEY', 'UTF8') in proxy_key_enc) > 0")" 0
+pgq() { MSYS_NO_PATHCONV=1 docker run --rm postgres:17-alpine psql "host=host.docker.internal port=$PUBPORT dbname=app user=app password=$DBPW $1" -tAc 'SELECT 40 + 2' 2>&1 | tr -d '\r'; }
+check "psql connects from outside with TLS (sslmode=require)" "$(until_is 42 60 pgq 'sslmode=require connect_timeout=5')" 42
+check "a plain-text connection is refused" "$(pgq 'sslmode=disable connect_timeout=5' | grep -c '^42$')" 0
+code_of ja -X POST "$BASE/o/$A/p/expo/d/pubdb/public" -d csrf=$CSRF_A -d 'allow=203.0.113.7' >/dev/null
+check "an address outside the allow-list cannot connect" "$(sleep 25; pgq 'sslmode=require connect_timeout=5' | grep -c '^42$')" 0
+check "[B] cannot open A's database (404)" "$(code_of jb -X POST "$BASE/o/$A/p/expo/d/pubdb/public" -d csrf=$CSRF_B -d 'allow=0.0.0.0/0')" 404
+code_of ja -X POST "$BASE/o/$A/p/expo/d/pubdb/public" -d csrf=$CSRF_A -d close=1 >/dev/null
+check "closing public access removes the endpoint and frees the port" "$(for _ in $(seq 1 30); do [ -z "$(docker ps -q --filter label=platform.dbproxy)" ] && { echo yes; break; }; sleep 2; done):$(owner_sql "SELECT count(*) FROM public_ports pp JOIN databases d ON d.id = pp.database_id WHERE d.slug = 'pubdb' AND d.org_id = '$ORG_A'")" "yes:0"
+check "MySQL offers no public endpoint" "$(code_of ja -X POST "$BASE/o/$A/p/expo/databases" -d csrf=$CSRF_A -d slug=mydb -d engine=mysql:8.4 >/dev/null; c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/expo/d/mydb/public" -d csrf=$CSRF_A -d 'allow=203.0.113.7' | grep -c 'err=')" 1
+code_of ja -X POST "$BASE/o/$A/p/expo/delete" -d csrf=$CSRF_A -d confirm=expo >/dev/null
+admin set-plan --slug "$A" --plan starter >/dev/null
+
 section "Cost reports and budgets"
 # 1000 vCPU-hours this hour in project shop: 10.00 at the starter plan's 1 cent per vCPU-hour
 owner_sql "INSERT INTO usage_hourly (org_id, resource_id, kind, name, hour, cpu_milli_minutes) VALUES ('$ORG_A', gen_random_uuid(), 'service', 'shop/e2e-cost-$RUN', date_trunc('hour', now()), 60000000)" >/dev/null
@@ -1736,7 +1850,7 @@ B_CID=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s
 B_CADDY=$(dx exec "$B_CID" sh -c "grep ' console.localhost' /etc/hosts | awk '{print \$1}'" 2>/dev/null | tr -d '\r')
 check "[B->A] another organization cannot use A's private names" "$(dx exec "$B_CID" wget -qO- -T 5 --header 'Host: api.back.internal' "http://$B_CADDY/" 2>&1 | grep -q 'Welcome to nginx' && echo 1 || echo 0)" 0
 check "the internet cannot use the private names" "$(curl -s --resolve "api.back.internal:$PORT:127.0.0.1" "http://api.back.internal:$PORT/" | grep -q 'Welcome to nginx' && echo 1 || echo 0)" 0
-check "project map: the connected project is drawn" "$(c ja -H 'HX-Request: true' "$BASE/o/$A/p/front/map" | grep -c 'connected project')" 1
+check "project map: the connected project is drawn" "$(c ja -H 'HX-Request: true' "$BASE/o/$A/p/front/map" | grep -q 'connected project' && echo yes)" yes
 check "[API] connections listed with their names" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/front/connections" | grep -c '"api.back.internal"')" 1
 check "[API] only admins connect projects (403 for a developer token)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' -d '{"project":"lone"}' "$BASE/api/v1/projects/front/connections")" 403
 check "[B->A] B cannot connect to A's project" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/p/shop/connections" -d csrf=$CSRF_B -d project=back | grep -c 'not+found\|not%20found')" 1

@@ -27,6 +27,7 @@ import (
 	"platform/internal/billing"
 	"platform/internal/config"
 	"platform/internal/db"
+	"platform/internal/dbproxy"
 	"platform/internal/model"
 	"platform/internal/registry"
 	"platform/internal/secure"
@@ -49,6 +50,11 @@ func main() {
 		err = agent.Run(ctx, cfg)
 	case "migrate":
 		err = migrate(ctx, cfg)
+	case "dbproxy": // public endpoint of a managed database (run by the agent in its own container)
+		var pc dbproxy.Config
+		if pc, err = dbproxy.FromEnv(); err == nil {
+			err = dbproxy.Run(ctx, pc)
+		}
 	case "healthcheck":
 		err = healthcheck(cfg)
 	case "admin":

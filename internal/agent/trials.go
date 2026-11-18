@@ -53,7 +53,7 @@ func (a *Agent) remindTrials(ctx context.Context) {
 				"After that your applications stop (your data is kept). To keep them running, reply to this message "+
 				"or contact the platform operator to choose a plan.\n\n%s/o/%s\n",
 				t.name, days, t.ends.UTC().Format("2 January 2006"), a.cfg.BaseURL, t.slug)
-			if err := mail.Send(a.cfg, to, "Your trial ends soon", body); err != nil {
+			if err := a.sendMail(ctx, to, "Your trial ends soon", body); err != nil {
 				a.log.Warn("trial reminder", "org", t.slug, "err", err)
 				continue
 			}

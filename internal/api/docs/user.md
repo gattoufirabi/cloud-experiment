@@ -96,6 +96,14 @@ Settings take effect at the next deployment: use **Save and deploy**, or **Save 
 
 Every application runs in a sandbox with its own private network, a limit of 256 processes and no special system privileges.
 
+### Public or private
+
+A web service gets a public HTTPS address as soon as it is live. Tick **Private: no public address** in its settings to keep it off the internet: its address and custom domains stop answering, and your other services still reach it at `http://<service>.<project>.internal` (see [Private network between projects](#private-network-between-projects)). A path of a public domain can still send traffic to it (below).
+
+### More public ports
+
+A service that listens on several HTTP ports (an app on 80 and an admin interface on 9000, say) can publish the others on its **Domains** tab, under **More public ports**: a label and a port give `https://<label>.<service address>`, with HTTPS. Up to 5 per service. API: `GET/POST /api/v1/projects/PROJECT/services/SERVICE/ports` (`{"label": "admin", "port": 9000}`), `DELETE …/ports/LABEL`.
+
 ## Project variables
 
 Settings that every service of a project needs (an API key, a base address, a feature flag) can be set once on the project instead of on each service.
@@ -283,6 +291,7 @@ Managed PostgreSQL, MySQL, MariaDB, MongoDB, Redis and Apache Kafka run next to 
 - **MongoDB:** the database `app` and user `app` (an administrator of this server only) are created for you. It starts with 512 MB, its minimum (its first start runs a shell next to the server). The storage engine's cache gets 40% of the memory (0.25 GB at least). A restore (`mongorestore --drop`) replaces each collection in the snapshot; collections created after it are left in place.
 - **Redis memory:** Redis uses at most 80% of the memory you give it and then refuses new writes instead of evicting keys, so size it for your data.
 - **Apache Kafka (streaming):** choose **Apache Kafka 3.9** to get a single-broker Kafka (KRaft mode, no ZooKeeper) on the project's private network, for event streams between your services. **Add secret** stores `KAFKA_URL`, such as `kafka://app:…@pd-…:9092?security.protocol=SASL_PLAINTEXT&sasl.mechanism=PLAIN`: give your Kafka client the bootstrap server `pd-…:9092`, security protocol `SASL_PLAINTEXT`, mechanism `PLAIN`, user `app` and the password. Topics are created on first use; messages are kept for 7 days. It needs at least 512 MB (60% for the JVM heap). Kafka is **not backed up**: keep data you need in a database or a bucket.
+- **Public access** (admins, PostgreSQL, Redis and MongoDB): on the database's **Connect** tab, list the addresses allowed to connect (your office, a server in another cloud) and click **Open public access**. The database gets a public port with TLS required, using its own certificate (shown on the page: pass it as `sslrootcert` for `sslmode=verify-full`, `--cacert` for Redis, `tlsCAFile` for MongoDB). Connections from any other address are dropped before they reach the database, and plain-text connections are refused. MySQL, MariaDB and Kafka negotiate TLS inside their own protocols and have no public endpoint yet. The public port counts against your plan's public ports.
 - **Plans:** Starter includes 1 managed database, Pro includes 5 (all engines together).
 
 ## Functions
@@ -352,15 +361,24 @@ Sending from your code: **Use from code** › **Connect to a service** stores `E
 curl -X POST -H "Authorization: Bearer $EMAIL_TOKEN" -H 'Content-Type: application/json' $EMAIL_API_URL -d '{"from": "Shop <hello@example.com>", "to": ["buyer@example.org"], "subject": "Your order", "text": "Thanks!", "html": "<p>Thanks!</p>"}'
 ```
 
-The answer is `202` with the message's id; `GET /api/v1/email/messages/ID` gives its status (`queued`, `sent` or `failed`).
+The answer is `202` with the message's id; `GET /api/v1/email/messages/ID` gives its status (`queued`, `sent`, `partial` when only some recipients got it, or `failed`) and each recipient's result with the receiving server's answer.
+
+**Attachments:** add `"attachments": [{"filename": "invoice.pdf", "content_type": "application/pdf", "content": "<base64>"}]`, up to 20 files and 10 MB per message. Programs and scripts (`.exe`, `.js`, `.bat`…) are refused, as mail providers would.
+
+**SMTP**, for software that only speaks SMTP (WordPress, Django, Rails, Nodemailer…): host = the console's host name, port **465** with TLS from the start ("SSL/TLS", not STARTTLS), any user name, and the email token as the password. **Connect to a service** also stores `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME` and `SMTP_PASSWORD`. The same rules apply as with the API: the From address must use one of your verified domains; Bcc headers are removed before sending.
+
+**Bounces and the suppression list:** when a recipient's mail server refuses an address for good (an unknown mailbox, a domain that does not exist), the address goes on your organization's **Suppression list** and later messages skip it (that recipient is marked `suppressed`), which protects your domain's reputation. You can also add addresses yourself, and remove one once you know it works again. API: `GET/POST /api/v1/email/suppressions`, `DELETE /api/v1/email/suppressions/ADDRESS`.
+
+**Delivery webhook:** on the **Webhook** tab, give a URL; the platform calls it with a JSON body for each recipient's result (`email.delivered`, `email.bounced`, `email.failed`, `email.suppressed`) and `X-Platform-Signature: sha256=<HMAC-SHA256 of the body>` made with the signing secret shown when you save it. Failed calls are retried for about a day. API: `GET/PUT/DELETE /api/v1/email/webhook`.
 
 Good to know:
 
-- Up to 50 recipients and 256 KB per message; your plan sets the number of emails a day and of sending domains.
-- Messages that cannot be delivered are retried for about half an hour, then marked failed with the reason.
-- The **Sending log** shows the last 100 messages. Bodies are deleted as soon as a message is sent; the log keeps 30 days.
+- The platform delivers your messages itself, straight to each recipient's mail server, signed with your domain's DKIM key. Add the SPF record shown on the domain's page so receivers know this platform may send for your domain, and keep the DMARC record.
+- Up to 50 recipients per message; your plan sets the number of emails a day and of sending domains.
+- Temporary refusals (a full mailbox, a busy server) are retried for about half an hour, then the recipient is marked failed with the reason.
+- The **Sending log** shows the last 100 messages with each one's delivered, bounced, suppressed and failed counts. Bodies are deleted as soon as a message is done; the log keeps 30 days.
 - The platform rechecks verified domains daily; if the records disappear, sending from the domain pauses until they are back.
-- Emails are billed per recipient, per thousand.
+- Emails are billed per delivered recipient, per thousand.
 
 ## Object storage
 
@@ -415,6 +433,10 @@ Every service is always reachable at its platform address; you can add your own 
 4. Click **Verify**. DNS changes can take a few minutes; try again if the record is not found yet.
 
 Once verified, the domain serves the application within seconds, and an HTTPS certificate is issued on the first visit. Starter plans allow 3 custom domains, Pro plans 20. A domain can belong to only one organization.
+
+### Paths served by other services
+
+One domain can front several services: under a verified custom domain, add a path (such as `/api`) and the service that serves it. Requests for `/api` and everything below go to that service, the rest to the domain's own service. Tick **remove the prefix** when the target expects `/orders` rather than `/api/orders`. The target can be any web service of the organization, private ones included; the longest matching path wins. Up to 20 paths per domain.
 
 ## DNS hosting
 
@@ -693,7 +715,7 @@ Each member has one role per organization; each role includes everything the rol
 | admin | Create and delete projects; invite and remove members; create registry tokens; manage alert channels; restore backups; read the audit log. |
 | owner | Everything, including inviting or removing owners. An organization always keeps at least one owner. |
 
-- **Invite:** on the **Members** tab, enter the email and role, then send the link shown. It is displayed once, works once, and expires in 7 days.
+- **Invite:** on the **Members** tab, enter the email and role and click **Invite**. The person receives an email with a link to create their account and join (someone who already has an account confirms with their password). The link is also shown to you once, in case the email does not arrive: it works once and expires in 7 days.
 - **Audit log** (admins): every action, with who, when and from which IP address. Entries are chained, so they cannot be altered without detection.
 
 ### Access to some projects only

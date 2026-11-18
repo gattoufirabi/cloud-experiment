@@ -42,7 +42,42 @@
       </dl>
       {{if .CanEdit}}<details><summary>Connection URL</summary><code class="select wrap">{{.URL}}</code></details>{{end}}
     </div>
-    <p class="small muted">The host name only resolves inside this project's network, so connect from a service of the project. The connection is not reachable from the internet.</p>
+    <p class="small muted">The host name only resolves inside this project's network, so connect from a service of the project.{{if not .Public.Enabled}} The connection is not reachable from the internet.{{end}}</p>
+  </div>
+  <div class="section" id="public">
+    <h2>Public access</h2>
+    {{if not .PublicEngine}}
+    <p class="small muted">Not available for {{.Database.Label}}: it negotiates TLS inside its own protocol. Connect from a service of the project, or open a private connection from another project.</p>
+    {{else if .Public.Enabled}}
+    <p><span class="badge">open</span> Reachable from the internet over TLS, only from: {{range $i, $a := .Public.Allow}}{{if $i}}, {{end}}<code>{{$a}}</code>{{end}}.</p>
+    <div class="panel">
+      <dl class="kv">
+        <dt>host</dt><dd><code class="select">{{.Public.Host}}</code>{{with .Public.IP}} <span class="muted small">({{.}})</span>{{end}}</dd>
+        <dt>port</dt><dd><code class="select">{{.Public.Port}}</code></dd>
+        <dt>TLS</dt><dd>required; {{if eq .Database.Engine "postgres"}}<code>sslmode=require</code>, or <code>verify-full</code> with the certificate below as <code>sslrootcert</code>{{else if eq .Database.Engine "redis"}}<code>rediss://</code>{{else}}<code>tls=true</code>{{end}}</dd>
+      </dl>
+      {{if .CanEdit}}<details><summary>Example</summary><pre class="cmd select wrap">{{if eq .Database.Engine "postgres"}}psql "postgres://{{.Database.Username}}:PASSWORD@{{.Public.Host}}:{{.Public.Port}}/{{.Database.DBName}}?sslmode=verify-full&amp;sslrootcert=db.crt"{{else if eq .Database.Engine "redis"}}redis-cli -u "rediss://default:PASSWORD@{{.Public.Host}}:{{.Public.Port}}/0" --cacert db.crt{{else}}mongosh "mongodb://{{.Database.Username}}:PASSWORD@{{.Public.Host}}:{{.Public.Port}}/{{.Database.DBName}}?authSource=admin&amp;tls=true&amp;tlsCAFile=db.crt"{{end}}</pre></details>{{end}}
+      <details><summary>Certificate (save as db.crt)</summary><pre class="cmd select wrap">{{.Public.Cert}}</pre></details>
+    </div>
+    {{if .CanAdmin}}
+    <form method="post" action="{{.Path}}/public" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="allow" value="{{range $i, $a := .Public.Allow}}{{if $i}}, {{end}}{{$a}}{{end}}" size="40" required aria-label="Allowed addresses">
+      <button type="submit" class="secondary">Update the allow-list</button>
+    </form>
+    <form method="post" action="{{.Path}}/public" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="close" value="1"><button type="submit" class="danger small">Close public access</button></form>
+    {{end}}
+    {{else}}
+    <p class="small muted">Open the database to tools outside the platform (your laptop, another cloud): a TLS endpoint on a public port, only for the addresses you list. Everyone else cannot even open a connection. Admins only.</p>
+    {{if .CanAdmin}}
+    <form method="post" action="{{.Path}}/public" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input name="allow" value="{{.MyIP}}" size="40" required aria-label="Allowed addresses" placeholder="203.0.113.7, 198.51.100.0/24">
+      <button type="submit" class="secondary">Open public access</button>
+    </form>
+    <p class="small muted">Addresses or ranges, separated by commas (prefilled with your current address). <code>0.0.0.0/0</code> would allow everyone: avoid it.</p>
+    {{end}}
+    {{end}}
   </div>
   {{if .CanEdit}}
   <div class="section">

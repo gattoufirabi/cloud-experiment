@@ -227,6 +227,7 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 func (s *Server) databasePage(w http.ResponseWriter, r *http.Request) {
 	var services []string
 	var backups *backupView
+	var pub dbPublic
 	o, p, d, err, ok := s.withDatabase(w, r, "viewer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, d *databaseInfo) error {
 		rows, err := tx.Query(r.Context(), `SELECT slug FROM services WHERE project_id = $1 AND preview_of IS NULL ORDER BY slug`, p.ID)
 		if err != nil {
@@ -235,7 +236,10 @@ func (s *Server) databasePage(w http.ResponseWriter, r *http.Request) {
 		if services, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
 			return err
 		}
-		backups, err = loadTargetBackups(r, tx, "database_id", d.ID, d.BackupEnabled, d.BackupHour)
+		if backups, err = loadTargetBackups(r, tx, "database_id", d.ID, d.BackupEnabled, d.BackupHour); err != nil {
+			return err
+		}
+		pub, err = s.loadDBPublic(r, tx, o, p, d)
 		return err
 	})
 	if !ok {
@@ -249,6 +253,7 @@ func (s *Server) databasePage(w http.ResponseWriter, r *http.Request) {
 	d2 := data{
 		"Org": o, "Project": p, "Database": d, "Services": services, "Backups": backups,
 		"Path": dbPath(o, p, d), "CanEdit": canEdit, "CanRestore": model.RoleAtLeast(o.Role, "admin"),
+		"Public": pub, "PublicEngine": publicEngine(d.Engine), "MyIP": clientIP(r), "CanAdmin": model.RoleAtLeast(o.Role, "admin"),
 	}
 	if canEdit { // viewers never receive the password
 		d2["Password"], d2["URL"] = s.dbPassword(d), s.dbURL(d)
