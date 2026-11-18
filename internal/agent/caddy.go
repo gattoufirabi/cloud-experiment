@@ -102,7 +102,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		LEFT JOIN domains dm ON dm.service_id = s.id
 		WHERE d.status = 'live' AND NOT o.suspended AND d.container_name IS NOT NULL
 		  AND NOT coalesce((d.spec->>'worker')::boolean, false) -- workers have no public address
-		GROUP BY d.id, s.id, ps.slug, p.slug, o.slug, d.upstream, d.instances, o.id, p.id
+		GROUP BY d.id, s.id, ps.slug, ps.public, p.slug, o.slug, d.upstream, d.instances, o.id, p.id
 		ORDER BY o.slug, p.slug, s.slug`)
 	if err != nil {
 		return nil, err
