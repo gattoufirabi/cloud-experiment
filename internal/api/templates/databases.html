@@ -12,12 +12,25 @@
     <input type="search" data-filter="databases-table" placeholder="Find databases by name, project or engine" aria-label="Find databases">
   </div>
   {{if .Databases}}
+  {{if .CanEdit}}
+  <form method="post" action="{{.Org.Path}}/databases/actions" id="bulk" class="bulkbar" data-bulk="databases-table">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <span class="bulk-count" aria-live="polite">Select databases to act on them</span>
+    <select name="action" aria-label="Action">
+      <option value="">Actions</option>
+      <option value="backup">Back up now</option>
+      <option value="delete">Delete (admins)</option>
+    </select>
+    <input name="confirm" placeholder="type delete to confirm" size="18" aria-label="Type delete to confirm">
+    <button type="submit" class="secondary small">Apply</button>
+  </form>
+  {{end}}
   <div class="scroll-x">
   <table id="databases-table" class="resources">
-    <thead><tr><th>Name</th><th>Project</th><th>Engine</th><th>Status</th><th>Resources</th><th>Created</th></tr></thead>
+    <thead><tr>{{if $.CanEdit}}<th class="sel"><input type="checkbox" data-select-all="databases-table" aria-label="Select all databases"></th>{{end}}<th>Name</th><th>Project</th><th>Engine</th><th>Status</th><th>Resources</th><th>Created</th></tr></thead>
     <tbody>
     {{range .Databases}}
-      <tr><td><a href="{{$.Org.Path}}/p/{{.Project}}/d/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
+      <tr>{{if $.CanEdit}}<td class="sel"><input type="checkbox" name="sel" value="{{.Project}}/{{.Slug}}" form="bulk" aria-label="Select {{.Project}}/{{.Slug}}"></td>{{end}}<td><a href="{{$.Org.Path}}/p/{{.Project}}/d/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
         <td><a href="{{$.Org.Path}}/p/{{.Project}}">{{.ProjectName}}</a></td>
         <td>{{engineName .Engine}} {{.Version}}</td>
         <td>{{template "status" (dbStatus .Status)}}</td>

@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -33,15 +34,16 @@ import (
 )
 
 type Agent struct {
-	cfg       config.Config
-	pool      *pgxpool.Pool
-	dk        *docker.Client
-	box       *secure.Box
-	hostIndex map[string]hostRef // application host -> organization/service (access logs)
-	caddy     *caddyClient
-	logs      *logShipper
-	wake      chan struct{}
-	log       *slog.Logger
+	cfg        config.Config
+	pool       *pgxpool.Pool
+	dk         *docker.Client
+	box        *secure.Box
+	hostIndex  map[string]hostRef // application host -> organization/service (access logs)
+	bucketTrig bucketTriggers     // bucket -> function triggers (S3 requests seen by the proxy)
+	caddy      *caddyClient
+	logs       *logShipper
+	wake       chan struct{}
+	log        *slog.Logger
 
 	scanWake    chan struct{}
 	trivyPulled bool
@@ -60,6 +62,9 @@ type Agent struct {
 	moveWake      chan struct{}
 	queueWake     chan struct{}
 	emailWake     chan struct{}
+	alarmWake     chan struct{}
+	dnsWake       chan struct{}
+	dnsData       atomic.Value // *dnsData: the hosted zones served
 	fn            *fnState
 	alertHTTP     *http.Client
 	probeFails    map[string]int
@@ -138,6 +143,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 		moveWake:      make(chan struct{}, 1),
 		queueWake:     make(chan struct{}, 1),
 		emailWake:     make(chan struct{}, 1),
+		alarmWake:     make(chan struct{}, 1),
+		dnsWake:       make(chan struct{}, 1),
 		fn:            newFnState(),
 		alertHTTP:     newAlertHTTP(cfg.AlertAllowPrivate),
 		probeFails:    map[string]int{},
@@ -177,6 +184,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.emailLoop(ctx)
 	go a.scrapeLoop(ctx)
 	go a.accessLogLoop(ctx)
+	go a.alarmLoop(ctx)
+	go a.dnsLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)
@@ -238,6 +247,10 @@ func (a *Agent) listen(ctx context.Context) {
 							a.pokeQueues()
 						case "email":
 							a.pokeEmail()
+						case "alarms":
+							a.pokeAlarms()
+						case "dns":
+							a.pokeDNS()
 						default:
 							a.poke()
 						}

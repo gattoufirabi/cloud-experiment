@@ -1,7 +1,7 @@
 {{define "title"}}Domains · {{.Org.Name}}{{end}}
 {{define "content"}}
 <div class="head"><h1>Custom domains</h1></div>
-<p class="lede">Your own domain names, each pointing at a service, with automatic HTTPS. Add one from the service's <strong>Domains</strong> tab. Every web service also has an address under <code>{{.AppsDomain}}</code>.</p>
+<p class="lede">Your own domain names, each pointing at a service, with automatic HTTPS. Add one below or from the service's <strong>Domains</strong> tab. Every web service also has an address under <code>{{.AppsDomain}}</code>.</p>
 <p class="help"><a href="/docs/user#custom-domains-and-https" target="_blank" rel="noopener">Guide: custom domains ↗</a></p>
 <div class="section">
   <div class="table-tools">
@@ -9,12 +9,24 @@
     <input type="search" data-filter="domains-table" placeholder="Find domains" aria-label="Find domains">
   </div>
   {{if .Domains}}
+  {{if .CanEdit}}
+  <form method="post" action="{{.Org.Path}}/domains/actions" id="bulk" class="bulkbar" data-bulk="domains-table">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <span class="bulk-count" aria-live="polite">Select domains to act on them</span>
+    <select name="action" aria-label="Action">
+      <option value="">Actions</option>
+      <option value="remove">Remove</option>
+    </select>
+    <input name="confirm" placeholder="type delete to confirm" size="18" aria-label="Type delete to confirm">
+    <button type="submit" class="secondary small">Apply</button>
+  </form>
+  {{end}}
   <div class="scroll-x">
   <table id="domains-table" class="resources">
-    <thead><tr><th>Domain</th><th>Service</th><th>Status</th><th>Added</th></tr></thead>
+    <thead><tr>{{if $.CanEdit}}<th class="sel"><input type="checkbox" data-select-all="domains-table" aria-label="Select all domains"></th>{{end}}<th>Domain</th><th>Service</th><th>Status</th><th>Added</th></tr></thead>
     <tbody>
     {{range .Domains}}
-      <tr><td><strong>{{.Hostname}}</strong></td>
+      <tr>{{if $.CanEdit}}<td class="sel"><input type="checkbox" name="sel" value="{{.Hostname}}" form="bulk" aria-label="Select {{.Hostname}}"></td>{{end}}<td><strong>{{.Hostname}}</strong></td>
         <td><a href="{{$.Org.Path}}/p/{{.Project}}/s/{{.Service}}#domains">{{.Project}}/{{.Service}}</a></td>
         <td>{{if .Verified}}<span class="st st-live">verified</span>{{else}}<span class="st st-pending">waiting for DNS</span>{{end}}</td>
         <td class="nowrap">{{ago .Created}}</td></tr>
@@ -24,4 +36,16 @@
   </div>
   {{else}}<p class="small muted">No custom domains {{if .Scope}}in this project{{else}}yet{{end}}.</p>{{end}}
 </div>
+{{if and .CanEdit .WebServices}}
+<div class="section" id="add">
+  <h2>Add a domain</h2>
+  <form method="post" action="{{.Org.Path}}/domains" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input name="hostname" placeholder="shop.example.com" required aria-label="Domain">
+    <select name="service" aria-label="Service">{{range .WebServices}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+    <button type="submit" class="arrow">Add domain</button>
+  </form>
+  <p class="small muted">You then create the DNS records shown on the service's Domains tab (or in a hosted DNS zone) and click Verify.</p>
+</div>
+{{end}}
 {{end}}

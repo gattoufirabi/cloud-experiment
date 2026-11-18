@@ -86,6 +86,15 @@ func (s *Server) loadNav(r *http.Request, o *orgInfo) []navProject {
 		}
 		return frows.Err()
 	})
+	if o.Scoped { // a member limited to some projects sees only those in the tree
+		kept := out[:0]
+		for _, p := range out {
+			if o.sees(p.Slug) {
+				kept = append(kept, p)
+			}
+		}
+		out = kept
+	}
 	return out
 }
 

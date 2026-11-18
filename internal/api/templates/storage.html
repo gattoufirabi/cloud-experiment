@@ -26,12 +26,24 @@
   <p class="help"><a href="/docs/user#object-storage" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
   <div class="section">
     {{if .Buckets}}
+  {{if .CanEdit}}
+  <form method="post" action="{{.Org.Path}}/storage/actions" id="bulk" class="bulkbar" data-bulk="buckets-table">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <span class="bulk-count" aria-live="polite">Select buckets to act on them</span>
+    <select name="action" aria-label="Action">
+      <option value="">Actions</option>
+      <option value="delete">Delete with their objects (admins)</option>
+    </select>
+    <input name="confirm" placeholder="type delete to confirm" size="18" aria-label="Type delete to confirm">
+    <button type="submit" class="secondary small">Apply</button>
+  </form>
+  {{end}}
     <div class="scroll-x">
-    <table>
-      <thead><tr><th>Bucket</th><th>S3 name</th><th class="num">Objects</th><th>Used</th><th>Access</th></tr></thead>
+    <table id="buckets-table">
+      <thead><tr>{{if $.CanEdit}}<th class="sel"><input type="checkbox" data-select-all="buckets-table" aria-label="Select all buckets"></th>{{end}}<th>Bucket</th><th>S3 name</th><th class="num">Objects</th><th>Used</th><th>Access</th></tr></thead>
       <tbody>
       {{range .Buckets}}
-        <tr><td><a href="{{$.Org.Path}}/storage/b/{{.Name}}"><strong>{{.Name}}</strong></a></td>
+        <tr>{{if $.CanEdit}}<td class="sel"><input type="checkbox" name="sel" value="{{.Name}}" form="bulk" aria-label="Select {{.Name}}"></td>{{end}}<td><a href="{{$.Org.Path}}/storage/b/{{.Name}}"><strong>{{.Name}}</strong></a></td>
           <td><code>{{.FullName}}</code></td><td class="num">{{.Objects}}</td>
           <td class="nowrap"><progress class="meter" max="100" value="{{.UsedPercent}}" aria-label="{{.UsedPercent}}% of the quota"></progress> {{printf "%.1f" .UsedMB}} / {{.QuotaMB}} MB</td>
           <td>{{if .Website}}<span class="badge">public website</span>{{else}}private{{end}}</td></tr>

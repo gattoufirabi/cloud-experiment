@@ -55,11 +55,11 @@ func (s *Server) apiAuth(minRole string, h func(http.ResponseWriter, *http.Reque
 		}
 		var o orgInfo
 		var name, role string
-		var createdBy, queueScope *string
+		var createdBy, queueScope, projectScope *string
 		var emailOnly bool
 		err := s.pool.QueryRow(r.Context(), `
-			SELECT token_name, role, created_by::text, org_id, org_slug, org_name, plan_id, scan_policy, queue_id::text, email_only FROM api_token_check($1)`,
-			secure.HashToken(tok)).Scan(&name, &role, &createdBy, &o.ID, &o.Slug, &o.Name, &o.PlanID, &o.ScanPolicy, &queueScope, &emailOnly)
+			SELECT token_name, role, created_by::text, org_id, org_slug, org_name, plan_id, scan_policy, queue_id::text, email_only, project_slug FROM api_token_check($1)`,
+			secure.HashToken(tok)).Scan(&name, &role, &createdBy, &o.ID, &o.Slug, &o.Name, &o.PlanID, &o.ScanPolicy, &queueScope, &emailOnly, &projectScope)
 		if err != nil {
 			if !s.limiter.allow("api-fail:"+ip, 30, 10*time.Minute) {
 				apiError(w, http.StatusTooManyRequests, "too many failed attempts")
@@ -86,6 +86,14 @@ func (s *Server) apiAuth(minRole string, h func(http.ResponseWriter, *http.Reque
 				return
 			}
 			ctx = context.WithValue(ctx, apiQueueScopeKey, *queueScope)
+		}
+		if projectScope != nil { // a project token only reaches that project
+			p := r.URL.Path
+			if p != "/api/v1/me" && p != "/api/v1/projects/"+*projectScope && !strings.HasPrefix(p, "/api/v1/projects/"+*projectScope+"/") {
+				apiError(w, http.StatusForbidden, "this token only works for project "+*projectScope)
+				return
+			}
+			o.Scoped, o.Projects = true, map[string]string{*projectScope: role}
 		}
 		if emailOnly && !(r.Method == http.MethodPost && r.URL.Path == "/api/v1/email/send") &&
 			!(r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/email/messages/")) {
@@ -148,6 +156,14 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("DELETE /api/v1/projects/{project}/functions/{fn}", s.apiAuth("developer", s.apiDeleteFunction))
 	m.HandleFunc("POST /api/v1/projects/{project}/functions/{fn}/invoke", s.apiAuth("developer", s.apiInvoke))
 	m.HandleFunc("GET /api/v1/projects/{project}/functions/{fn}/invocations", s.apiAuth("viewer", s.apiInvocations))
+	m.HandleFunc("GET /api/v1/dns/zones", s.apiAuth("viewer", s.apiDNSZones))
+	m.HandleFunc("POST /api/v1/dns/zones", s.apiAuth("developer", s.apiAddDNSZone))
+	m.HandleFunc("GET /api/v1/dns/zones/{zone}/records", s.apiAuth("viewer", s.apiDNSRecords))
+	m.HandleFunc("POST /api/v1/dns/zones/{zone}/records", s.apiAuth("developer", s.apiAddDNSRecord))
+	m.HandleFunc("DELETE /api/v1/dns/zones/{zone}/records/{id}", s.apiAuth("developer", s.apiDeleteDNSRecord))
+	m.HandleFunc("GET /api/v1/alarms", s.apiAuth("viewer", s.apiAlarms))
+	m.HandleFunc("POST /api/v1/alarms", s.apiAuth("developer", s.apiCreateAlarm))
+	m.HandleFunc("DELETE /api/v1/alarms/{id}", s.apiAuth("developer", s.apiDeleteAlarm))
 	m.HandleFunc("GET /api/v1/email/domains", s.apiAuth("viewer", s.apiEmailDomains))
 	m.HandleFunc("POST /api/v1/email/domains", s.apiAuth("developer", s.apiAddEmailDomain))
 	m.HandleFunc("DELETE /api/v1/email/domains/{domain}", s.apiAuth("developer", s.apiDeleteEmailDomain))
@@ -471,21 +487,39 @@ func (s *Server) createAPIToken(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	role := r.PostFormValue("role")
+	project := r.PostFormValue("project") // empty: the whole organization
+	if project != "" && role == "admin" {
+		back(w, r, o.Path()+"/iam#api", "", "A token limited to a project can be viewer or developer.")
+		return
+	}
 	if name == "" || len(name) > 60 || (role != "viewer" && role != "developer" && role != "admin") {
 		back(w, r, o.Path()+"/iam#api", "", "Give the token a name (up to 60 characters) and a role.")
 		return
 	}
 	token := apiTokenPrefix + secure.NewToken()
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+		var projectID any
+		if project != "" {
+			var id string
+			if err := tx.QueryRow(r.Context(), `SELECT id FROM projects WHERE slug = $1`, project).Scan(&id); err != nil {
+				return apiErr{http.StatusUnprocessableEntity, "Choose a project."}
+			}
+			projectID = id
+		}
 		if _, err := tx.Exec(r.Context(), `
-			INSERT INTO api_tokens (org_id, name, token_hash, role, created_by, expires_at)
-			VALUES ($1, $2, $3, $4, $5, now() + interval '1 year')`,
-			o.ID, name, secure.HashToken(token), role, sessionFrom(r).UserID); err != nil {
+			INSERT INTO api_tokens (org_id, name, token_hash, role, created_by, expires_at, project_id)
+			VALUES ($1, $2, $3, $4, $5, now() + interval '1 year', $6)`,
+			o.ID, name, secure.HashToken(token), role, sessionFrom(r).UserID, projectID); err != nil {
 			return err
 		}
-		s.audit(r, tx, o.ID, "api_token.created", "token:"+name, map[string]string{"role": role})
+		s.audit(r, tx, o.ID, "api_token.created", "token:"+name, map[string]string{"role": role, "project": project})
 		return nil
 	})
+	var ae apiErr
+	if errors.As(err, &ae) {
+		back(w, r, o.Path()+"/iam#api", "", ae.msg)
+		return
+	}
 	if err != nil {
 		s.serverError(w, r, err)
 		return

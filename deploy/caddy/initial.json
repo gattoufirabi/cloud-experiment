@@ -9,7 +9,8 @@
     "logs": {
       "default": {
         "exclude": [
-          "http.log.access.tenant"
+          "http.log.access.tenant",
+          "http.log.access.s3"
         ]
       },
       "tenant": {
@@ -21,6 +22,17 @@
         },
         "include": [
           "http.log.access.tenant"
+        ]
+      },
+      "s3": {
+        "writer": {
+          "output": "stdout"
+        },
+        "encoder": {
+          "format": "json"
+        },
+        "include": [
+          "http.log.access.s3"
         ]
       }
     }

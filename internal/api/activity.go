@@ -205,6 +205,15 @@ func (s *Server) activityJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "error", http.StatusInternalServerError)
 		return
 	}
+	if o.Scoped { // a member limited to some projects sees only their activity
+		kept := items[:0]
+		for _, it := range items {
+			if proj, _, _ := strings.Cut(it.Label, "/"); o.sees(proj) {
+				kept = append(kept, it)
+			}
+		}
+		items = kept
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, map[string]any{"items": items})
 }

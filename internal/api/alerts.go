@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	alertKinds = []string{"service_down", "deploy_failed", "backup_failed", "critical_vulns", "cpu_high", "memory_high", "job_failed"}
+	alertKinds = []string{"service_down", "deploy_failed", "backup_failed", "critical_vulns", "cpu_high", "memory_high", "job_failed", "metric_alarm"}
 	topicRe    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 )
 

@@ -29,6 +29,7 @@ type serviceInfo struct {
 	MetricsPath                             string // Prometheus endpoint scraped by the platform ("" = none)
 	MetricsPort                             int    // 0 = the service's port
 	AnalyticsKey                            string // web analytics script key ("" = off)
+	EdgeCache                               bool   // the proxy caches responses that allow it
 	PreviewName, ParentSlug                 string // set for preview environments
 	Expires                                 *time.Time
 }
@@ -55,12 +56,12 @@ func (s *Server) loadService(r *http.Request, tx pgx.Tx, projectID string) (*ser
 	err := tx.QueryRow(r.Context(), `
 		SELECT s.id, s.slug, s.image, s.health_path, s.volume_path, s.port, s.cpu_millis, s.memory_mb, s.env,
 		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker, s.instances, s.ports,
-		       s.autoscale_min, s.autoscale_max, s.autoscale_cpu, s.metrics_path, s.metrics_port, coalesce(s.analytics_key, '')
+		       s.autoscale_min, s.autoscale_max, s.autoscale_cpu, s.metrics_path, s.metrics_port, coalesce(s.analytics_key, ''), s.edge_cache
 		FROM services s LEFT JOIN services ps ON ps.id = s.preview_of
 		WHERE s.project_id = $1 AND s.slug = $2`, projectID, r.PathValue("service")).
 		Scan(&sv.ID, &sv.Slug, &sv.Image, &sv.HealthPath, &sv.VolumePath, &sv.Port, &sv.CPUMillis, &sv.MemoryMB, &sv.Env,
 			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker, &sv.Instances, &sv.Ports, &sv.AutoMin, &sv.AutoMax, &sv.AutoCPU,
-			&sv.MetricsPath, &sv.MetricsPort, &sv.AnalyticsKey)
+			&sv.MetricsPath, &sv.MetricsPort, &sv.AnalyticsKey, &sv.EdgeCache)
 	if sv.Env == nil {
 		sv.Env = map[string]string{}
 	}
@@ -384,8 +385,8 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			formErr = "Metrics: a path such as /metrics, and a port from 1 to 65535 (empty: the service's port)."
 			return nil
 		}
-		if _, err := tx.Exec(r.Context(), `UPDATE services SET autoscale_min = $2, autoscale_max = $3, autoscale_cpu = $4, metrics_path = $5, metrics_port = $6 WHERE id = $1`,
-			sv.ID, autoMin, autoMax, autoCPU, metricsPath, metricsPort); err != nil {
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET autoscale_min = $2, autoscale_max = $3, autoscale_cpu = $4, metrics_path = $5, metrics_port = $6, edge_cache = $7 WHERE id = $1`,
+			sv.ID, autoMin, autoMax, autoCPU, metricsPath, metricsPort, r.PostFormValue("edge_cache") == "1"); err != nil {
 			return err
 		}
 		if next.Ports, err = s.allocatePorts(r, tx, o, sv.ID, next.Ports); err != nil {

@@ -132,6 +132,8 @@
       <label>Maximum instances<input type="number" name="autoscale_max" min="1" max="10" value="{{if .Service.AutoMax}}{{.Service.AutoMax}}{{else}}3{{end}}"></label>
       <label>CPU target <span class="hint">% of the CPU you give each instance</span><input type="number" name="autoscale_cpu" min="10" max="95" value="{{.Service.AutoCPU}}"></label>
       {{end}}
+      <label class="check wide"><input type="checkbox" name="edge_cache" value="1" {{if .Service.EdgeCache}}checked{{end}}> Edge cache (CDN)
+        <span class="hint">the proxy keeps responses your app marks as cacheable (<code>Cache-Control: public, max-age=…</code> or <code>s-maxage</code>) and answers repeat requests itself; others are never kept. The <code>Cache-Status</code> header shows hits</span></label>
       <label>Metrics path <span class="hint">optional: your app's Prometheus endpoint, such as /metrics; scraped every 30 s, then queried in Grafana or with the Prometheus API</span><input name="metrics_path" value="{{.Service.MetricsPath}}" placeholder="/metrics" maxlength="200"></label>
       <label>Metrics port <span class="hint">empty: the service's port</span><input type="number" name="metrics_port" min="0" max="65535" value="{{if .Service.MetricsPort}}{{.Service.MetricsPort}}{{end}}"></label>
       {{if not .Service.PreviewName}}<label>Public TCP/UDP ports <span class="hint">for non-HTTP traffic (game servers, MQTT…): one per line, such as 25565/tcp or 27015/udp; each gets a public port</span>

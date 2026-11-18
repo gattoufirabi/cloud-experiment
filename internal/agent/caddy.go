@@ -73,6 +73,7 @@ func (c *caddyClient) get(ctx context.Context, path string) ([]byte, error) {
 
 type route struct {
 	OrgID, ProjectID string // for access logs (Zone is the service ID)
+	Cache            bool   // edge cache: keep responses that allow shared caching
 	Hosts            []string
 	Dials            []string // one per instance
 	Zone             string   // rate-limit zone name (service ID)
@@ -86,7 +87,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		SELECT d.container_name, (d.spec->>'port')::int, s.slug, p.slug, o.slug,
 		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}'),
 		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.blocked_ips::text[],
-		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances, o.id, p.id
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances, o.id, p.id, s.edge_cache
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
 		LEFT JOIN services ps ON ps.id = s.preview_of
@@ -107,7 +108,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		var previewName, parentSlug, upstream string
 		var insts []instance
 		rt := route{}
-		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream, &insts, &rt.OrgID, &rt.ProjectID); err != nil {
+		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream, &insts, &rt.OrgID, &rt.ProjectID, &rt.Cache); err != nil {
 			return route{}, err
 		}
 		host := model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)
@@ -262,7 +263,11 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 			rp["load_balancing"] = obj{"selection_policy": obj{"policy": "round_robin"}, "try_duration": "3s", "try_interval": "250ms"}
 			rp["health_checks"] = obj{"passive": obj{"fail_duration": "20s", "max_fails": 1}}
 		}
-		sub = append(sub, obj{"handle": []any{rp}})
+		if r.Cache { // edge cache in front of the application (keyed by host, so never shared between services)
+			sub = append(sub, obj{"handle": []any{obj{"handler": "cache"}, rp}})
+		} else {
+			sub = append(sub, obj{"handle": []any{rp}})
+		}
 		rs = append(rs, obj{
 			"match":    []any{obj{"host": r.Hosts}},
 			"handle":   []any{obj{"handler": "subroute", "routes": sub}},
@@ -282,10 +287,23 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 			loggers[h] = []string{"tenant"}
 		}
 	}
+	if cfg.StorageEnabled() { // S3 requests: bucket triggers start functions on uploads and deletes
+		for _, h := range storageHosts(cfg) {
+			loggers[h] = []string{"s3"}
+		}
+	}
 	if len(loggers) > 0 {
 		server["logs"] = obj{"logger_names": loggers, "skip_unmapped_hosts": true}
 	}
 	apps := obj{"http": obj{"servers": obj{"main": server}}}
+	for _, r := range routes {
+		if r.Cache {
+			// Only responses that explicitly allow shared caching are kept: a response
+			// without Cache-Control is marked private (browsers behave as before).
+			apps["cache"] = obj{"ttl": "120s", "mode": "strict", "default_cache_control": "private", "max_cacheable_body_bytes": 10 << 20}
+			break
+		}
+	}
 	if cfg.TLSMode == "acme" {
 		server["listen"] = []string{":443"}
 		issuer := []any{obj{"module": "acme", "ca": cfg.ACMECA}}

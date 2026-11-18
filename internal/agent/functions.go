@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -272,7 +273,10 @@ func (a *Agent) runInvocation(ctx context.Context, c claimed) {
 	cancel()
 	logText = truncate(string(stderr), fnLogMax)
 	switch {
-	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ectx.Err(), context.DeadlineExceeded):
+	// The Docker connection's own read deadline can fire a moment before the context's:
+	// any error at or after the deadline is the function's timeout.
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ectx.Err(), context.DeadlineExceeded) ||
+		errors.Is(err, os.ErrDeadlineExceeded) || (err != nil && !time.Now().Before(deadline)):
 		status, errType, errMsg = "timed_out", "Sandbox.Timedout", fmt.Sprintf("Task timed out after %d seconds", f.TimeoutSeconds)
 		a.discardWarm(ctx, f.ID, w) // the handler may still be running
 		return

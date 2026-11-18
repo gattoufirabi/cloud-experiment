@@ -21,10 +21,20 @@
   <div class="section">
     <h2>Members</h2>
     <table>
-      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th></th></tr></thead>
       <tbody>
-      {{range .Members}}
+      {{range $m := .Members}}
         <tr><td><strong>{{.Name}}</strong></td><td>{{.Email}}</td><td>{{.Role}}</td>
+          <td>{{if .Scope}}only {{range $p, $r := .Scope}}<span class="badge">{{$p}}: {{$r}}</span> {{end}}{{else}}<span class="muted">whole organization</span>{{end}}
+            {{if and (roleAtLeast $.Org.Role "admin") (or (eq .Role "developer") (eq .Role "viewer"))}}
+            <details class="inline-edit"><summary class="small">change</summary>
+              <form method="post" action="{{$.Org.Path}}/members/{{.ID}}/access" class="stack small">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <p class="muted">Leave every project on "no access" to give the whole organization ({{.Role}}). Otherwise only the chosen projects are visible, with these roles.</p>
+                {{range $.Projects}}<label>{{.Name}} <select name="project_{{.Slug}}">{{$cur := index $m.Scope .Slug}}<option value="">no access</option><option value="viewer" {{if eq $cur "viewer"}}selected{{end}}>viewer</option><option value="developer" {{if eq $cur "developer"}}selected{{end}}>developer</option></select></label>{{end}}
+                <div><button type="submit">Save access</button></div>
+              </form>
+            </details>{{end}}</td>
           <td>{{if and (roleAtLeast $.Org.Role "admin") (ne .Email $.User.Email)}}
             <form method="post" action="{{$.Org.Path}}/members/{{.ID}}/remove" data-confirm="Remove {{.Email}} from {{$.Org.Name}}?">
               <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">remove</button>
@@ -99,6 +109,10 @@ curl -X POST -H "Authorization: Bearer $PLATFORM_TOKEN"   -d '{"image": "&lt;ima
         <option value="viewer">viewer: read only</option>
         <option value="developer" selected>developer: deploy and set secrets</option>
         <option value="admin">admin</option>
+      </select>
+      <select name="project" aria-label="Project">
+        <option value="">whole organization</option>
+        {{range .Projects}}<option value="{{.Slug}}">only project {{.Name}}</option>{{end}}
       </select>
       <button type="submit">Create token</button>
     </form>

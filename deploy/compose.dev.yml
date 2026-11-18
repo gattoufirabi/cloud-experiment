@@ -46,6 +46,8 @@ x-app: &app
     OIDC_ALLOW_INSECURE: "true"
     EMAIL_DNS_RESOLVER: e2e-dns:53     # dev only: the e2e test's DNS server (mockoidc -dns)
     EMAIL_SPF_INCLUDE: spf.example.test
+    DNS_NAMESERVERS: ns1.platform.test,ns2.platform.test
+    PUBLIC_IP: 127.0.0.1
     SIGNUPS_PER_HOUR: "100"            # dev only: the e2e test signs up several times per run
     # Dev only: both test nodes share one Docker host and its local backup volume.
     MOVES_SHARED_LOCAL_REPO: "true"
@@ -128,6 +130,7 @@ services:
       ALLOW_INSECURE_RUNTIME: "true"
       AGENT_CONTAINER: platform-agent
       CADDY_CONTAINER: platform-caddy
+      DNS_LISTEN: ":53"                  # DNS hosting (queried on the platform-core network in dev)
       TLS_MODE: "off"
       SCANNER_ENABLED: "true"
       TRIVY_TOKEN: dev-trivy-token
@@ -192,7 +195,7 @@ services:
     restart: "no"
 
   caddy:
-    image: platform-caddy:2.11.9
+    image: platform-caddy:2.11.9-cache
     build: ./caddy   # Caddy + Coraza WAF + rate limit (see caddy/Dockerfile)
     container_name: platform-caddy
     restart: unless-stopped

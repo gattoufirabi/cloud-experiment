@@ -52,6 +52,10 @@ var products = []product{
 	{ID: "domains", Name: "Domains", Short: "Domains", Group: "Networking", Path: "/domains",
 		Description: "Custom domains with automatic HTTPS certificates",
 		Nav:         []navItem{{"Custom domains", "/domains", false}}},
+	{ID: "dns", Name: "DNS", Short: "DNS", Group: "Networking", Path: "/dns",
+		Description: "Host your domains' DNS: zones delegated to the platform and their records",
+		Nav:         []navItem{{"Hosted zones", "/dns", false}},
+		enabled:     func(s *Server) bool { return s.dnsEnabled() }},
 	{ID: "registry", Name: "Container registry", Short: "Registry", Group: "Delivery", Path: "/registry",
 		Description: "Private image registry with vulnerability scanning",
 		Nav:         []navItem{{"Registry", "/registry", false}, {"Tokens", "/registry#tokens", false}, {"Image scans", "/registry#scans", false}},
@@ -68,7 +72,7 @@ var products = []product{
 		Nav:         []navItem{{"Traffic", "/analytics", false}, {"Behavior", "/analytics#behavior", false}}},
 	{ID: "monitoring", Name: "Monitoring", Short: "Monitoring", Group: "Operations", Path: "/monitoring",
 		Description: "Health checks, incidents, alerts, logs across services and log export",
-		Nav:         []navItem{{"Incidents", "/monitoring", false}, {"Logs", "/monitoring/logs", false}, {"Notification channels", "/monitoring#channels", false}, {"Grafana and Prometheus", "/monitoring#grafana", false}}},
+		Nav:         []navItem{{"Incidents", "/monitoring", false}, {"Logs", "/monitoring/logs", false}, {"Metric alarms", "/monitoring#alarms", false}, {"Notification channels", "/monitoring#channels", false}, {"Grafana and Prometheus", "/monitoring#grafana", false}}},
 	{ID: "secrets", Name: "Secrets manager", Short: "Secrets", Group: "Management", Path: "/secrets",
 		Description: "Encrypted, versioned secrets shared by your services and functions",
 		Nav:         []navItem{{"Secrets", "/secrets", false}}},
@@ -435,6 +439,7 @@ func (s *Server) domainsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	scope := s.scopeProject(r, o)
 	var rows []domainRow
+	var webServices []string
 	var maxDomains int
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		q, err := tx.Query(r.Context(), `
@@ -447,13 +452,22 @@ func (s *Server) domainsPage(w http.ResponseWriter, r *http.Request) {
 		if rows, err = pgx.CollectRows(q, pgx.RowToStructByPos[domainRow]); err != nil {
 			return err
 		}
+		q, err = tx.Query(r.Context(), `SELECT p.slug || '/' || s.slug FROM services s JOIN projects p ON p.id = s.project_id
+			WHERE s.preview_of IS NULL AND NOT s.worker AND ($1 = '' OR p.slug = $1) ORDER BY 1`, scope)
+		if err != nil {
+			return err
+		}
+		if webServices, err = pgx.CollectRows(q, pgx.RowTo[string]); err != nil {
+			return err
+		}
 		return tx.QueryRow(r.Context(), `SELECT max_domains FROM plans WHERE id = $1`, o.PlanID).Scan(&maxDomains)
 	})
 	if err != nil {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "domains", http.StatusOK, data{"Org": o, "Domains": rows, "Scope": scope, "MaxDomains": maxDomains, "AppsDomain": s.cfg.AppsDomain})
+	s.render(w, r, "domains", http.StatusOK, data{"Org": o, "Domains": rows, "Scope": scope, "MaxDomains": maxDomains, "AppsDomain": s.cfg.AppsDomain,
+		"WebServices": webServices, "CanEdit": model.RoleAtLeast(o.Role, "developer")})
 }
 
 // createDatabaseIn creates a database in the project chosen in the form (the area
@@ -534,6 +548,7 @@ var iconPaths = map[string]string{
 	"functions":  `<path d="M6 4h3l8 16"/><path d="M12.5 11L7 20"/>`,
 	"queues":     `<rect x="3" y="5" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="15" width="18" height="4" rx="1"/>`,
 	"analytics":  `<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>`,
+	"dns":        `<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/>`,
 	"email":      `<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/>`,
 	"secrets":    `<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15.5" r="1.5"/>`,
 	"iam":        `<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18.5 14.8c1.6.8 2.6 2.4 3 5.2"/>`,

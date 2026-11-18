@@ -132,6 +132,14 @@ type Config struct {
 	// SignupsPerHour limits self-signups from one address (SIGNUPS_PER_HOUR, default 5).
 	SignupsPerHour int
 
+	// DNS hosting: the agent answers on DNSListen (DNS_LISTEN, e.g. ":5353", published as
+	// port 53 of the server) for zones delegated to DNSNameservers (DNS_NAMESERVERS,
+	// comma-separated host names that resolve to the server). PublicIP (PUBLIC_IP) is
+	// the address records point to for an application at a zone's apex.
+	DNSListen      string
+	DNSNameservers []string
+	PublicIP       string
+
 	// MovesSharedLocalRepo: the nodes share the local backup volume (one Docker host,
 	// development), so projects with data can move without BACKUP_REST_URL.
 	MovesSharedLocalRepo bool
@@ -230,6 +238,9 @@ func Load() Config {
 		EmailDNSResolver:     env("EMAIL_DNS_RESOLVER", ""),
 		EmailSPFInclude:      env("EMAIL_SPF_INCLUDE", ""),
 		SignupsPerHour:       envInt("SIGNUPS_PER_HOUR", 5),
+		DNSListen:            env("DNS_LISTEN", ""),
+		DNSNameservers:       envList("DNS_NAMESERVERS"),
+		PublicIP:             env("PUBLIC_IP", ""),
 		MovesSharedLocalRepo: envBool("MOVES_SHARED_LOCAL_REPO", false),
 		PublicPortMin:        envInt("PUBLIC_PORT_MIN", 20000),
 		PublicPortMax:        envInt("PUBLIC_PORT_MAX", 20999),

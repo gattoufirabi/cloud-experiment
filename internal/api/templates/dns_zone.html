@@ -1,0 +1,62 @@
+{{define "title"}}{{.Zone.Domain}} · DNS · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head"><h1>{{.Zone.Domain}}</h1>{{if eq .Zone.Status "active"}}<span class="badge">active</span>{{end}}</div>
+{{if eq .Zone.Status "active"}}
+<p class="lede">The platform answers for {{.Zone.Domain}}{{with .Zone.Active}} since {{ago .}}{{end}}. Changes apply within seconds; resolvers may keep old answers for their TTL.</p>
+{{else}}
+<div class="section panel">
+  <h2>Waiting for the name servers</h2>
+  <p>At your domain's registrar, set the name servers of <strong>{{.Zone.Domain}}</strong> to:</p>
+  <pre class="cmd">{{range .Nameservers}}{{.}}
+{{end}}</pre>
+  <p class="small muted">The delegation is checked every 2 minutes{{with .Zone.Checked}} (last {{ago .}}){{end}}; registrars can take up to a day to publish it. Prepare the records below now: they are served as soon as the zone is active. A zone not delegated within 14 days is removed.</p>
+  {{if .CanEdit}}<form method="post" action="{{.Org.Path}}/dns/{{.Zone.Domain}}" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="check"><button type="submit">Check now</button></form>{{end}}
+</div>
+{{end}}
+<div class="section" id="records">
+  <h2>Records <span class="count">{{len .Records}}</span></h2>
+  {{if .Records}}
+  <div class="scroll-x">
+  <table class="resources">
+    <thead><tr><th>Name</th><th>Type</th><th>Value</th><th class="num">TTL</th><th></th></tr></thead>
+    <tbody>{{range .Records}}<tr><td><code>{{.Name}}</code></td><td>{{.Type}}</td><td><code class="wrap">{{if eq .Type "MX"}}{{.Priority}} {{end}}{{.Value}}</code></td><td class="num">{{.TTL}}</td>
+      <td>{{if $.CanEdit}}<form method="post" action="{{$.Org.Path}}/dns/{{$.Zone.Domain}}" class="inline flush" data-confirm="Delete this record?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="action" value="delete"><input type="hidden" name="record" value="{{.ID}}"><button class="link" type="submit">delete</button></form>{{end}}</td></tr>{{end}}</tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">No records yet. The domain's SOA and NS records are provided by the platform.</p>{{end}}
+</div>
+{{if .CanEdit}}
+{{if .Services}}
+<div class="section">
+  <h2>Point a name at a service</h2>
+  <form method="post" action="{{.Org.Path}}/dns/{{.Zone.Domain}}" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="service">
+    <input name="name" placeholder="www (empty for the domain itself)" aria-label="Name">
+    <select name="host" aria-label="Service">{{range .Services}}<option value="{{.Host}}">{{.Label}}</option>{{end}}</select>
+    <button type="submit">Add record</button>
+  </form>
+  <p class="small muted">Adds a CNAME to the service's address{{if .PublicIP}} (an A record to {{.PublicIP}} for the domain itself){{end}}. Then add the domain on the service's Domains tab for HTTPS.</p>
+</div>
+{{end}}
+<div class="section">
+  <h2>Add a record</h2>
+  <form method="post" action="{{.Org.Path}}/dns/{{.Zone.Domain}}" class="form-grid">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="add">
+    <label>Name <span class="hint">@ for the domain itself, or www, mail, *.apps…</span><input name="name" value="@" required></label>
+    <label>Type<select name="type">{{range .Types}}<option>{{.}}</option>{{end}}</select></label>
+    <label class="wide">Value <span class="hint">an address, a host name, text, or for CAA: 0 issue "letsencrypt.org"</span><input name="value" required maxlength="1000"></label>
+    <label>Priority <span class="hint">MX only</span><input type="number" name="priority" min="0" max="65535" value="10"></label>
+    <label>TTL <span class="hint">seconds</span><input type="number" name="ttl" min="60" max="86400" value="300"></label>
+    <div class="wide"><button type="submit">Add record</button></div>
+  </form>
+</div>
+<div class="section">
+  <h2>Delete the zone</h2>
+  <form method="post" action="{{.Org.Path}}/dns/{{.Zone.Domain}}" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="remove">
+    <input name="confirm" placeholder="type {{.Zone.Domain}} to confirm" required aria-label="Confirm domain">
+    <button class="danger" type="submit">Delete zone</button>
+  </form>
+</div>
+{{end}}
+{{end}}

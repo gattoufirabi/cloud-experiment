@@ -36,9 +36,10 @@ type caddyAccess struct {
 		Proto    string              `json:"proto"`
 		Headers  map[string][]string `json:"headers"`
 	} `json:"request"`
-	Duration float64 `json:"duration"`
-	Size     int64   `json:"size"`
-	Status   int     `json:"status"`
+	BytesRead int64   `json:"bytes_read"`
+	Duration  float64 `json:"duration"`
+	Size      int64   `json:"size"`
+	Status    int     `json:"status"`
 }
 
 type visitorSalt struct {
@@ -160,7 +161,7 @@ func accessRecord(line []byte, idx map[string]hostRef, salt []byte) map[string]a
 }
 
 func (a *Agent) accessLogLoop(ctx context.Context) {
-	if !a.isPrimary() || a.cfg.VictoriaLogsURL == "" || a.cfg.CaddyContainer == "" {
+	if !a.isPrimary() || a.cfg.CaddyContainer == "" {
 		return
 	}
 	var salt visitorSalt
@@ -181,7 +182,11 @@ func (a *Agent) accessLogLoop(ctx context.Context) {
 						line = msg
 					}
 				}
-				if !strings.Contains(line, `"http.log.access.tenant"`) {
+				if strings.Contains(line, `"http.log.access.s3"`) {
+					a.bucketEvent(ctx, []byte(line))
+					return
+				}
+				if !strings.Contains(line, `"http.log.access.tenant"`) || a.cfg.VictoriaLogsURL == "" {
 					return
 				}
 				a.mu.Lock()

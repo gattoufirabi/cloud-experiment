@@ -635,6 +635,11 @@ func (s *Server) renderFunction(w http.ResponseWriter, r *http.Request, o *orgIn
 		}
 		sort.Strings(names)
 	}
+	_ = db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+		t, err := s.loadFnTriggers(r.Context(), tx, f.ID)
+		d["Triggers"] = t
+		return err
+	})
 	if _, ok := d["TestEvent"]; !ok {
 		d["TestEvent"] = "{\n  \"key\": \"value\"\n}"
 	}

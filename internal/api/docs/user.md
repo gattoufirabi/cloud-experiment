@@ -63,6 +63,8 @@ The console works like a cloud provider's console: each product has its own area
 - The left pane on the console home and in Compute, Databases and Projects lists every project with its services and databases and the status of their latest deployment: ● live, × failed, ◌ deploying, ○ not deployed.
 - The **organization menu** (top right) switches between your organizations; the **account menu** holds your account, security settings and sign-out.
 
+- **Bulk actions:** the lists of services, databases, functions, buckets and domains have a checkbox per row: select some, choose an action (redeploy, back up now, turn off a function URL, delete, remove), then **Apply**. Deleting needs the word `delete` typed. Each list also has its create form (a custom domain can be added from the Domains page, choosing its service).
+
 ## Deploy your first application
 
 An application is deployed from a container image and is usually live within a minute. The platform does not build source code: build the image yourself or in your CI, and push it to a registry.
@@ -291,6 +293,13 @@ How it runs:
 - Events and responses are limited to 6 MB. Invocations, their logs and errors are kept 7 days (**Monitor** tab; `platformctl fn logs`).
 - **Billing:** per million requests and per GB-second (memory × run time), at your plan's prices.
 
+### Triggers
+
+Besides its URL, a schedule, the API and queues, a function can be started by:
+
+- **Bucket events:** on the function's **Triggers** tab, choose a bucket, uploads and/or deletes, and optionally a key prefix (`images/`) and suffix (`.jpg`). Within seconds of each matching change the function runs in the background with an S3-style event: `event.Records[0].eventName` (`ObjectCreated:Put`, `ObjectCreated:CompleteMultipartUpload`, `ObjectCreated:Copy`, `ObjectRemoved:Delete`), `event.Records[0].s3.bucket.name`, `event.Records[0].s3.object.key` and `size`. Batch deletes (`DeleteObjects`) are not reported.
+- **A webhook:** **Create a webhook URL** gives a secret address (shown once) for services that send webhooks, such as GitHub or Stripe. Each call answers `202` at once and runs the function in the background with the request (method, headers, body) in the function URL format. Replace the URL to revoke the old one, or remove it.
+
 ### Web apps
 
 A function can also be an ordinary web application (Express, Fastify, Flask, FastAPI, a plain HTTP server…) that scales to zero, like apps run with the AWS Lambda Web Adapter.
@@ -382,6 +391,19 @@ Every service is always reachable at its platform address; you can add your own 
 
 Once verified, the domain serves the application within seconds, and an HTTPS certificate is issued on the first visit. Starter plans allow 3 custom domains, Pro plans 20. A domain can belong to only one organization.
 
+## DNS hosting
+
+Host your domains' DNS on the platform: **DNS** › **Add a domain**, then at your registrar set the domain's name servers to the ones shown (two names for the same server). The platform answers for the domain as soon as it sees the delegation (checked every 2 minutes; **Check now** on the zone's page); until then nothing is served, so nobody can take over a domain they do not control. A zone not delegated within 14 days is removed.
+
+- **Records:** A, AAAA, CNAME, TXT, MX (with a priority), CAA (such as `0 issue "letsencrypt.org"`) and NS (to delegate a sub-domain elsewhere). Names: `@` for the domain itself, `www`, `api.v2`, or a wildcard such as `*.apps`. TTL from 60 seconds to a day (default 5 minutes). A CNAME stands alone at its name and cannot be used for the domain itself.
+- **Point a name at a service** in one click: a CNAME to the service's address (an A record to the platform's address for the domain itself). Then add the domain on the service's **Domains** tab so it is served with HTTPS.
+- The SOA and NS records are provided by the platform. Changes apply within seconds; resolvers may keep earlier answers for their TTL.
+- API: `GET/POST /api/v1/dns/zones`, `GET/POST /api/v1/dns/zones/DOMAIN/records`, `DELETE /api/v1/dns/zones/DOMAIN/records/ID`.
+
+## Edge cache (CDN)
+
+Turn on **Edge cache** in a service's settings and the platform's proxy keeps the responses your application marks as cacheable for shared caches (`Cache-Control: public, max-age=…`, or `s-maxage`) and answers repeat requests itself, without reaching your application. Responses that are `private`, `no-store`, or without `Cache-Control` are never kept (those without the header are marked `private`). The `Cache-Status` response header shows hits and misses. Entries are per address, so nothing is shared between services, and responses over 10 MB are not kept. To change cached content before it expires, use versioned file names (`app.3f2a.js`) or short `max-age` values.
+
 ## Private image registry
 
 Your organization has a private image space at `{{registry}}/<organization>/`. Nobody else can read or write it, and every image pushed there is scanned for vulnerabilities.
@@ -454,6 +476,7 @@ Your metrics are available through a **Prometheus-compatible API**, limited to y
 - **Platform metrics** of every instance: `platform_container_cpu_seconds_total`, `platform_container_memory_bytes`, `platform_container_memory_limit_bytes`, `platform_container_network_rx_bytes_total`, `platform_container_network_tx_bytes_total`, labelled `service_id`, `project_id` and `instance`.
 - **Your application's metrics:** set the service's **Metrics path** (such as `/metrics`, and a port if it is not the service's). The platform scrapes every instance every 30 seconds and adds the labels `service`, `project`, `service_id` and `instance`. Labels named `org_id`, `project_id`, `service_id`, `service`, `project` or `instance` set by your application are replaced. Up to 20,000 samples and 4 MB per scrape.
 - Supported endpoints: `query`, `query_range`, `series`, `labels`, `label/<name>/values`, `metadata`, `query_exemplars`, `status/buildinfo`. Metrics are kept 30 days.
+- **Metric alarms:** **Monitoring** › **Metric alarms**: a PromQL query of your metrics (it must return a number or an instant vector, such as `max(rate(platform_container_cpu_seconds_total[5m]))`), a comparison (above, below…), a threshold and a number of minutes. Checked every minute; when the value stays beyond the threshold for those minutes, an incident opens and your channels are notified (event `metric_alarm`), and it resolves when the value comes back. Pausing an alarm resolves its incident. API: `GET/POST /api/v1/alarms`, `DELETE /api/v1/alarms/NAME`.
 - **Managed Grafana:** **Monitoring** › **Grafana and Prometheus** › **Create Grafana** adds a `grafana` service to a project, with the data source and a **Services** dashboard already set up, a read-only token, and its data in a persistent folder. Sign in as `admin` with the password shown once (it is also the service's secret `GF_SECURITY_ADMIN_PASSWORD`).
 
 ## Analytics
@@ -645,6 +668,18 @@ Each member has one role per organization; each role includes everything the rol
 
 - **Invite:** on the **Members** tab, enter the email and role, then send the link shown. It is displayed once, works once, and expires in 7 days.
 - **Audit log** (admins): every action, with who, when and from which IP address. Entries are chained, so they cannot be altered without detection.
+
+### Access to some projects only
+
+An admin can limit a **developer** or **viewer** to chosen projects: **Access management** › **Members** › **change** next to the person, then a role per project (viewer or developer, never more than their own role). They then:
+
+- see and work only in those projects, with the role chosen for each (a viewer cannot deploy);
+- get "not found" for every other project and for organization-wide pages (services list, databases list, billing, access management, storage, queues, secrets, monitoring…);
+- see only their projects on the organization's home page and in the in-progress indicator.
+
+Leaving every project on "no access" gives them back the whole organization with their role. Owners and admins always manage the whole organization. Changes are recorded in the audit log.
+
+**API tokens** can be limited the same way: choose **only project …** when creating one. Such a token (viewer or developer) reaches `/api/v1/projects/<that project>/…` and `/api/v1/me` only; any other call answers 403.
 
 ## Limits and good practices
 

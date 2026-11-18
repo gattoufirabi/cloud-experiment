@@ -15,6 +15,7 @@
   <a role="tab" href="#code">Code</a>
   <a role="tab" href="#test">Test</a>
   <a role="tab" href="#configuration">Configuration</a>
+  <a role="tab" href="#triggers">Triggers</a>
   <a role="tab" href="#monitor">Monitor</a>
 </nav>
 
@@ -64,6 +65,41 @@
     {{if .Log}}<pre class="log">{{.Log}}</pre>{{else}}<p class="small muted">The function printed nothing.</p>{{end}}
   </div>
   {{end}}
+</section>
+
+<section class="pane" id="triggers" role="tabpanel" aria-label="Triggers">
+  <div class="section">
+    <h2>Bucket events</h2>
+    <p class="small muted">Runs the function, in the background, when an object is uploaded to or deleted from a bucket (S3 event format: <code>event.Records[0].s3.object.key</code>). Batch deletes are not reported.</p>
+    {{with .Triggers}}{{if .Buckets}}
+    <table class="resources">
+      <thead><tr><th>Bucket</th><th>Events</th><th>Keys</th><th></th></tr></thead>
+      <tbody>{{range .Buckets}}<tr><td><code>{{.Bucket}}</code></td><td>{{if eq .Events "all"}}uploads and deletes{{else if eq .Events "removed"}}deletes{{else}}uploads{{end}}</td>
+        <td class="small">{{if or .Prefix .Suffix}}{{with .Prefix}}starting with <code>{{.}}</code> {{end}}{{with .Suffix}}ending with <code>{{.}}</code>{{end}}{{else}}all{{end}}</td>
+        <td>{{if $.CanEdit}}<form method="post" action="{{$.Path}}/triggers/{{.ID}}/delete" class="inline flush"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">remove</button></form>{{end}}</td></tr>{{end}}</tbody>
+    </table>
+    {{else}}<p class="small muted">No bucket trigger.</p>{{end}}
+    {{if $.CanEdit}}{{if .AllBuckets}}
+    <form method="post" action="{{$.Path}}/triggers" class="form-grid">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <label>Bucket<select name="bucket">{{range .AllBuckets}}<option value="{{.}}">{{.}}</option>{{end}}</select></label>
+      <label>On<select name="events"><option value="created">uploads</option><option value="removed">deletes</option><option value="all">uploads and deletes</option></select></label>
+      <label>Key prefix <span class="hint">optional, e.g. images/</span><input name="prefix" maxlength="200"></label>
+      <label>Key suffix <span class="hint">optional, e.g. .jpg</span><input name="suffix" maxlength="50"></label>
+      <div class="wide"><button type="submit">Add bucket trigger</button></div>
+    </form>
+    {{else}}<p class="small muted">Create a bucket in Object storage first.</p>{{end}}{{end}}{{end}}
+  </div>
+  <div class="section">
+    <h2>Webhook</h2>
+    <p class="small muted">A secret URL for services that send webhooks (GitHub, Stripe, a form…): it answers <code>202</code> at once and runs the function in the background with the request (method, headers, body) as the event.</p>
+    {{with $.WebhookURL}}<div class="panel"><pre class="cmd wrap">{{.}}</pre><p class="small muted">Shown once: copy it now. Anyone with the URL can start the function.</p></div>{{end}}
+    {{if $.Triggers.HasWebhook}}{{if not $.WebhookURL}}<p class="small">A webhook URL is set.</p>{{end}}{{else}}<p class="small muted">No webhook URL.</p>{{end}}
+    {{if $.CanEdit}}
+    <form method="post" action="{{$.Path}}/webhook" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">{{if $.Triggers.HasWebhook}}Replace the webhook URL{{else}}Create a webhook URL{{end}}</button></form>
+    {{if $.Triggers.HasWebhook}}<form method="post" action="{{$.Path}}/webhook" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="remove" value="1"><button class="link" type="submit">remove the webhook</button></form>{{end}}
+    {{end}}
+  </div>
 </section>
 
 <section class="pane" id="configuration" role="tabpanel" aria-label="Configuration">

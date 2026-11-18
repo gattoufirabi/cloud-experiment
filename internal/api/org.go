@@ -27,6 +27,9 @@ func isUniqueViolation(err error) bool {
 
 type orgInfo struct {
 	ID, Slug, Name, Role, PlanID, ScanPolicy string
+	// Scoped members (fine-grained access) only reach these projects (slug -> role).
+	Scoped   bool
+	Projects map[string]string
 	Suspended                                bool
 	SuspendReason                            string
 	TrialEnds                                *time.Time
@@ -56,6 +59,20 @@ func (o *orgInfo) suspendedMessage() string {
 
 func (o *orgInfo) Path() string { return "/o/" + o.Slug }
 
+// scopedOrgRoutes are the organization pages a member limited to some projects may open.
+var scopedOrgRoutes = map[string]bool{
+	"GET /o/{org}": true, "GET /o/{org}/projects": true, "GET /o/{org}/activity.json": true, "POST /o/{org}/pins": true,
+}
+
+// sees reports whether the user may see a project (always, unless limited to others).
+func (o *orgInfo) sees(projectSlug string) bool {
+	if !o.Scoped {
+		return true
+	}
+	_, ok := o.Projects[projectSlug]
+	return ok
+}
+
 // org resolves the {org} path segment for the current user and enforces a minimum role.
 // Organizations the user does not belong to answer 404, so their existence is not revealed.
 func (s *Server) org(w http.ResponseWriter, r *http.Request, minRole string) (*orgInfo, bool) {
@@ -72,6 +89,37 @@ func (s *Server) org(w http.ResponseWriter, r *http.Request, minRole string) (*o
 			s.notFound(w, r)
 		}
 		return nil, false
+	}
+	// Fine-grained access: a developer or viewer limited to some projects gets the role
+	// of the project in the path, and only the few organization pages listed here.
+	if o.Role == "developer" || o.Role == "viewer" {
+		rows, err := s.pool.Query(r.Context(), `SELECT project_slug, role FROM member_project_scope($1, $2)`, o.ID, sessionFrom(r).UserID)
+		if err != nil {
+			s.serverError(w, r, err)
+			return nil, false
+		}
+		scope := map[string]string{}
+		for rows.Next() {
+			var slug, role string
+			if rows.Scan(&slug, &role) == nil {
+				scope[slug] = role
+			}
+		}
+		rows.Close()
+		if len(scope) > 0 {
+			o.Scoped, o.Projects = true, scope
+			if proj := r.PathValue("project"); proj != "" {
+				role, ok := scope[proj]
+				if !ok {
+					s.notFound(w, r)
+					return nil, false
+				}
+				o.Role = role
+			} else if !scopedOrgRoutes[r.Pattern] {
+				s.notFound(w, r)
+				return nil, false
+			}
+		}
 	}
 	if !model.RoleAtLeast(o.Role, minRole) {
 		s.forbidden(w, r)
@@ -163,6 +211,7 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 	var scans []scanSummary
 	var channels []channelView
 	var incidents []incidentView
+	var alarms []alarmView
 	type apiToken struct {
 		ID, Name, Role string
 		Created        time.Time
@@ -212,6 +261,9 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 		if incidents, err = loadIncidents(r, tx, "", 12); err != nil {
 			return err
 		}
+		if alarms, err = loadAlarms(r.Context(), tx); err != nil {
+			return err
+		}
 		rows, err = tx.Query(r.Context(), `SELECT id, name, role, created_at, last_used_at, expires_at FROM api_tokens ORDER BY created_at DESC`)
 		if err != nil {
 			return err
@@ -223,7 +275,10 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 		s.serverError(w, r, err)
 		return
 	}
-	type member struct{ ID, Name, Email, Role string }
+	type member struct {
+		ID, Name, Email, Role string
+		Scope                 map[string]string // project slug -> role (empty: the whole organization)
+	}
 	rows, err := s.pool.Query(r.Context(), `
 		SELECT u.id, u.name, u.email, m.role FROM memberships m JOIN users u ON u.id = m.user_id
 		WHERE m.org_id = $1 ORDER BY u.name`, o.ID)
@@ -231,10 +286,42 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 		s.serverError(w, r, err)
 		return
 	}
-	members, err := pgx.CollectRows(rows, pgx.RowToStructByPos[member])
+	members, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (member, error) {
+		var m member
+		err := row.Scan(&m.ID, &m.Name, &m.Email, &m.Role)
+		m.Scope = map[string]string{}
+		return m, err
+	})
 	if err != nil {
 		s.serverError(w, r, err)
 		return
+	}
+	_ = db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(r.Context(), `SELECT mr.user_id, p.slug, mr.role FROM member_project_roles mr JOIN projects p ON p.id = mr.project_id`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var uid, slug, role string
+			if rows.Scan(&uid, &slug, &role) == nil {
+				for i := range members {
+					if members[i].ID == uid {
+						members[i].Scope[slug] = role
+					}
+				}
+			}
+		}
+		return nil
+	})
+	if o.Scoped { // a member limited to some projects sees only those
+		kept := projects[:0]
+		for _, p := range projects {
+			if o.sees(p.Slug) {
+				kept = append(kept, p)
+			}
+		}
+		projects = kept
 	}
 	type pending struct {
 		Email, Role string
@@ -256,7 +343,12 @@ func (s *Server) renderOrg(w http.ResponseWriter, r *http.Request, o *orgInfo, s
 	}
 	d["Org"], d["Projects"], d["Members"], d["Invites"], d["Usage"], d["Plan"] = o, projects, members, invites, u, p
 	d["RegistryHost"], d["RegistryTokens"], d["Scans"] = s.cfg.RegistryHost, tokens, scans
-	d["Channels"], d["Incidents"], d["AlertKinds"] = channels, incidents, alertKinds
+	if o.Scoped { // a member limited to some projects sees none of the organization-wide lists
+		for _, k := range []string{"Members", "Invites", "Channels", "Incidents", "Alarms", "APITokens", "RegistryTokens", "Scans"} {
+			delete(d, k)
+		}
+	}
+	d["Channels"], d["Incidents"], d["AlertKinds"], d["Alarms"] = channels, incidents, alertKinds, alarms
 	d["APITokens"], d["BaseURL"] = apiTokens, s.cfg.BaseURL
 	if model.RoleAtLeast(o.Role, "admin") {
 		sso, err := s.loadSSO(r.Context(), o.ID)

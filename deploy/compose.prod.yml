@@ -31,6 +31,8 @@ x-app: &app
     SMTP_FROM: ${SMTP_FROM:-}
     SMTP_TLS: ${SMTP_TLS:-starttls}
     EMAIL_SPF_INCLUDE: ${EMAIL_SPF_INCLUDE:-}
+    DNS_NAMESERVERS: ${DNS_NAMESERVERS:-}
+    PUBLIC_IP: ${PUBLIC_IP:-}
     OPERATOR_NTFY_URL: ${OPERATOR_NTFY_URL:-}
     # resolv.conf for gVisor containers (they cannot use Docker's embedded DNS); set by host/deploy.sh
     TENANT_RESOLV_CONF: ${TENANT_RESOLV_CONF:-}
@@ -112,12 +114,18 @@ services:
     container_name: platform-agent
     command: ["agent"]
     user: "0:0"
+    # DNS hosting: authoritative answers on the server's public address (DNS_BIND_IP; off
+    # by default: bound to the loopback, so nothing is exposed until it is set).
+    ports:
+      - "${DNS_BIND_IP:-127.0.0.1}:53:53/udp"
+      - "${DNS_BIND_IP:-127.0.0.1}:53:53/tcp"
     environment:
       <<: *env
       DATABASE_URL: postgres://platform_agent:${AGENT_DB_PASSWORD}@postgres:5432/platform
       RUNTIME: runsc
       AGENT_CONTAINER: platform-agent
       CADDY_CONTAINER: platform-caddy
+      DNS_LISTEN: ${DNS_LISTEN:-}
       NODE_ID: ${NODE_ID:-}
       NODE_ROLE: primary
       NODE_CLUSTER: ${NODE_CLUSTER:-default}
@@ -152,7 +160,7 @@ services:
     restart: "no"
 
   caddy:
-    image: platform-caddy:2.11.9
+    image: platform-caddy:2.11.9-cache
     build: ./caddy   # Caddy + Coraza WAF + rate limit (see caddy/Dockerfile)
     container_name: platform-caddy
     restart: unless-stopped

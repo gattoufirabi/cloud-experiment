@@ -22,6 +22,42 @@
     {{else}}<p class="small muted">No incidents. Every live application is checked continuously.</p>{{end}}
   </div>
 
+  <div class="section" id="alarms">
+    <h2>Metric alarms <span class="count">{{len .Alarms}}</span></h2>
+    <p class="small muted">A query of your metrics compared with a threshold, checked every minute. When it stays beyond the threshold for the minutes you choose, an incident opens and your channels are notified (event <code>metric_alarm</code>); it resolves on its own when the value comes back.</p>
+    {{if .Alarms}}
+    <div class="scroll-x">
+    <table class="resources">
+      <thead><tr><th>Alarm</th><th>Condition</th><th>Now</th><th>State</th><th></th></tr></thead>
+      <tbody>
+      {{range .Alarms}}
+        <tr><td><strong>{{.Name}}</strong><br><code class="wrap small">{{.Query}}</code></td>
+          <td class="nowrap">{{.Op}} {{.ThresholdText}}{{if .ForMinutes}} for {{.ForMinutes}} min{{end}}</td>
+          <td class="nowrap">{{.ValueText}}{{with .LastEval}}<br><span class="small muted">{{ago .}}</span>{{end}}</td>
+          <td>{{if not .Enabled}}<span class="muted">paused</span>{{else if eq .State "firing"}}<span class="error-text">firing</span>{{else if eq .State "pending"}}<span class="badge">pending</span>{{else if eq .State "nodata"}}<span class="muted">no data</span>{{else}}ok{{end}}{{with .LastError}}<br><span class="small error-text">{{.}}</span>{{end}}</td>
+          <td class="nowrap">{{if roleAtLeast $.Org.Role "developer"}}
+            <form method="post" action="{{$.Org.Path}}/monitoring/alarms/{{.ID}}" class="inline flush"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="action" value="{{if .Enabled}}pause{{else}}resume{{end}}"><button class="link" type="submit">{{if .Enabled}}pause{{else}}resume{{end}}</button></form>
+            <form method="post" action="{{$.Org.Path}}/monitoring/alarms/{{.ID}}" class="inline flush" data-confirm="Delete the alarm {{.Name}}?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="action" value="delete"><button class="link" type="submit">delete</button></form>
+          {{end}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}<p class="small muted">No alarms yet.</p>{{end}}
+    {{if roleAtLeast .Org.Role "developer"}}
+    <form method="post" action="{{.Org.Path}}/monitoring/alarms" class="form-grid">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Name<input name="name" maxlength="80" placeholder="e.g. High CPU on web" required></label>
+      <label class="wide">Query <span class="hint">PromQL over your metrics; for example <code>max(rate(platform_container_cpu_seconds_total[5m]))</code> or <code>max(platform_container_memory_bytes / platform_container_memory_limit_bytes)</code></span>
+        <input name="query" maxlength="1000" required placeholder="max(rate(platform_container_cpu_seconds_total[5m]))"></label>
+      <label>Alert when the value is<select name="op"><option value=">">above</option><option value=">=">at or above</option><option value="<">below</option><option value="<=">at or below</option></select></label>
+      <label>Threshold<input name="threshold" inputmode="decimal" required placeholder="0.8"></label>
+      <label>For <span class="hint">minutes in a row, 0 to 120</span><input type="number" name="for_minutes" min="0" max="120" value="5"></label>
+      <div class="wide"><button type="submit">Create alarm</button></div>
+    </form>
+    {{end}}
+  </div>
+
   <div class="section" id="grafana">
     <h2>Grafana and Prometheus</h2>
     <p class="small muted">Your metrics (CPU, memory and network of every instance, plus your applications' own metrics when a service sets a <strong>Metrics path</strong>) are available through a Prometheus-compatible API, limited to your organization.</p>
