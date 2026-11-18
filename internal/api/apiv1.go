@@ -164,6 +164,7 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("POST /api/v1/dns/zones", s.apiAuth("developer", s.apiAddDNSZone))
 	m.HandleFunc("GET /api/v1/dns/zones/{zone}/records", s.apiAuth("viewer", s.apiDNSRecords))
 	m.HandleFunc("POST /api/v1/dns/zones/{zone}/records", s.apiAuth("developer", s.apiAddDNSRecord))
+	m.HandleFunc("POST /api/v1/dns/zones/{zone}/import", s.apiAuth("developer", s.apiImportZone))
 	m.HandleFunc("DELETE /api/v1/dns/zones/{zone}/records/{id}", s.apiAuth("developer", s.apiDeleteDNSRecord))
 	m.HandleFunc("GET /api/v1/costs", s.apiAuth("admin", s.apiCosts))
 	m.HandleFunc("GET /api/v1/budgets", s.apiAuth("admin", s.apiBudgets))

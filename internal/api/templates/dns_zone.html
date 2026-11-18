@@ -47,10 +47,19 @@
     <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="add">
     <label>Name <span class="hint">@ for the domain itself, or www, mail, *.apps…</span><input name="name" value="@" required></label>
     <label>Type<select name="type">{{range .Types}}<option>{{.}}</option>{{end}}</select></label>
-    <label class="wide">Value <span class="hint">an address, a host name, text, or for CAA: 0 issue "letsencrypt.org"</span><input name="value" required maxlength="1000"></label>
-    <label>Priority <span class="hint">MX only</span><input type="number" name="priority" min="0" max="65535" value="10"></label>
+    <label class="wide">Value <span class="hint">an address, a host name, text; CAA: 0 issue "letsencrypt.org"; SRV: weight port target, such as 0 443 sip.example.com</span><input name="value" required maxlength="1000"></label>
+    <label>Priority <span class="hint">MX and SRV</span><input type="number" name="priority" min="0" max="65535" value="10"></label>
     <label>TTL <span class="hint">seconds</span><input type="number" name="ttl" min="60" max="86400" value="300"></label>
     <div class="wide"><button type="submit">Add record</button></div>
+  </form>
+</div>
+<div class="section" id="import">
+  <h2>Import records</h2>
+  <p class="small muted">Moving the domain from another DNS provider? Paste its zone file (the BIND format most providers export: OVH › DNS zone › Change in text format, Cloudflare › Export…) so websites, mail and verification records keep answering once the name servers change. Records already here are kept; the provider's SOA and name servers are left out.</p>
+  <form method="post" action="{{.Org.Path}}/dns/{{.Zone.Domain}}" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="import">
+    <textarea name="zone_file" rows="8" class="code-editor" spellcheck="false" placeholder="$TTL 3600&#10;@ IN MX 10 mail.example.com.&#10;www IN A 203.0.113.10" required aria-label="Zone file"></textarea>
+    <div><button type="submit" class="secondary">Import</button></div>
   </form>
 </div>
 <div class="section">

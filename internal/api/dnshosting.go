@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,7 +27,7 @@ var (
 	dnsDomainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
 	dnsNameRe   = regexp.MustCompile(`^(\*\.)?([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9])?\.)*[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9])?$`)
 	dnsHostRe   = regexp.MustCompile(`^([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{1,63}\.?$`)
-	dnsTypes    = []string{"A", "AAAA", "CNAME", "TXT", "MX", "CAA", "NS"}
+	dnsTypes    = []string{"A", "AAAA", "CNAME", "TXT", "MX", "CAA", "NS", "SRV"}
 )
 
 type dnsZoneView struct {
@@ -181,6 +182,18 @@ func normalizeRecord(zone string, in dnsRecordInput) (dnsRecordInput, error) {
 		if _, err := dns.NewRR("x.test. 300 IN CAA " + in.Value); err != nil {
 			return bad(`CAA: such as 0 issue "letsencrypt.org"`)
 		}
+	case "SRV": // value "weight port target"; the priority is the SRV priority
+		f := strings.Fields(in.Value)
+		if len(f) != 3 || in.Priority < 0 || in.Priority > 65535 {
+			return bad("SRV: a value such as \"0 443 target.example.com\" (weight, port, target) and a priority from 0 to 65535")
+		}
+		w, werr := strconv.Atoi(f[0])
+		port, perr := strconv.Atoi(f[1])
+		target := strings.TrimSuffix(strings.ToLower(f[2]), ".")
+		if werr != nil || perr != nil || w < 0 || w > 65535 || port < 0 || port > 65535 || (target != "" && !dnsHostRe.MatchString(target+".")) {
+			return bad("SRV: a value such as \"0 443 target.example.com\" (weight, port, target)")
+		}
+		in.Value = fmt.Sprintf("%d %d %s", w, port, target)
 	default:
 		return bad("type: one of " + strings.Join(dnsTypes, ", "))
 	}
@@ -349,6 +362,16 @@ func (s *Server) zoneAction(w http.ResponseWriter, r *http.Request) {
 			}
 			msg = "Record deleted."
 			return s.zoneChanged(r.Context(), r, tx, o, z, "dns.record_deleted", nil)
+		case "import":
+			added, skipped, err := s.importZoneTx(r.Context(), r, tx, o, z, r.PostFormValue("zone_file"))
+			if err != nil {
+				return err
+			}
+			msg = fmt.Sprintf("%d record(s) imported.", added)
+			if len(skipped) > 0 {
+				msg += " Left out: " + strings.Join(skipped, "; ") + "."
+			}
+			return nil
 		case "check":
 			msg = "Checking the delegation now; reload in a minute."
 			if _, err := tx.Exec(r.Context(), `UPDATE dns_zones SET checked_at = NULL WHERE id = $1`, z.ID); err != nil {

@@ -447,6 +447,8 @@ Host your domains' DNS on the platform: **DNS** › **Add a domain**, then at yo
 - The SOA and NS records are provided by the platform. Changes apply within seconds; resolvers may keep earlier answers for their TTL.
 - API: `GET/POST /api/v1/dns/zones`, `GET/POST /api/v1/dns/zones/DOMAIN/records`, `DELETE /api/v1/dns/zones/DOMAIN/records/ID`.
 
+**Moving a domain from another DNS provider:** add the zone, then paste the provider's zone file in **Import records** (OVH: DNS zone › *Change in text format*; most providers have an export) before you change the name servers, so websites, mail (MX, DKIM, autodiscovery SRV) and verification records keep answering. The provider's SOA and name servers are left out; records already in the zone are kept. Then, at the registrar, list **only** the platform's name servers: a mix with the old provider's makes some visitors get the old answers. The zone page warns you when the delegation is incomplete. API: `POST /api/v1/dns/zones/ZONE/import` with the zone file as the body. Record types: A, AAAA, CNAME, TXT, MX, CAA, NS (for a sub-domain) and SRV (value `weight port target`, priority in its own field).
+
 **Automatic records:** when a domain of your organization lies in a zone you host here, the platform writes its DNS records itself:
 
 - a **custom domain** of a service (`shop.example.com` in the zone `example.com`): a CNAME to the service (an A record for the zone's own name) and the verification record. It is verified at once when the zone is active, or as soon as its delegation is confirmed: no record to copy, no **Verify** to click;

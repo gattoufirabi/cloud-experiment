@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,6 +69,18 @@ func buildRR(fqdn, typ, value string, priority, ttl int) dns.RR {
 			chunks, value = append(chunks, value[:255]), value[255:]
 		}
 		return &dns.TXT{Hdr: hdr, Txt: append(chunks, value)}
+	case "SRV":
+		f := strings.Fields(value)
+		if len(f) != 3 {
+			return nil
+		}
+		w, err1 := strconv.Atoi(f[0])
+		port, err2 := strconv.Atoi(f[1])
+		if err1 != nil || err2 != nil {
+			return nil
+		}
+		hdr.Rrtype = dns.TypeSRV
+		return &dns.SRV{Hdr: hdr, Priority: uint16(priority), Weight: uint16(w), Port: uint16(port), Target: dns.Fqdn(strings.ToLower(f[2]))}
 	case "CAA":
 		rr, err := dns.NewRR(fqdn + " " + fmt.Sprint(ttl) + " IN CAA " + value)
 		if err != nil {
