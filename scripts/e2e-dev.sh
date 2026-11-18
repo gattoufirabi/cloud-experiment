@@ -819,10 +819,15 @@ GPAGE=$(c ja -X POST "$BASE/o/$A/monitoring/grafana" -d csrf=$CSRF_A -d project=
 GPW=$(sed -n 's/.*<pre class="cmd">\([a-z0-9_-]*\)<\/pre>.*/\1/p' <<<"$GPAGE" | head -1)
 check "[A] managed Grafana created (admin password shown once)" "$([ ${#GPW} -ge 12 ] && echo yes)" yes
 check "Grafana has a read-only token, its password and a persistent folder" "$(owner_sql "SELECT count(*) FROM secrets x JOIN services s ON s.id = x.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'grafana' AND x.name IN ('GRAFANA_PROM_TOKEN', 'GF_SECURITY_ADMIN_PASSWORD')"):$(owner_sql "SELECT volume_path FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'grafana'"):$(owner_sql "SELECT role FROM api_tokens t JOIN orgs o ON o.id = t.org_id WHERE o.slug = '$A' AND t.name = 'grafana in shop'")" "2:/var/lib/grafana:viewer"
+ACT=$(c ja "$BASE/o/$A/activity.json")
+check "[activity] the Grafana build shows as in progress" "$(grep -o '"kind":"build","label":"shop/grafana","state":"[a-z]*"' <<<"$ACT" | sed 's/.*"state":"//;s/"//' | grep -c -e queued -e building)" 1
+check "[activity] the header has the in-progress indicator" "$(c ja "$BASE/o/$A/compute" | grep -c 'id="activity" data-url="/o/'"$A"'/activity.json"')" 1
+check "[B->A] B cannot read A's activity (404)" "$(code_of jb "$BASE/o/$A/activity.json")" 404
 GH=grafana-shop-$A.apps.localhost
 check "Grafana built and live" "$(for _ in $(seq 1 100); do st=$(owner_sql "SELECT d.status FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'grafana' ORDER BY d.revision DESC LIMIT 1"); [ "$st" = live ] || [ "$st" = failed ] && { echo "$st"; break; }; sleep 4; done)" live
 check "Grafana signs in with the admin password" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "$GH:$PORT:127.0.0.1" -H 'Content-Type: application/json' -d "{\"user\":\"admin\",\"password\":\"$GPW\"}" "http://$GH:$PORT/login")" 200
 check "the platform data source and dashboard are provisioned" "$(curl -sS --resolve "$GH:$PORT:127.0.0.1" -u "admin:$GPW" "http://$GH:$PORT/api/datasources/uid/platform" | grep -o '"type":"prometheus"'):$(curl -sS --resolve "$GH:$PORT:127.0.0.1" -u "admin:$GPW" "http://$GH:$PORT/api/dashboards/uid/platform-services" | grep -o '"title":"Services"' | head -1)" '"type":"prometheus":"title":"Services"'
+check "[activity] nothing in progress once Grafana is live" "$(c ja "$BASE/o/$A/activity.json" | grep -c 'shop/grafana')" 0
 code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/grafana >/dev/null
 owner_sql "DELETE FROM api_tokens WHERE name = 'grafana in shop' AND org_id = '$ORG_A'" >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null

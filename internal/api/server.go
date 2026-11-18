@@ -196,6 +196,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /a/s.js", s.analyticsScriptHandler)
 	m.HandleFunc("POST /a/e", s.analyticsCollect)
 	m.HandleFunc("OPTIONS /a/e", s.analyticsCollect)
+	m.HandleFunc("GET /o/{org}/activity.json", s.auth(authFull, s.activityJSON))
 	m.HandleFunc("GET /o/{org}/analytics", s.auth(authFull, s.analyticsPage))
 	m.HandleFunc("POST /o/{org}/analytics/script", s.auth(authFull, s.analyticsScriptToggle))
 	m.HandleFunc("POST /o/{org}/monitoring/grafana", s.auth(authFull, s.createGrafana))

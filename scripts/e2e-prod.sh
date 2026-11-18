@@ -222,6 +222,17 @@ WAH=webapp-shop-$A.fn.$APPS
 check "Python web app answers on its URL" "$(for _ in $(seq 1 20); do r=$(app_get "$WAH" /hi); grep -q 'Hello from a web app' <<<"$r" && { echo yes; break; }; sleep 3; done)" yes
 check "[API] other events reach the web app as POST /events" "$(fn POST webapp/invoke -d '{"n": 7}' | grep -o '"received":{"n":7}')" '"received":{"n":7}'
 
+section "Managed Grafana"
+GPAGE=$(c ja -X POST "$BASE/o/$A/monitoring/grafana" -d csrf=$CSRF_A -d project=shop)
+GPW=$(sed -n 's/.*<pre class="cmd">\([a-z0-9_-]*\)<\/pre>.*/\1/p' <<<"$GPAGE" | head -1)
+check "[A] Grafana created (admin password shown once)" "$([ ${#GPW} -ge 12 ] && echo yes)" yes
+check "Grafana built and live" "$(for _ in $(seq 1 120); do st=$(owner_sql "SELECT d.status FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'grafana' ORDER BY d.revision DESC LIMIT 1"); [ "$st" = live ] || [ "$st" = failed ] && { echo "$st"; break; }; sleep 5; done)" live
+GH=grafana-shop-$A.$APPS
+gget() { curl -sS --max-time 20 --resolve "$GH:443:127.0.0.1" -u "admin:$GPW" "https://$GH$1"; }
+check "Grafana answers over HTTPS and signs in" "$(for _ in $(seq 1 20); do r=$(gget /api/user); grep -q '"login":"admin"' <<<"$r" && { echo yes; break; }; sleep 3; done)" yes
+check "its data source reaches the platform's metrics" "$(gget '/api/datasources/proxy/uid/platform/api/v1/query?query=count(platform_container_memory_bytes)' | grep -o '"status":"success"')" '"status":"success"'
+check "the Services dashboard is provisioned" "$(gget /api/dashboards/uid/platform-services | grep -o '"title":"Services"' | head -1)" '"title":"Services"'
+
 section "Zip deployment"
 mkdir -p "$TMP/zipapp/site"; printf '%s\n' 'FROM nginx:1.27-alpine' 'COPY site/index.html /usr/share/nginx/html/index.html' > "$TMP/zipapp/Dockerfile"
 echo "zip-$RUN" > "$TMP/zipapp/site/index.html"

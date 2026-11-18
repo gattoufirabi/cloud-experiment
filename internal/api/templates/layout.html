@@ -103,6 +103,14 @@
     {{end}}
     <div class="top-right">
       {{if .HasNav}}
+      <details class="menu activity-menu" id="activity" data-url="{{.Org.Path}}/activity.json" hidden>
+        <summary><span class="spinner" aria-hidden="true"></span><span class="activity-count">0</span><span class="activity-word"> in progress</span></summary>
+        <div class="menu-panel right activity-panel">
+          <div class="menu-label">In progress</div>
+          <ul class="activity-list"></ul>
+        </div>
+      </details>
+      <div id="activity-toast" class="toast" role="status" aria-live="polite" hidden></div>
       <details class="menu org-menu">
         <summary><span class="org-name">{{.Org.Name}}</span></summary>
         <div class="menu-panel right">

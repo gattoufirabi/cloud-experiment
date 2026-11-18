@@ -9,7 +9,7 @@
 {{if $.Refresh}}<p class="small muted">This page refreshes every few seconds while the build runs.</p>{{end}}
 <div class="section">
   <h2>Log</h2>
-  <pre class="log">{{if .Log}}{{.Log}}{{else}}Waiting for the build to start…{{end}}</pre>
+  <pre class="log">{{if .Log}}{{.Log}}{{else if eq $.Ahead 0}}Starting in a moment…{{else if eq $.Ahead 1}}Waiting for 1 build to finish first (builds run one at a time)…{{else if gt $.Ahead 1}}Waiting for {{$.Ahead}} builds to finish first (builds run one at a time)…{{else}}Waiting for the build to start…{{end}}</pre>
 </div>
 {{end}}
 {{end}}

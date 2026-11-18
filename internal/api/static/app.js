@@ -355,3 +355,67 @@ document.querySelectorAll("form[data-bulk]").forEach((form) => {
   table.addEventListener("change", update);
   table.addEventListener("selchange", update);
 });
+
+// ---------- activity: what is in progress, from any page of the organization ----------
+// The header shows "N in progress" while builds, deployments, databases or backups are
+// under way; its menu lists them with their state. When one finishes, a notice says
+// so, and the page reloads if it is the page of that item (to show the result).
+const activity = document.getElementById("activity");
+if (activity) {
+  const list = activity.querySelector(".activity-list");
+  const count = activity.querySelector(".activity-count");
+  const toast = document.getElementById("activity-toast");
+  let known = new Map(); // key -> item
+  let first = true;
+  let toastTimer;
+  const here = window.location.pathname;
+  const pathOf = (link) => link.split("#")[0];
+  const notify = (text, link) => {
+    toast.replaceChildren();
+    const a = el("a", "", text);
+    a.href = link;
+    toast.append(a);
+    toast.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toast.hidden = true; }, 8000);
+  };
+  const render = (items) => {
+    list.replaceChildren();
+    for (const it of items) {
+      const li = el("li");
+      const a = el("a");
+      a.href = it.link;
+      const head = el("span", "activity-head");
+      head.append(el("strong", "", it.label), el("span", "badge st-" + it.state, it.state));
+      a.append(head, el("small", "", it.detail));
+      li.append(a);
+      list.append(li);
+    }
+    count.textContent = String(items.length);
+    activity.hidden = items.length === 0;
+  };
+  const poll = async () => {
+    let delay = 15000;
+    try {
+      const data = await getJSON(activity.dataset.url);
+      const items = data.items || [];
+      const next = new Map(items.map((it) => [it.key, it]));
+      if (!first) {
+        let reload = false;
+        for (const [key, it] of known) {
+          if (next.has(key)) continue;
+          const word = { build: "build finished", deploy: "deployment finished", database: "database ready", backup: it.state === "restoring" ? "restore finished" : "backup finished" }[it.kind] || "finished";
+          notify(it.label + ": " + word + ". See the result", it.link);
+          if (pathOf(it.link) === here) reload = true;
+        }
+        if (reload) { setTimeout(() => window.location.reload(), 1200); }
+      }
+      first = false;
+      known = next;
+      render(items);
+      if (items.length > 0) delay = 3000;
+    } catch (_) { /* signed out or offline: try again later */ }
+    setTimeout(poll, document.hidden ? Math.max(delay, 15000) : delay);
+  };
+  poll();
+}

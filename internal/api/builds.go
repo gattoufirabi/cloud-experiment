@@ -246,10 +246,18 @@ func (s *Server) startBuildForm(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) buildPage(w http.ResponseWriter, r *http.Request) {
 	var b buildView
+	ahead := -1
 	o, p, sv, err, ok := s.withService(w, r, "viewer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
-		return tx.QueryRow(r.Context(), `SELECT `+buildCols+` FROM builds b LEFT JOIN users u ON u.id = b.created_by
+		var id string
+		if err := tx.QueryRow(r.Context(), `SELECT b.id, `+buildCols+` FROM builds b LEFT JOIN users u ON u.id = b.created_by
 			WHERE b.service_id = $1 AND b.number = $2`, sv.ID, atoi(r.PathValue("n"))).
-			Scan(&b.Number, &b.Status, &b.Trigger, &b.Commit, &b.Image, &b.Error, &b.Log, &b.By, &b.Deploy, &b.Branch, &b.PR, &b.Created, &b.Started, &b.Finished)
+			Scan(&id, &b.Number, &b.Status, &b.Trigger, &b.Commit, &b.Image, &b.Error, &b.Log, &b.By, &b.Deploy, &b.Branch, &b.PR, &b.Created, &b.Started, &b.Finished); err != nil {
+			return err
+		}
+		if b.Status == "queued" { // builds run one at a time: say how many are before this one
+			return tx.QueryRow(r.Context(), `SELECT build_queue_ahead($1)`, id).Scan(&ahead)
+		}
+		return nil
 	})
 	if !ok {
 		return
@@ -263,7 +271,7 @@ func (s *Server) buildPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "build", http.StatusOK, data{"Org": o, "Project": p, "Service": sv, "Build": b, "Path": svcPath(o, p, sv),
-		"Refresh": b.Status == "queued" || b.Status == "running"})
+		"Refresh": b.Status == "queued" || b.Status == "running", "Ahead": ahead})
 }
 
 // rotateBuildHook creates (or replaces) the webhook token; the URL is shown once.

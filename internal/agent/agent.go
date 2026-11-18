@@ -1176,12 +1176,18 @@ func (a *Agent) projectHosts(ctx context.Context, projectID, netName string) []s
 	}
 	rows.Close()
 	var hosts []string
-	// The S3 endpoint is reached through the proxy on the project network (the host's
-	// public address is closed to tenant containers).
-	if a.cfg.StorageEnabled() && a.isPrimary() {
+	// The console (its API: Prometheus queries from Grafana, the platform API from your
+	// code) and the S3 endpoint are reached through the proxy on the project network:
+	// the host's public address is closed to tenant containers.
+	if a.isPrimary() {
 		if info, err := a.dk.ContainerInspect(ctx, a.cfg.CaddyContainer); err == nil {
 			if ep, ok := info.NetworkSettings.Networks[netName]; ok && ep.IPAddress != "" {
-				hosts = append(hosts, hostOnly(s3ServiceHost(a.cfg))+":"+ep.IPAddress)
+				if a.cfg.ConsoleHost != "" {
+					hosts = append(hosts, hostOnly(a.cfg.ConsoleHost)+":"+ep.IPAddress)
+				}
+				if a.cfg.StorageEnabled() {
+					hosts = append(hosts, hostOnly(s3ServiceHost(a.cfg))+":"+ep.IPAddress)
+				}
 			}
 		}
 	}
