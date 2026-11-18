@@ -34,6 +34,7 @@ type dnsZoneView struct {
 	Checked, Active    *time.Time
 	Records            int
 	Created            time.Time
+	Delegation         string // what is wrong with the delegation ("" when it is complete)
 }
 
 type dnsRecordView struct {
@@ -54,7 +55,7 @@ func (r dnsRecordView) Automatic() string {
 }
 
 func loadDNSZones(ctx context.Context, tx pgx.Tx) ([]dnsZoneView, error) {
-	rows, err := tx.Query(ctx, `SELECT z.id, z.domain, z.status, z.checked_at, z.active_at, (SELECT count(*) FROM dns_records r WHERE r.zone_id = z.id)::int, z.created_at
+	rows, err := tx.Query(ctx, `SELECT z.id, z.domain, z.status, z.checked_at, z.active_at, (SELECT count(*) FROM dns_records r WHERE r.zone_id = z.id)::int, z.created_at, z.delegation
 		FROM dns_zones z ORDER BY z.domain`)
 	if err != nil {
 		return nil, err
@@ -64,8 +65,8 @@ func loadDNSZones(ctx context.Context, tx pgx.Tx) ([]dnsZoneView, error) {
 
 func loadDNSZone(ctx context.Context, tx pgx.Tx, domain string) (*dnsZoneView, []dnsRecordView, error) {
 	var z dnsZoneView
-	if err := tx.QueryRow(ctx, `SELECT z.id, z.domain, z.status, z.checked_at, z.active_at, (SELECT count(*) FROM dns_records r WHERE r.zone_id = z.id)::int, z.created_at
-		FROM dns_zones z WHERE z.domain = $1`, domain).Scan(&z.ID, &z.Domain, &z.Status, &z.Checked, &z.Active, &z.Records, &z.Created); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT z.id, z.domain, z.status, z.checked_at, z.active_at, (SELECT count(*) FROM dns_records r WHERE r.zone_id = z.id)::int, z.created_at, z.delegation
+		FROM dns_zones z WHERE z.domain = $1`, domain).Scan(&z.ID, &z.Domain, &z.Status, &z.Checked, &z.Active, &z.Records, &z.Created, &z.Delegation); err != nil {
 		return nil, nil, err
 	}
 	rows, err := tx.Query(ctx, `SELECT id, name, type, value, priority, ttl, managed_by FROM dns_records WHERE zone_id = $1

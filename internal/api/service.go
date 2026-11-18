@@ -167,6 +167,7 @@ type domainView struct {
 	ID, Hostname, Token string
 	Verified            bool
 	Zone                string // the hosted zone where the platform wrote its records ("" if none)
+	Delegation          string // that zone's delegation problem, if any
 }
 
 func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
@@ -240,7 +241,8 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		rows, err = tx.Query(r.Context(), `SELECT dm.id, dm.hostname, dm.verify_token, dm.verified_at IS NOT NULL,
-			coalesce((SELECT z.domain FROM dns_records x JOIN dns_zones z ON z.id = x.zone_id WHERE x.managed_by = 'domain:' || dm.id::text LIMIT 1), '')
+			coalesce((SELECT z.domain FROM dns_records x JOIN dns_zones z ON z.id = x.zone_id WHERE x.managed_by = 'domain:' || dm.id::text LIMIT 1), ''),
+			coalesce((SELECT z.delegation FROM dns_records x JOIN dns_zones z ON z.id = x.zone_id WHERE x.managed_by = 'domain:' || dm.id::text LIMIT 1), '')
 			FROM domains dm WHERE dm.service_id = $1 ORDER BY dm.hostname`, sv.ID)
 		if err != nil {
 			return err

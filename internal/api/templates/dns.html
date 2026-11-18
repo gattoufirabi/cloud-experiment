@@ -9,7 +9,7 @@
   <table class="resources">
     <thead><tr><th>Domain</th><th>Status</th><th class="num">Records</th><th>Added</th></tr></thead>
     <tbody>{{range .Zones}}<tr><td><a href="{{$.Org.Path}}/dns/{{.Domain}}"><strong>{{.Domain}}</strong></a></td>
-      <td>{{if eq .Status "active"}}<span class="badge">active</span>{{else}}waiting for the name servers{{end}}</td><td class="num">{{.Records}}</td><td class="nowrap">{{ago .Created}}</td></tr>{{end}}</tbody>
+      <td>{{if eq .Status "active"}}<span class="badge">active</span>{{if .Delegation}} <span class="error-text small">delegation incomplete</span>{{end}}{{else}}waiting for the name servers{{end}}</td><td class="num">{{.Records}}</td><td class="nowrap">{{ago .Created}}</td></tr>{{end}}</tbody>
   </table>
   {{else}}<p class="small muted">No hosted zone yet.</p>{{end}}
 </div>

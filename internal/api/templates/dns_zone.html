@@ -3,6 +3,9 @@
 <div class="head"><h1>{{.Zone.Domain}}</h1>{{if eq .Zone.Status "active"}}<span class="badge">active</span>{{end}}</div>
 {{if eq .Zone.Status "active"}}
 <p class="lede">The platform answers for {{.Zone.Domain}}{{with .Zone.Active}} since {{ago .}}{{end}}. Changes apply within seconds; resolvers may keep old answers for their TTL.</p>
+{{with .Zone.Delegation}}<div class="panel strong" id="delegation"><p><strong>The delegation is incomplete.</strong> {{.}}</p>
+  <p class="small">At your registrar, the name servers of <strong>{{$.Zone.Domain}}</strong> must be exactly:</p><pre class="cmd">{{range $.Nameservers}}{{.}}
+{{end}}</pre><p class="small muted">Checked every hour; resolvers may keep the old list for a day.</p></div>{{end}}
 {{else}}
 <div class="section panel">
   <h2>Waiting for the name servers</h2>

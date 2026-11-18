@@ -168,15 +168,18 @@ func (a *Agent) dnsLoop(ctx context.Context) {
 // checkDelegations activates pending zones delegated to the platform's name servers.
 func (a *Agent) checkDelegations(ctx context.Context) {
 	_, _ = a.pool.Exec(ctx, `DELETE FROM dns_zones WHERE status = 'pending' AND created_at < now() - interval '14 days'`)
-	rows, err := a.pool.Query(ctx, `SELECT id, org_id, domain FROM dns_zones WHERE status = 'pending' ORDER BY checked_at NULLS FIRST LIMIT 50`)
+	// pending zones every 2 minutes; active ones hourly (their delegation can change)
+	rows, err := a.pool.Query(ctx, `SELECT id, org_id, domain, status FROM dns_zones
+		WHERE status = 'pending' OR checked_at IS NULL OR checked_at < now() - interval '1 hour'
+		ORDER BY checked_at NULLS FIRST LIMIT 50`)
 	if err != nil {
 		return
 	}
-	type pz struct{ ID, OrgID, Domain string }
+	type pz struct{ ID, OrgID, Domain, Status string }
 	var list []pz
 	for rows.Next() {
 		var z pz
-		if rows.Scan(&z.ID, &z.OrgID, &z.Domain) == nil {
+		if rows.Scan(&z.ID, &z.OrgID, &z.Domain, &z.Status) == nil {
 			list = append(list, z)
 		}
 	}
@@ -190,10 +193,37 @@ func (a *Agent) checkDelegations(ctx context.Context) {
 		nss, err := net.DefaultResolver.LookupNS(lctx, z.Domain)
 		cancel()
 		delegated := false
+		seen := map[string]bool{}
+		var foreign []string
 		for _, ns := range nss {
-			if ours[dns.Fqdn(strings.ToLower(ns.Host))] {
+			h := dns.Fqdn(strings.ToLower(ns.Host))
+			if ours[h] {
 				delegated = true
+				seen[h] = true
+			} else {
+				foreign = append(foreign, strings.TrimSuffix(h, "."))
 			}
+		}
+		var missing []string
+		for _, n := range a.dnsNameservers() {
+			if !seen[n] {
+				missing = append(missing, strings.TrimSuffix(n, "."))
+			}
+		}
+		note := ""
+		if err == nil && delegated {
+			if len(foreign) > 0 {
+				note = "Other name servers are still listed at your registrar (" + strings.Join(foreign, ", ") +
+					"): visitors sometimes get their answers instead, without your records here. Remove them."
+			}
+			if len(missing) > 0 {
+				note = strings.TrimSpace(note + " Add the platform's name server(s) " + strings.Join(missing, ", ") + " at your registrar.")
+			}
+		}
+		_, _ = a.pool.Exec(ctx, `UPDATE dns_zones SET delegation = $2 WHERE id = $1`, z.ID, note)
+		if err == nil && delegated && z.Status == "active" {
+			_, _ = a.pool.Exec(ctx, `UPDATE dns_zones SET checked_at = now() WHERE id = $1`, z.ID)
+			continue
 		}
 		if err == nil && delegated {
 			_, _ = a.pool.Exec(ctx, `UPDATE dns_zones SET status = 'active', active_at = now(), checked_at = now() WHERE id = $1`, z.ID)

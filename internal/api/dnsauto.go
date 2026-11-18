@@ -19,9 +19,9 @@ import (
 func zoneFor(ctx context.Context, tx pgx.Tx, host string) (*dnsZoneView, string, error) {
 	var z dnsZoneView
 	err := tx.QueryRow(ctx, `
-		SELECT z.id, z.domain, z.status, z.checked_at, z.active_at, 0, z.created_at FROM dns_zones z
+		SELECT z.id, z.domain, z.status, z.checked_at, z.active_at, 0, z.created_at, z.delegation FROM dns_zones z
 		WHERE $1 = z.domain OR $1 LIKE '%.' || z.domain ORDER BY length(z.domain) DESC LIMIT 1`, host).
-		Scan(&z.ID, &z.Domain, &z.Status, &z.Checked, &z.Active, &z.Records, &z.Created)
+		Scan(&z.ID, &z.Domain, &z.Status, &z.Checked, &z.Active, &z.Records, &z.Created, &z.Delegation)
 	if isNoRows(err) {
 		return nil, "", nil
 	}

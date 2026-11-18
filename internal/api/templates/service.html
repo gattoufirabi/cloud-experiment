@@ -264,6 +264,7 @@
       <div class="panel{{if not .Verified}} strong{{end}}">
         <div class="head"><strong>{{.Hostname}}</strong>{{if .Verified}}<span class="st st-verified">verified</span>{{else}}<span class="st st-pending">waiting for DNS</span>{{end}}</div>
         {{if .Zone}}<p class="small muted">DNS handled by the platform in your hosted zone <a href="{{$.Org.Path}}/dns/{{.Zone}}">{{.Zone}}</a>{{if not .Verified}}: verified as soon as the zone's delegation is confirmed{{end}}.</p>
+        {{if .Delegation}}<p class="small error-text">This domain may not answer for everyone yet: {{.Delegation}} <a href="{{$.Org.Path}}/dns/{{.Zone}}#delegation">Details</a></p>{{end}}
         {{else if not .Verified}}
         <ul class="brackets small">
           <li>TXT record <code class="select">_platform-challenge.{{.Hostname}}</code> with value <code class="select">platform-verify={{.Token}}</code></li>
