@@ -15,6 +15,7 @@ var Engines = []Engine{
 	{"postgres", "16", "PostgreSQL", 5432, "postgres"},
 	{"mysql", "8.4", "MySQL", 3306, "mysql"},
 	{"mariadb", "11.4", "MariaDB", 3306, "mysql"},
+	{"mongodb", "8.0", "MongoDB", 27017, "mongodb"},
 	{"redis", "7", "Redis", 6379, "redis"},
 }
 

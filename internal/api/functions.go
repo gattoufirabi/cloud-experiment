@@ -38,6 +38,8 @@ var fnSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,19}$`)
 
 type functionInfo struct {
 	ID, Slug, Runtime, Handler, CodeSHA, URLAuth, Schedule string
+	WebCommand                                             string // web apps: the server's start command ("" = handler)
+	WebPort                                                int
 	Code                                                   []byte
 	MemoryMB, TimeoutSeconds, Concurrency                  int
 	Env                                                    map[string]string
@@ -68,13 +70,13 @@ func (f *functionInfo) EnvText() string {
 }
 
 const fnCols = `f.id, f.slug, f.runtime, f.handler, f.code_sha256, f.url_auth, f.schedule, f.code, f.memory_mb, f.timeout_seconds, f.concurrency,
-	f.env, f.url_enabled, f.schedule_enabled, f.url_token_hash IS NOT NULL, f.next_run_at, f.created_at, f.updated_at`
+	f.env, f.url_enabled, f.schedule_enabled, f.url_token_hash IS NOT NULL, f.next_run_at, f.created_at, f.updated_at, f.web_command, f.web_port`
 
 func scanFunction(row pgx.Row) (*functionInfo, error) {
 	var f functionInfo
 	var env []byte
 	err := row.Scan(&f.ID, &f.Slug, &f.Runtime, &f.Handler, &f.CodeSHA, &f.URLAuth, &f.Schedule, &f.Code, &f.MemoryMB, &f.TimeoutSeconds,
-		&f.Concurrency, &env, &f.URLEnabled, &f.ScheduleEnabled, &f.HasToken, &f.NextRun, &f.Created, &f.Updated)
+		&f.Concurrency, &env, &f.URLEnabled, &f.ScheduleEnabled, &f.HasToken, &f.NextRun, &f.Created, &f.Updated, &f.WebCommand, &f.WebPort)
 	_ = json.Unmarshal(env, &f.Env)
 	if f.Env == nil {
 		f.Env = map[string]string{}
@@ -466,6 +468,11 @@ func writeFunctionHTTP(w http.ResponseWriter, inv *invocation) {
 	_, _ = w.Write(res.Result)
 }
 
+// validWebCommand: empty (a handler function) or one line of at most 300 characters.
+func validWebCommand(c string) bool {
+	return len(c) <= 300 && !strings.ContainsAny(c, "\r\n\x00")
+}
+
 func newRequestID() string {
 	return strings.ToLower(secure.NewToken()[:24])
 }
@@ -549,11 +556,14 @@ func (s *Server) createFunction(w http.ResponseWriter, r *http.Request) {
 			formErr = fmt.Sprintf("Your plan allows %d functions.", max)
 			return nil
 		}
-		code := functions.StarterZip(rt)
+		code, webCmd := functions.StarterZip(rt), ""
+		if r.PostFormValue("kind") == "web" { // a web app: an HTTP server instead of a handler
+			code, webCmd = functions.WebStarterZip(rt), rt.WebCommand
+		}
 		sum := sha256.Sum256(code)
 		if _, err := tx.Exec(r.Context(), `
-			INSERT INTO functions (org_id, project_id, slug, runtime, handler, code, code_sha256) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			o.ID, projectID, slug, rt.ID, rt.DefaultHandler, code, hex.EncodeToString(sum[:])); err != nil {
+			INSERT INTO functions (org_id, project_id, slug, runtime, handler, code, code_sha256, web_command) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			o.ID, projectID, slug, rt.ID, rt.DefaultHandler, code, hex.EncodeToString(sum[:]), webCmd); err != nil {
 			if isUniqueViolation(err) {
 				formErr = "A function with this name already exists in the project."
 				return nil
@@ -612,6 +622,9 @@ func (s *Server) renderFunction(w http.ResponseWriter, r *http.Request, o *orgIn
 	editable := false
 	if err == nil {
 		mainFile = functions.MainFile(rt, f.Handler, files)
+		if f.WebCommand != "" {
+			mainFile = functions.WebMainFile(rt, f.WebCommand, files)
+		}
 		if b, ok := files[mainFile]; ok && utf8.Valid(b) && len(b) <= 256<<10 {
 			source, editable = string(b), true
 		} else if !ok {
@@ -659,7 +672,11 @@ func (s *Server) saveFunctionCode(w http.ResponseWriter, r *http.Request) {
 				formErr = "The editor holds up to 256 KB; upload a zip archive for larger code."
 				return nil
 			}
-			files[functions.MainFile(rt, f.Handler, files)] = []byte(src)
+			main := functions.MainFile(rt, f.Handler, files)
+			if f.WebCommand != "" {
+				main = functions.WebMainFile(rt, f.WebCommand, files)
+			}
+			files[main] = []byte(src)
 			if code, err = functions.BuildZip(files); err != nil {
 				return err
 			}
@@ -755,6 +772,7 @@ func (s *Server) functionSettings(w http.ResponseWriter, r *http.Request) {
 	handler := strings.TrimSpace(r.PostFormValue("handler"))
 	urlOn, auth := r.PostFormValue("url_enabled") == "1", r.PostFormValue("url_auth")
 	schedule, schedOn := strings.TrimSpace(r.PostFormValue("schedule")), r.PostFormValue("schedule_enabled") == "1"
+	webCmd, webPort := strings.TrimSpace(r.PostFormValue("web_command")), atoiDefault(r.PostFormValue("web_port"), 8080)
 	var formErr string
 	o, p, f, err, ok := s.withFunction(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, f *functionInfo) error {
 		env, eerr := parseEnvText(r.PostFormValue("env"))
@@ -765,8 +783,10 @@ func (s *Server) functionSettings(w http.ResponseWriter, r *http.Request) {
 			formErr = "Timeout: 1 to 300 seconds."
 		case conc < 1 || conc > 50:
 			formErr = "Concurrency: 1 to 50."
-		case !functions.ValidHandler(handler):
+		case webCmd == "" && !functions.ValidHandler(handler):
 			formErr = "Handler: file and function, such as index.handler or lambda_function.lambda_handler."
+		case !validWebCommand(webCmd) || webPort < 1024 || webPort > 65535:
+			formErr = "Web app: a start command on one line (300 characters at most) and a port from 1024 to 65535."
 		case auth != "none" && auth != "token":
 			formErr = "Choose who may call the function URL."
 		case eerr != nil:
@@ -790,8 +810,9 @@ func (s *Server) functionSettings(w http.ResponseWriter, r *http.Request) {
 		envJSON, _ := json.Marshal(env)
 		if _, err := tx.Exec(r.Context(), `
 			UPDATE functions SET memory_mb = $2, timeout_seconds = $3, concurrency = $4, handler = $5, env = $6, url_enabled = $7, url_auth = $8,
-			       schedule = $9, schedule_enabled = $10, next_run_at = CASE WHEN schedule = $9 AND schedule_enabled = $10 THEN next_run_at END, updated_at = now()
-			WHERE id = $1`, f.ID, mem, tmo, conc, handler, envJSON, urlOn, auth, schedule, schedOn); err != nil {
+			       schedule = $9, schedule_enabled = $10, next_run_at = CASE WHEN schedule = $9 AND schedule_enabled = $10 THEN next_run_at END,
+			       web_command = $11, web_port = $12, updated_at = now()
+			WHERE id = $1`, f.ID, mem, tmo, conc, handler, envJSON, urlOn, auth, schedule, schedOn, webCmd, webPort); err != nil {
 			return err
 		}
 		s.audit(r, tx, o.ID, "function.updated", "function:"+p.Slug+"/"+f.Slug, map[string]any{

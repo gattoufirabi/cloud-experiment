@@ -17,6 +17,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
@@ -104,6 +105,8 @@ func main() {
 		err = c.preview(args)
 	case "build":
 		err = c.build(args)
+	case "zip":
+		err = c.zipDeploy(args)
 	case "bucket":
 		err = c.buckets(args)
 	case "key":
@@ -148,6 +151,8 @@ func usage(code int) {
   preview delete <project>/<service> NAME  delete a preview
   build <project>/<service> [--no-deploy] [--wait]
                                            build the service's git branch (and deploy it unless --no-deploy)
+  zip <project>/<service> <folder|file.zip> [--no-deploy] [--wait]
+                                           upload the source (a folder is zipped without .git and node_modules), build it and deploy
   bucket list                              S3 buckets with usage, endpoint and region
   bucket create NAME [--quota MB]          create bucket <org>-NAME (default quota 1024 MB)
   bucket delete NAME                       delete a bucket and all its objects
@@ -707,6 +712,15 @@ func (c *client) build(args []string) error {
 	if !*wait {
 		return nil
 	}
+	return c.waitBuild(res.Number, res.StatusURL)
+}
+
+// waitBuild follows a build until it finishes, printing its log.
+func (c *client) waitBuild(number int, statusURL string) error {
+	res := struct {
+		Number    int
+		StatusURL string
+	}{number, statusURL}
 	deadline := time.Now().Add(40 * time.Minute)
 	printed := 0
 	for time.Now().Before(deadline) {
@@ -733,6 +747,110 @@ func (c *client) build(args []string) error {
 		}
 	}
 	return errors.New("timed out waiting for the build")
+}
+
+// zipDeploy uploads a folder (zipped here, without .git and node_modules) or a .zip
+// file; the platform builds it like a git build and deploys it.
+func (c *client) zipDeploy(args []string) error {
+	if len(args) < 2 {
+		usage(2)
+	}
+	p, s := target(args)
+	src := args[1]
+	fs := flag.NewFlagSet("zip", flag.ExitOnError)
+	noDeploy := fs.Bool("no-deploy", false, "only build and push the image")
+	wait := fs.Bool("wait", false, "wait until the build finishes and print its log")
+	_ = fs.Parse(args[2:])
+	var data []byte
+	name := filepath.Base(src)
+	st, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if st.IsDir() {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		err := filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel(src, path)
+			rel = filepath.ToSlash(rel)
+			if d.IsDir() {
+				if d.Name() == ".git" || d.Name() == "node_modules" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !d.Type().IsRegular() {
+				return nil // links and special files are left out
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			h, err := zip.FileInfoHeader(info)
+			if err != nil {
+				return err
+			}
+			h.Name, h.Method = rel, zip.Deflate
+			w, err := zw.CreateHeader(h)
+			if err != nil {
+				return err
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.Copy(w, f)
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		if err := zw.Close(); err != nil {
+			return err
+		}
+		data, name = buf.Bytes(), name+".zip"
+	} else if data, err = os.ReadFile(src); err != nil {
+		return err
+	}
+	q := url.Values{"filename": {name}}
+	if *noDeploy {
+		q.Set("deploy", "false")
+	}
+	req, err := http.NewRequest("POST", c.base+"/api/v1/projects/"+p+"/services/"+s+"/zip?"+q.Encode(), bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/zip")
+	hc := *c.hc
+	hc.Timeout = 10 * time.Minute
+	resp, err := hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var res struct {
+		Number    int    `json:"number"`
+		StatusURL string `json:"status_url"`
+		Error     string `json:"error"`
+	}
+	_ = json.Unmarshal(body, &res)
+	if resp.StatusCode >= 300 {
+		if res.Error != "" {
+			return fmt.Errorf("%s (HTTP %d)", res.Error, resp.StatusCode)
+		}
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	fmt.Printf("%s uploaded (%d KB): build #%d queued\n", name, len(data)>>10, res.Number)
+	if !*wait {
+		return nil
+	}
+	return c.waitBuild(res.Number, res.StatusURL)
 }
 
 func (c *client) buckets(args []string) error {

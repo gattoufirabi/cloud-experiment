@@ -1,7 +1,7 @@
 {{define "title"}}{{.Function.Slug}} · Functions · {{.Org.Name}}{{end}}
 {{define "content"}}
 <div class="head"><h1>{{.Function.Slug}}</h1><span class="badge">{{.Function.RuntimeName}}</span></div>
-<p class="lede">{{.Function.MemoryMB}} MB · timeout {{.Function.TimeoutSeconds}} s · up to {{.Function.Concurrency}} at once · handler <code>{{.Function.Handler}}</code></p>
+<p class="lede">{{.Function.MemoryMB}} MB · timeout {{.Function.TimeoutSeconds}} s · up to {{.Function.Concurrency}} at once · {{if .Function.WebCommand}}web app <code>{{.Function.WebCommand}}</code> on port {{.Function.WebPort}}{{else}}handler <code>{{.Function.Handler}}</code>{{end}}</p>
 
 {{with .NewToken}}
 <div class="panel strong">
@@ -85,7 +85,9 @@
         <select name="memory_mb">{{range $m := list 128 256 512 1024 1536 2048}}<option value="{{$m}}" {{if eq $m $.Function.MemoryMB}}selected{{end}}>{{$m}} MB</option>{{end}}</select></label>
       <label>Timeout <span class="hint">seconds, 1 to 300</span><input type="number" name="timeout_seconds" min="1" max="300" value="{{.Function.TimeoutSeconds}}" required></label>
       <label>Concurrency <span class="hint">invocations running at once, 1 to 50</span><input type="number" name="concurrency" min="1" max="50" value="{{.Function.Concurrency}}" required></label>
-      <label>Handler <span class="hint">file.function</span><input name="handler" value="{{.Function.Handler}}" required></label>
+      <label>Handler <span class="hint">file.function{{if .Function.WebCommand}}; unused by a web app{{end}}</span><input name="handler" value="{{.Function.Handler}}" required></label>
+      <label>Web app start command <span class="hint">empty for a handler function; otherwise the command that starts your HTTP server, e.g. <code>node server.mjs</code> or <code>python3 -u app.py</code></span><input name="web_command" value="{{.Function.WebCommand}}" maxlength="300"></label>
+      <label>Web app port <span class="hint">the server listens on $PORT, which is set to this</span><input type="number" name="web_port" min="1024" max="65535" value="{{.Function.WebPort}}"></label>
       <label class="check wide"><input type="checkbox" name="url_enabled" value="1" {{if .Function.URLEnabled}}checked{{end}}> Function URL
         <span class="hint">an HTTPS endpoint at {{.URL}}</span></label>
       <label>Who may call the URL

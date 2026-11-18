@@ -47,14 +47,19 @@ func (d *databaseInfo) DumpTool() string {
 		return "mysqldump"
 	case "mariadb":
 		return "mariadb-dump"
+	case "mongodb":
+		return "mongodump"
 	}
 	return "pg_dump"
 }
 
 // DefaultSecret is the usual environment variable name for this engine's URL.
 func (d *databaseInfo) DefaultSecret() string {
-	if d.Engine == "redis" {
+	switch d.Engine {
+	case "redis":
 		return "REDIS_URL"
+	case "mongodb":
+		return "MONGODB_URI"
 	}
 	return "DATABASE_URL"
 }
@@ -111,6 +116,10 @@ func (s *Server) dbURL(d *databaseInfo) string {
 		u := url.URL{Scheme: "redis", User: url.UserPassword("default", s.dbPassword(d)), Host: d.Host() + ":6379", Path: "/0"}
 		return u.String()
 	}
+	if d.Engine == "mongodb" {
+		u := url.URL{Scheme: "mongodb", User: url.UserPassword(d.Username, s.dbPassword(d)), Host: d.Host() + ":27017", Path: "/" + d.DBName, RawQuery: "authSource=admin"}
+		return u.String()
+	}
 	if model.MySQLFamily(d.Engine) {
 		u := url.URL{Scheme: "mysql", User: url.UserPassword(d.Username, s.dbPassword(d)), Host: d.Host() + ":3306", Path: "/" + d.DBName}
 		return u.String()
@@ -158,7 +167,8 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 			formErr = fmt.Sprintf("Your %s plan allows %d managed databases.", plan.Name, plan.MaxDatabases)
 			return nil
 		}
-		if err := s.checkQuota(r, tx, o, "", 250, 256, false); err != nil {
+		mem := max(minDBMemory(engine), 256)
+		if err := s.checkQuota(r, tx, o, "", 250, mem, false); err != nil {
 			var qe quotaError
 			if errors.As(err, &qe) {
 				formErr = qe.Error()
@@ -169,9 +179,9 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		var id string
 		// Insert with a placeholder, then seal the password bound to the row ID.
 		if err := tx.QueryRow(r.Context(), `
-			INSERT INTO databases (org_id, project_id, slug, engine, version, db_name, username, password_enc)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, '\x00') RETURNING id`,
-			o.ID, p.ID, slug, engine, version, dbName, user).Scan(&id); err != nil {
+			INSERT INTO databases (org_id, project_id, slug, engine, version, db_name, username, password_enc, memory_mb)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, '\x00', $8) RETURNING id`,
+			o.ID, p.ID, slug, engine, version, dbName, user, mem).Scan(&id); err != nil {
 			if isUniqueViolation(err) {
 				formErr = "A database with this ID already exists in the project."
 				return errRollback
@@ -245,6 +255,10 @@ func (s *Server) databaseSettings(w http.ResponseWriter, r *http.Request) {
 	o, p, d, err, ok := s.withDatabase(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, d *databaseInfo) error {
 		if cpu < 50 || cpu > 4000 || mem < 128 || mem > 8192 {
 			formErr = "CPU must be 50 to 4000 millicores and memory 128 to 8192 MB."
+			return nil
+		}
+		if min := minDBMemory(d.Engine); mem < min {
+			formErr = fmt.Sprintf("%s needs at least %d MB of memory.", model.EngineInfo(d.Engine).Name, min)
 			return nil
 		}
 		if err := s.checkQuota(r, tx, o, d.ID, cpu, mem, false); err != nil {
@@ -418,3 +432,12 @@ func (s *Server) databaseRestore(w http.ResponseWriter, r *http.Request) {
 
 // engineName is the display name of a database engine, for templates.
 func engineName(id string) string { return model.EngineInfo(id).Name }
+
+// minDBMemory is the least memory an engine runs with (MongoDB's first start runs its
+// shell next to the server; at 256 MB it is killed before creating the user).
+func minDBMemory(engine string) int {
+	if engine == "mongodb" {
+		return 512
+	}
+	return 128
+}

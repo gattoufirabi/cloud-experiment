@@ -321,6 +321,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST "+svc+"/previews", s.auth(authFull, s.createPreviewForm))
 	m.HandleFunc("POST "+svc+"/source", s.auth(authFull, s.saveSource))
 	m.HandleFunc("POST "+svc+"/builds", s.auth(authFull, s.startBuildForm))
+	m.HandleFunc("POST "+svc+"/zip", s.auth(authFull, s.zipDeployForm))
 	m.HandleFunc("GET "+svc+"/builds/{n}", s.auth(authFull, s.buildPage))
 	m.HandleFunc("POST "+svc+"/build-hook", s.auth(authFull, s.rotateBuildHook))
 	m.HandleFunc("POST "+svc+"/previews/{name}/delete", s.auth(authFull, s.deletePreviewForm))
@@ -375,6 +376,8 @@ func (s *Server) secureHeaders(next http.Handler) http.Handler {
 				limit = 11 << 20
 			case strings.HasSuffix(r.URL.Path, "/invoke"): // function event
 				limit = 7 << 20
+			case strings.HasSuffix(r.URL.Path, "/zip"): // zip deployment
+				limit = maxZipDeployBytes + 1<<20
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}

@@ -323,6 +323,30 @@ mysql_engine maria mariadb:11.4 "mariadb --skip-ssl" "MariaDB"
 mysql_engine mysql mysql:8.4 mysql "MySQL"
 check "[A] unknown engine falls back to PostgreSQL" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=oracle -d engine=oracle:23 >/dev/null; my_db oracle engine)" postgres
 code_of ja -X POST "$BASE/o/$A/p/shop/d/oracle/delete" -d csrf=$CSRF_A -d confirm=oracle >/dev/null
+section "Managed MongoDB"
+check "[A] MongoDB created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=mongo -d engine=mongodb:8.0)" 303
+st=; for _ in $(seq 1 150); do st=$(my_db mongo status); [ "$st" = running ] || [ "$st" = failed ] && break; sleep 2; done
+check "[A] MongoDB running" "$st" running
+MCID=$(my_db mongo container_id)
+MHOST=$(owner_sql "SELECT 'pd-' || left(replace(d.id::text, '-', ''), 12) FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'mongo'")
+mongo_js() { dx exec "$MCID" sh -c "mongosh --quiet --host 127.0.0.1 -u \"\$MONGO_INITDB_ROOT_USERNAME\" -p \"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin app --eval '$1'" 2>&1 | tr -d '\r'; }
+check "[A] MongoDB refuses a wrong password" "$(dx exec "$MCID" sh -c "mongosh --quiet --host 127.0.0.1 -u app -p wrong --authenticationDatabase admin --eval 'db.runCommand({ping:1}).ok'" >/dev/null 2>&1 && echo yes || echo no)" no
+if dx exec "$CID_F" sh -c "echo | nc -w 3 $MHOST 27017" >/dev/null 2>&1; then ok "[A] service in the same project reaches MongoDB"; else bad "[A] service cannot reach MongoDB"; fi
+if dx exec "$CID_B" sh -c "echo | nc -w 3 $MHOST 27017" >/dev/null 2>&1; then bad "[B->A] B's service reached A's MongoDB"; else ok "[B->A] B's service cannot reach A's MongoDB"; fi
+code_of ja -X POST "$BASE/o/$A/p/shop/d/mongo/attach" -d csrf=$CSRF_A -d service=files -d name=MONGODB_URI >/dev/null
+check "[A] MONGODB_URI stored as a secret" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name = 'MONGODB_URI'")" 1
+if grep -q "mongodb://app:.*authSource=admin" <<<"$(c ja "$BASE/o/$A/p/shop/d/mongo")"; then ok "[A] MongoDB page shows a mongodb:// URL"; else bad "MongoDB page lacks the connection URL"; fi
+mongo_js "db.notes.insertOne({t: \"$MARK-g1\"})" >/dev/null
+check "[A] MongoDB stores documents" "$(mongo_js 'db.notes.findOne().t')" "$MARK-g1"
+code_of ja -X POST "$BASE/o/$A/p/shop/d/mongo/backups" -d csrf=$CSRF_A >/dev/null
+check "[A] MongoDB backup completes (mongodump)" "$(my_wait_job mongo backup)" done
+MSNAP=$(owner_sql "SELECT b.snapshot_id FROM backup_snapshots b JOIN databases d ON d.id = b.database_id JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND d.slug = 'mongo' ORDER BY b.taken_at DESC LIMIT 1")
+mongo_js "db.notes.updateOne({}, {\$set: {t: \"$MARK-g2\"}})" >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/shop/d/mongo/backups/restore/$MSNAP" -d csrf=$CSRF_A -d confirm=mongo >/dev/null
+check "[A] MongoDB restore completes (mongorestore)" "$(my_wait_job mongo restore)" done
+check "[A] MongoDB documents are back to the snapshot" "$(mongo_js 'db.notes.findOne().t')" "$MARK-g1"
+code_of ja -X POST "$BASE/o/$A/p/shop/d/mongo/delete" -d csrf=$CSRF_A -d confirm=mongo >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/shop/s/files/secrets/MONGODB_URI/delete" -d csrf=$CSRF_A >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
 section "API tokens and platformctl"
@@ -575,6 +599,40 @@ if grep -q "Recent invocations" <<<"$(c ja "$FN/hello")"; then ok "function page
 check "[A] function deleted" "$(code_of ja -X POST "$FN/hello/delete" -d csrf=$CSRF_A -d confirm=hello)" 303
 check "deleted function's URL gone (404)" "$(fn_url -o /dev/null -w '%{http_code}' -H "X-Function-Token: $FN_TOKEN" "http://$FN_HOST:$PORT/")" 404
 pctl fn delete shop/pyfn >/dev/null 2>&1
+# Lambda web apps: an ordinary HTTP server in a function
+check "[A] web app created in the console" "$(code_of ja -X POST "$BASE/o/$A/functions" -d csrf=$CSRF_A -d project=shop -d slug=webapp -d runtime=nodejs22 -d kind=web)" 303
+check "it starts with a server and its start command" "$(owner_sql "SELECT web_command || ':' || web_port FROM functions f JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'webapp'")" "node server.mjs:8080"
+WA_HOST=webapp-shop-$A.fn.apps.localhost
+wa_url() { curl -sS --resolve "$WA_HOST:$PORT:127.0.0.1" "$@"; }
+fn_api PUT webapp -o /dev/null -d '{"url_enabled": true, "url_auth": "none"}'
+check "the starter web app answers on its URL (cold start)" "$(wa_url "http://$WA_HOST:$PORT/hello?x=1" | grep -o 'Hello from a web app</h1><p>Path: /hello?x=1')" "Hello from a web app</h1><p>Path: /hello?x=1"
+WA_CODE='import http from "node:http";
+http.createServer((q, s) => {
+  let b = "";
+  q.on("data", (c) => (b += c));
+  q.on("end", () => {
+    if (q.url === "/events") {
+      s.writeHead(200, { "content-type": "application/json" });
+      return s.end(JSON.stringify({ ev: JSON.parse(b || "null"), port: process.env.PORT }));
+    }
+    s.setHeader("set-cookie", "sid=abc; Path=/");
+    s.writeHead(q.url.startsWith("/missing") ? 404 : 201, { "content-type": "text/plain", "x-app": "yes" });
+    s.end([q.method, q.url, b, q.headers["x-test"] || "", q.headers.cookie || "", q.headers["x-forwarded-for"] ? "xff" : ""].join("|"));
+  });
+}).listen(process.env.PORT);'
+WA_BODY=$(printf '%s' "$WA_CODE" | python -c 'import json,sys; print(json.dumps({"code": sys.stdin.read()}))')
+check "[API] web app code replaced with PUT" "$(fn_api PUT webapp -o /dev/null -w '%{http_code}' -d "$WA_BODY")" 200
+WA_HDRS=$(wa_url -D - -o "$TMP/wa.out" -X POST -H 'Content-Type: text/plain' -H 'X-Test: t1' -H 'Cookie: a=1' -d 'payload' "http://$WA_HOST:$PORT/items?q=2")
+check "method, path, query, body, headers and cookies reach the server" "$(cat "$TMP/wa.out")" "POST|/items?q=2|payload|t1|a=1|xff"
+check "the server's status code and headers come back" "$(grep -o '^HTTP/1.1 201' <<<"$WA_HDRS"):$(grep -ci '^x-app: yes' <<<"$WA_HDRS"):$(grep -ci '^set-cookie: sid=abc' <<<"$WA_HDRS")" "HTTP/1.1 201:1:1"
+check "a 404 from the app is passed through" "$(wa_url -o /dev/null -w '%{http_code}' "http://$WA_HOST:$PORT/missing")" 404
+check "[API] other events are POSTed to /events" "$(fn_api POST webapp/invoke -d '{"order": 7}' | grep -o '"ev":{"order":7},"port":"8080"')" '"ev":{"order":7},"port":"8080"'
+check "web app invocations recorded" "$(owner_sql "SELECT count(*) >= 4 FROM function_invocations i JOIN functions f ON f.id = i.function_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'webapp' AND i.status = 'succeeded'")" t
+fn_api PUT webapp -o /dev/null -d '{"web_command": "node nothere.mjs"}'
+check "a server that does not start reports why (502)" "$(wa_url -o /dev/null -w '%{http_code}' --max-time 90 "http://$WA_HOST:$PORT/")" 502
+check "the failure names the start problem" "$(owner_sql "SELECT error_type FROM function_invocations i JOIN functions f ON f.id = i.function_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'webapp' ORDER BY i.created_at DESC LIMIT 1")" Platform.StartFailed
+check "[API] an invalid web command is refused (422)" "$(fn_api PUT webapp -o /dev/null -w '%{http_code}' -d '{"web_port": 80}')" 422
+fn_api DELETE webapp >/dev/null
 ORG_A_ID=$(owner_sql "SELECT id FROM orgs WHERE slug = '$A'")
 check "function containers removed after deletion" "$(for _ in $(seq 1 45); do [ "$(docker ps -aq --filter label=platform.function --filter "label=platform.org=$ORG_A_ID" | wc -l)" = 0 ] && { echo yes; break; }; sleep 2; done)" yes
 
@@ -1076,6 +1134,27 @@ code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$
 OUT=$(pctl build shop/web --wait)
 if echo "$OUT" | grep -q "with Railpack (no Dockerfile)" && echo "$OUT" | grep -q "done: "; then ok "repository without a Dockerfile built with Railpack"; else bad "Railpack build failed: $(echo "$OUT" | tail -3)"; fi
 check "Railpack-built app deployed and serving" "$(for _ in $(seq 1 45); do b=$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/"); echo "$b" | grep -q "built-with-railpack-$RUN" && { echo yes; break; }; sleep 2; done)" yes
+# Zip deployment: the source uploaded as an archive, built and deployed
+ZD="$TMP/zipapp"; mkdir -p "$ZD/site"
+printf '%s\n' 'FROM nginx:1.27-alpine' 'COPY site/index.html /usr/share/nginx/html/index.html' > "$ZD/Dockerfile"
+echo "built-from-zip-$RUN" > "$ZD/site/index.html"
+OUT=$(pctl zip shop/web "$ZD" --wait)
+if grep -q "build #[0-9]* done: .*/$A/web:zip-" <<<"$OUT"; then ok "[CLI] folder zipped, uploaded, built (image tagged zip-)"; else bad "zip deploy failed: $(tail -3 <<<"$OUT")"; fi
+check "zip-built image deployed and serving" "$(for _ in $(seq 1 45); do b=$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/"); grep -q "built-from-zip-$RUN" <<<"$b" && { echo yes; break; }; sleep 2; done)" yes
+check "the archive is dropped once built" "$(owner_sql "SELECT source_zip IS NULL AND source_name = 'zipapp.zip' AND length(source_sha256) = 64 FROM builds b JOIN services s ON s.id = b.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'web' AND b.trigger = 'zip' ORDER BY b.number DESC LIMIT 1")" t
+# A repository's "Download ZIP": one top-level folder, no Dockerfile (Railpack)
+python -c 'import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1], "w")
+z.writestr("app-main/package.json", "{ \"name\": \"zipnode\", \"version\": \"1.0.0\", \"scripts\": { \"start\": \"node server.js\" } }")
+z.writestr("app-main/server.js", "require(\"http\").createServer((q, s) => s.end(\"zip-railpack-" + sys.argv[2] + "\")).listen(process.env.PORT || 3000);")
+z.close()' "$(cygpath -w "$TMP/app-main.zip")" "$RUN"
+check "[A] zip uploaded in the console (folder archive, no Dockerfile)" "$(code_of ja -X POST "$BASE$SVC_A/zip" -F csrf=$CSRF_A -F deploy=1 -F "archive=@$TMP/app-main.zip;type=application/zip")" 303
+check "the folder archive is built with Railpack and served" "$(for _ in $(seq 1 150); do b=$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/"); grep -q "zip-railpack-$RUN" <<<"$b" && { echo yes; break; }; sleep 2; done)" yes
+zapi() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" -H 'Content-Type: application/zip' --data-binary "@$2" "$BASE/api/v1/projects/shop/services/web/zip"; }
+echo "not a zip" > "$TMP/bad.zip"
+check "[API] an invalid archive is refused (422)" "$(zapi "$TOK_DEV" "$TMP/bad.zip")" 422
+check "[B->A API] B cannot upload to A's service (404)" "$(zapi "$TOK_B" "$TMP/app-main.zip")" 404
+check "zip builds audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'build.queued' AND detail::text LIKE '%"zip"%' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 section "Preview per pull request"
 (cd "$GITD/src" && git checkout -q -b pr-branch main && echo "pr-preview-$RUN" > index.html \
   && git -c user.email=e2e@example.test -c user.name=e2e commit -qam "pull request change" && git checkout -q main) >/dev/null

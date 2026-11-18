@@ -36,6 +36,8 @@ type apiFunction struct {
 	URLAuth         string            `json:"url_auth"`
 	Schedule        string            `json:"schedule,omitempty"`
 	ScheduleEnabled bool              `json:"schedule_enabled"`
+	WebCommand      string            `json:"web_command,omitempty"`
+	WebPort         int               `json:"web_port,omitempty"`
 	CodeSHA256      string            `json:"code_sha256"`
 	Updated         time.Time         `json:"updated_at"`
 }
@@ -108,6 +110,8 @@ func (s *Server) apiPutFunction(w http.ResponseWriter, r *http.Request, o *orgIn
 		URLAuth         *string            `json:"url_auth"`
 		Schedule        *string            `json:"schedule"`
 		ScheduleEnabled *bool              `json:"schedule_enabled"`
+		WebCommand      *string            `json:"web_command"`
+		WebPort         *int               `json:"web_port"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 15<<20)).Decode(&body); err != nil {
 		apiError(w, http.StatusBadRequest, `body must be JSON, for example {"runtime": "nodejs22", "code": "export const handler = async () => 'hi'"}`)
@@ -172,6 +176,9 @@ func (s *Server) apiPutFunction(w http.ResponseWriter, r *http.Request, o *orgIn
 				files = map[string][]byte{}
 			}
 			fname := functions.MainFile(rt, f.Handler, files)
+			if f.WebCommand != "" {
+				fname = functions.WebMainFile(rt, f.WebCommand, files)
+			}
 			if body.Filename != nil && *body.Filename != "" {
 				fname = *body.Filename
 			}
@@ -215,6 +222,18 @@ func (s *Server) apiPutFunction(w http.ResponseWriter, r *http.Request, o *orgIn
 		if body.ScheduleEnabled != nil {
 			f.ScheduleEnabled = *body.ScheduleEnabled
 		}
+		if body.WebCommand != nil {
+			f.WebCommand = strings.TrimSpace(*body.WebCommand)
+		}
+		if body.WebPort != nil {
+			f.WebPort = *body.WebPort
+		}
+		if f.WebPort == 0 {
+			f.WebPort = 8080
+		}
+		if !validWebCommand(f.WebCommand) || f.WebPort < 1024 || f.WebPort > 65535 {
+			return apiErr{http.StatusUnprocessableEntity, "web_command: one line, 300 characters at most; web_port: 1024 to 65535"}
+		}
 		switch {
 		case f.MemoryMB < 128 || f.MemoryMB > 2048:
 			return apiErr{http.StatusUnprocessableEntity, "memory_mb: 128 to 2048"}
@@ -242,17 +261,18 @@ func (s *Server) apiPutFunction(w http.ResponseWriter, r *http.Request, o *orgIn
 		if created {
 			err = tx.QueryRow(r.Context(), `
 				INSERT INTO functions (org_id, project_id, slug, runtime, handler, code, code_sha256, memory_mb, timeout_seconds, concurrency, env,
-				                       url_enabled, url_auth, schedule, schedule_enabled)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id, created_at, updated_at`,
+				                       url_enabled, url_auth, schedule, schedule_enabled, web_command, web_port)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING id, created_at, updated_at`,
 				o.ID, p.ID, f.Slug, f.Runtime, f.Handler, f.Code, f.CodeSHA, f.MemoryMB, f.TimeoutSeconds, f.Concurrency, envJSON,
-				f.URLEnabled, f.URLAuth, f.Schedule, f.ScheduleEnabled).Scan(&f.ID, &f.Created, &f.Updated)
+				f.URLEnabled, f.URLAuth, f.Schedule, f.ScheduleEnabled, f.WebCommand, f.WebPort).Scan(&f.ID, &f.Created, &f.Updated)
 		} else {
 			err = tx.QueryRow(r.Context(), `
 				UPDATE functions SET handler = $2, code = $3, code_sha256 = $4, memory_mb = $5, timeout_seconds = $6, concurrency = $7, env = $8,
 				       url_enabled = $9, url_auth = $10, next_run_at = CASE WHEN schedule = $11 AND schedule_enabled = $12 THEN next_run_at END,
-				       schedule = $11, schedule_enabled = $12, updated_at = now()
+				       schedule = $11, schedule_enabled = $12, web_command = $13, web_port = $14, updated_at = now()
 				WHERE id = $1 RETURNING updated_at`,
-				f.ID, f.Handler, f.Code, f.CodeSHA, f.MemoryMB, f.TimeoutSeconds, f.Concurrency, envJSON, f.URLEnabled, f.URLAuth, f.Schedule, f.ScheduleEnabled).Scan(&f.Updated)
+				f.ID, f.Handler, f.Code, f.CodeSHA, f.MemoryMB, f.TimeoutSeconds, f.Concurrency, envJSON, f.URLEnabled, f.URLAuth, f.Schedule, f.ScheduleEnabled,
+				f.WebCommand, f.WebPort).Scan(&f.Updated)
 		}
 		if err != nil {
 			return err

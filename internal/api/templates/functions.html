@@ -40,6 +40,10 @@
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <label>Project<select name="project" required>{{range .Projects}}<option value="{{.Slug}}" {{if eq .Slug $.Scope}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
     <label>Function name <span class="hint">2 to 20 lowercase letters, digits and dashes</span><input name="slug" placeholder="e.g. resize-image" pattern="[a-z0-9][a-z0-9\-]{1,19}" required></label>
+    <fieldset class="wide choice"><legend>Kind</legend>
+      <label class="option"><input type="radio" name="kind" value="handler" checked> <strong>Function</strong> <span class="hint">a handler called with each event</span></label>
+      <label class="option"><input type="radio" name="kind" value="web"> <strong>Web app</strong> <span class="hint">an ordinary HTTP server (Express, Flask, FastAPI...) that scales to zero</span></label>
+    </fieldset>
     <fieldset class="wide choice"><legend>Runtime</legend>
       {{range $i, $r := .Runtimes}}<label class="option"><input type="radio" name="runtime" value="{{$r.ID}}" {{if eq $i 0}}checked{{end}}> <strong>{{$r.Name}}</strong></label>{{end}}
     </fieldset>

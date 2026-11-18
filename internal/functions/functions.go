@@ -32,6 +32,8 @@ type Runtime struct {
 	ID, Name, Image, Ext, Bootstrap, DefaultHandler, StarterFile string
 	Command                                                      []string
 	Starter                                                      string
+	// Web apps: an ordinary HTTP server listening on $PORT.
+	WebCommand, WebStarterFile, WebStarter string
 }
 
 var Runtimes = []Runtime{
@@ -45,6 +47,26 @@ var Runtimes = []Runtime{
     body: JSON.stringify({ message: "Hello from " + context.functionName, path: event.rawPath ?? null }),
   };
 };
+`,
+		WebCommand: "node server.mjs", WebStarterFile: "server.mjs",
+		WebStarter: `import http from "node:http";
+
+// An ordinary web server: the platform starts it with PORT set and sends it the
+// function URL's requests (other events arrive as POST /events).
+const server = http.createServer((req, res) => {
+  if (req.url === "/events" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ received: JSON.parse(body || "null") }));
+    });
+    return;
+  }
+  res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  res.end("<h1>Hello from a web app</h1><p>Path: " + req.url.replace(/[<>&"]/g, "") + "</p>");
+});
+server.listen(process.env.PORT || 8080, () => console.log("listening on", process.env.PORT || 8080));
 `},
 	{ID: "python3.13", Name: "Python 3.13", Image: "python:3.13-alpine", Ext: ".py", Bootstrap: "invoke.py",
 		DefaultHandler: "lambda_function.lambda_handler", StarterFile: "lambda_function.py", Command: []string{"python3", "-u", "/var/runtime/invoke.py"},
@@ -58,6 +80,36 @@ def lambda_handler(event, context):
         "headers": {"content-type": "application/json"},
         "body": json.dumps({"message": "Hello from " + context.function_name, "path": (event or {}).get("rawPath")}),
     }
+`,
+		WebCommand: "python3 -u app.py", WebStarterFile: "app.py",
+		WebStarter: `import html
+import json
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+# An ordinary web server: the platform starts it with PORT set and sends it the
+# function URL's requests (other events arrive as POST /events).
+class App(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = ("<h1>Hello from a web app</h1><p>Path: %s</p>" % html.escape(self.path)).encode()
+        self.send_response(200)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        data = self.rfile.read(int(self.headers.get("content-length") or 0))
+        body = json.dumps({"received": json.loads(data or "null")}).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), App).serve_forever()
 `},
 }
 
@@ -90,7 +142,25 @@ func MainFile(rt Runtime, handler string, files map[string][]byte) string {
 	return base + rt.Ext
 }
 
+// WebStarterZip is the code of a new web-app function: a small HTTP server.
+func WebStarterZip(rt Runtime) []byte {
+	z, _ := BuildZip(map[string][]byte{rt.WebStarterFile: []byte(rt.WebStarter)})
+	return z
+}
+
+// WebMainFile is the file a web app's start command runs ("node server.mjs" ->
+// server.mjs), for the code editor; the runtime's starter file name otherwise.
+func WebMainFile(rt Runtime, command string, files map[string][]byte) string {
+	for _, f := range strings.Fields(command) {
+		if _, ok := files[strings.TrimPrefix(f, "./")]; ok {
+			return strings.TrimPrefix(f, "./")
+		}
+	}
+	return rt.WebStarterFile
+}
+
 // StarterZip is the archive of a new function.
+
 func StarterZip(rt Runtime) []byte {
 	z, _ := BuildZip(map[string][]byte{rt.StarterFile: []byte(rt.Starter)})
 	return z

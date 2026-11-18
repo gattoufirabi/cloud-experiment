@@ -183,6 +183,7 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET "+svc+"/jobs/{job}/runs", s.apiAuth("viewer", s.apiJobRuns))
 	m.HandleFunc("GET "+svc+"/jobs/{job}/runs/{run}", s.apiAuth("viewer", s.apiJobRun))
 	m.HandleFunc("POST "+svc+"/builds", s.apiAuth("developer", s.apiStartBuild))
+	m.HandleFunc("POST "+svc+"/zip", s.apiAuth("developer", s.apiZipDeploy))
 	m.HandleFunc("GET "+svc+"/builds/{n}", s.apiAuth("viewer", s.apiBuild))
 	m.HandleFunc("POST "+svc+"/previews", s.apiAuth("developer", s.apiCreatePreview))
 	m.HandleFunc("DELETE "+svc+"/previews/{name}", s.apiAuth("developer", s.apiDeletePreview))

@@ -15,7 +15,7 @@ import (
 	"platform/internal/model"
 )
 
-// Managed databases: PostgreSQL, MySQL, MariaDB and Redis. Each is one container on its
+// Managed databases: PostgreSQL, MySQL, MariaDB, MongoDB and Redis. Each is one container on its
 // project's private network (reachable only by that project's services), under the same
 // sandbox and limits as client apps, with its data in a volume and a second "dump" volume
 // that holds a consistent export for backups (pg_dump, mysqldump / mariadb-dump, or a
@@ -139,6 +139,12 @@ func mysqlShell(d managedDB, tool, args string) []string {
 	return []string{"sh", "-c", fmt.Sprintf(`MYSQL_PWD="$%s" %s -h 127.0.0.1 -u %s %s`, pwVar, tool, d.Username, args)}
 }
 
+// mongoAuth signs MongoDB tools in as the database's user; the credentials come from
+// the container's own environment, never the agent's command line.
+const mongoAuth = `--host 127.0.0.1 --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin`
+
+func mongoShell(cmd string) []string { return []string{"sh", "-c", cmd} }
+
 // engineConfig returns the image, command, environment and data mount for an engine.
 func engineConfig(d managedDB, password string) (image string, cmd, env []string, dataPath string) {
 	if model.MySQLFamily(d.Engine) {
@@ -165,6 +171,18 @@ func engineConfig(d managedDB, password string) (image string, cmd, env []string
 			[]string{prefix + "RANDOM_ROOT_PASSWORD=yes", prefix + "INITDB_SKIP_TZINFO=1", prefix + "DATABASE=" + d.DBName,
 				prefix + "USER=" + d.Username, prefix + "PASSWORD=" + password},
 			"/var/lib/mysql"
+	}
+	if d.Engine == "mongodb" {
+		// The WiredTiger cache gets 40% of the memory (0.25 GB at least, its minimum); the
+		// rest is left for connections and the file system cache.
+		cacheGB := float64(d.MemoryMB) * 0.4 / 1024
+		if cacheGB < 0.25 {
+			cacheGB = 0.25
+		}
+		return "mongo:" + d.Version,
+			[]string{"mongod", "--bind_ip_all", fmt.Sprintf("--wiredTigerCacheSizeGB=%.2f", cacheGB), "--quiet"},
+			[]string{"MONGO_INITDB_ROOT_USERNAME=" + d.Username, "MONGO_INITDB_ROOT_PASSWORD=" + password, "MONGO_INITDB_DATABASE=" + d.DBName},
+			"/data/db"
 	}
 	if d.Engine == "redis" {
 		// RDB snapshots only (no append-only file) so a restore is one file; a memory cap
@@ -263,12 +281,15 @@ func readyCmd(d managedDB) []string {
 	if d.Engine == "redis" {
 		return []string{"sh", "-c", `redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG`}
 	}
+	if d.Engine == "mongodb" {
+		return mongoShell("mongosh --quiet " + mongoAuth + ` --eval "db.runCommand({ping: 1}).ok" | grep -q 1`)
+	}
 	return []string{"pg_isready", "-U", d.Username, "-d", d.DBName, "-h", "127.0.0.1"}
 }
 
 func (a *Agent) waitReady(ctx context.Context, id string, d managedDB) error {
 	limit := 90 * time.Second
-	if model.MySQLFamily(d.Engine) { // the first start initialises the data directory
+	if model.MySQLFamily(d.Engine) || d.Engine == "mongodb" { // the first start initialises the data directory
 		limit = 180 * time.Second
 	}
 	deadline := time.Now().Add(limit)
@@ -321,6 +342,10 @@ func (a *Agent) backupDatabase(ctx context.Context, j backupJob, tag string) (st
 		cmd = mysqlShell(d, dump, "--single-transaction --no-tablespaces --routines --triggers "+d.DBName+
 			" > /backup/db.sql.part && mv /backup/db.sql.part /backup/db.sql")
 		tool = strings.Fields(dump)[0]
+	}
+	if d.Engine == "mongodb" {
+		cmd = mongoShell("mongodump " + mongoAuth + ` --db="$MONGO_INITDB_DATABASE" --gzip --archive=/backup/db.archive.part && mv /backup/db.archive.part /backup/db.archive`)
+		tool = "mongodump"
 	}
 	if d.Engine == "redis" {
 		// --rdb asks the server for a point-in-time snapshot and saves it as dump.rdb.
@@ -379,6 +404,15 @@ func (a *Agent) restoreDatabase(ctx context.Context, j backupJob) (string, error
 	}
 	if err := a.restoreVolume(ctx, j, dbDumpVolume(d.ID)); err != nil {
 		return "", err
+	}
+	if d.Engine == "mongodb" {
+		// --drop replaces each collection in the snapshot; collections created since stay.
+		_, stderr, code, err := a.dk.ContainerExec(ctx, d.ContainerID, mongoShell("mongorestore "+mongoAuth+
+			` --gzip --archive=/backup/db.archive --drop --nsInclude="$MONGO_INITDB_DATABASE.*"`), nil)
+		if err != nil || code != 0 {
+			return "", fmt.Errorf("mongorestore failed (code %d): %s", code, truncate(strings.TrimSpace(string(stderr)), 400))
+		}
+		return done, nil
 	}
 	if model.MySQLFamily(d.Engine) {
 		client, _, _ := mysqlTools(d)

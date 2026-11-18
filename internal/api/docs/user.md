@@ -189,6 +189,16 @@ Instead of pushing images yourself, the platform can build your repository for y
 - One build at a time per service: starting a build while one is waiting reuses the waiting one. At most 5 builds waiting or running per organization.
 - Without a Dockerfile, make your app listen on the `PORT` environment variable (the platform sets it to the service's port). If Railpack cannot detect the project, the build fails with its explanation: add a Dockerfile.
 
+### Zip deployment
+
+No git repository needed: upload your application's source as a zip archive and the platform builds it the same way (its Dockerfile, or Railpack without one), then deploys it.
+
+- **Console:** the service's **Builds** tab, **Deploy a zip**: choose the archive (up to 100 MB) and click **Upload and build**.
+- **Command line:** `platformctl zip shop/web ./my-app --wait` zips the folder (leaving out `.git` and `node_modules`) and uploads it; a `.zip` file is uploaded as is. `--no-deploy` only builds and pushes the image.
+- **API:** `POST /api/v1/projects/PROJECT/services/SERVICE/zip` with the archive as the body (`Content-Type: application/zip`); add `?deploy=false` to only build, `?filename=app.zip` to name it in the log. The answer gives the build's `status_url`.
+- An archive whose files all sit in one folder (a repository's **Download ZIP**) is built from that folder. Links and paths leaving the archive are refused; it may unpack to 500 MB and 20,000 files.
+- The image is tagged `zip-<first 12 characters of the archive's SHA-256>`. The archive itself is deleted as soon as its build finishes; the build log keeps its name and SHA-256.
+
 ## Scheduled jobs
 
 A job runs a command on a schedule, in a fresh container made from the service's current deployment: same image, environment variables, secrets, project variables and private network (so it reaches the project's databases). Typical uses: a nightly report, cleaning old records, sending reminder emails.
@@ -243,18 +253,19 @@ Good to know:
 
 ## Managed databases
 
-Managed PostgreSQL, MySQL, MariaDB and Redis run next to your services, on the project's private network, with nightly consistent backups.
+Managed PostgreSQL, MySQL, MariaDB, MongoDB and Redis run next to your services, on the project's private network, with nightly consistent backups.
 
-1. **Create it** on the project's **Databases** tab (developers): give it an ID such as `main` and choose PostgreSQL 17, PostgreSQL 16, MySQL 8.4, MariaDB 11.4 or Redis 7. It starts within a minute with 250 millicores and 256 MB, counted against your plan.
-2. **Connect a service:** on the database's **Connect** tab, choose a service and click **Add secret**. The connection URL is stored as an encrypted secret of that service: `DATABASE_URL` for PostgreSQL, `REDIS_URL` for Redis. Redeploy the service to apply it.
-3. **Use it** from your application through that variable, for example `postgres://app:…@pd-…:5432/app?sslmode=disable`, `mysql://app:…@pd-…:3306/app` (MySQL and MariaDB) or `redis://default:…@pd-…:6379/0`.
+1. **Create it** on the project's **Databases** tab (developers): give it an ID such as `main` and choose PostgreSQL 17, PostgreSQL 16, MySQL 8.4, MariaDB 11.4, MongoDB 8.0 or Redis 7. It starts within a minute with 250 millicores and 256 MB, counted against your plan.
+2. **Connect a service:** on the database's **Connect** tab, choose a service and click **Add secret**. The connection URL is stored as an encrypted secret of that service: `DATABASE_URL` for PostgreSQL, MySQL and MariaDB, `MONGODB_URI` for MongoDB, `REDIS_URL` for Redis. Redeploy the service to apply it.
+3. **Use it** from your application through that variable, for example `postgres://app:…@pd-…:5432/app?sslmode=disable`, `mysql://app:…@pd-…:3306/app` (MySQL and MariaDB), `mongodb://app:…@pd-…:27017/app?authSource=admin` (MongoDB) or `redis://default:…@pd-…:6379/0`.
 
 - **Who can reach it:** only services of the same project. The database is not reachable from the internet or from other projects, so traffic stays on the private network.
 - **Who can see the password:** developers and above. Viewers see the host, port, database and user only.
 - **Resources:** change CPU and memory on the **Settings** tab. The database restarts with the new values; data is kept.
-- **Backups:** every night at the hour you choose, the platform takes a consistent `pg_dump` (PostgreSQL), `mysqldump` / `mariadb-dump` (MySQL, MariaDB) or snapshot (Redis), encrypts it with your organization's key and keeps 7 daily, 4 weekly and 6 monthly snapshots. **Back up now** takes one immediately.
+- **Backups:** every night at the hour you choose, the platform takes a consistent `pg_dump` (PostgreSQL), `mysqldump` / `mariadb-dump` (MySQL, MariaDB), `mongodump` (MongoDB) or snapshot (Redis), encrypts it with your organization's key and keeps 7 daily, 4 weekly and 6 monthly snapshots. **Back up now** takes one immediately.
 - **Restore** (admins): type the database ID next to a snapshot and click **Restore**. A safety snapshot of the current data is taken first and always kept; the snapshot is then loaded with `pg_restore`, replacing existing tables; Redis is briefly stopped and restarted with the snapshot. Connected applications may see errors for a few seconds.
 - **MySQL and MariaDB:** the database `app` and user `app` are created for you; `root` gets a random password that nobody is given. InnoDB gets half the memory you give MariaDB, a quarter for MySQL (which needs more for itself); give MySQL at least 256 MB. Up to 100 connections are accepted. Named time zones (`CONVERT_TZ(..., 'Europe/Paris')`) are not loaded; use offsets such as `+01:00` or UTC. A restore recreates every table in the snapshot; tables created after it are left in place.
+- **MongoDB:** the database `app` and user `app` (an administrator of this server only) are created for you. It starts with 512 MB, its minimum (its first start runs a shell next to the server). The storage engine's cache gets 40% of the memory (0.25 GB at least). A restore (`mongorestore --drop`) replaces each collection in the snapshot; collections created after it are left in place.
 - **Redis memory:** Redis uses at most 80% of the memory you give it and then refuses new writes instead of evicting keys, so size it for your data.
 - **Plans:** Starter includes 1 managed database, Pro includes 5 (all engines together).
 
@@ -279,6 +290,18 @@ How it runs:
 - The first call after a while starts a fresh sandbox (a **cold start**, about a second; the very first call of a runtime also downloads it). The sandbox then stays warm for 10 minutes after the last call: warm calls take a few milliseconds. Do not keep state in memory between calls; use a database or a bucket.
 - Events and responses are limited to 6 MB. Invocations, their logs and errors are kept 7 days (**Monitor** tab; `platformctl fn logs`).
 - **Billing:** per million requests and per GB-second (memory × run time), at your plan's prices.
+
+### Web apps
+
+A function can also be an ordinary web application (Express, Fastify, Flask, FastAPI, a plain HTTP server…) that scales to zero, like apps run with the AWS Lambda Web Adapter.
+
+1. Create a function and choose **Web app**. It starts with a small HTTP server (`server.mjs` or `app.py`) and its start command (`node server.mjs`, `python3 -u app.py`).
+2. Your server must listen on the port in the `PORT` variable (8080 unless you change **Web app port**). Change the **start command** on the Configuration tab, for example `node dist/index.js` or `python3 -m uvicorn main:app --host 0.0.0.0 --port 8080` (include its dependencies in the zip).
+3. Turn on the **function URL**: each request (method, path, query, headers, cookies and body) is forwarded to your server, and its answer (status, headers, cookies, body) is returned as is.
+
+- Other events (API invoke, console test, schedule, queue) are sent to your server as `POST /events` with the event as JSON; the answer (JSON or text) is the result. A status of 400 or more counts as an error.
+- The server starts on the first request (it has 60 seconds to listen) and stays warm for 10 minutes after the last one; it handles concurrent requests itself. A server that crashes is started again on the next request. A server that never listens fails the request with `Platform.StartFailed` and the reason.
+- Timeout, memory, concurrency, variables and billing work as for any function.
 
 ## Queues
 

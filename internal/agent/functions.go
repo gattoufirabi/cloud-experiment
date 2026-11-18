@@ -36,6 +36,7 @@ const (
 
 type fnWarm struct {
 	containerID, hash string
+	webAddr           string // web apps: the server's address on the project network
 	lastUsed          time.Time
 	running           int
 }
@@ -64,6 +65,8 @@ type fnConfig struct {
 	MemoryMB, TimeoutSeconds                                                    int
 	Env                                                                         map[string]string
 	SecretVersions                                                              string // referenced secrets and their versions
+	WebCommand                                                                  string // web apps: the server's start command
+	WebPort                                                                     int
 }
 
 func (f fnConfig) hash() string {
@@ -73,7 +76,7 @@ func (f fnConfig) hash() string {
 	}
 	sort.Strings(keys)
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s|%s|%s|%d|%s|", f.Runtime, f.Handler, f.CodeSHA, f.MemoryMB, f.SecretVersions)
+	fmt.Fprintf(&b, "%s|%s|%s|%d|%s|%s|%d|", f.Runtime, f.Handler, f.CodeSHA, f.MemoryMB, f.SecretVersions, f.WebCommand, f.WebPort)
 	for _, k := range keys {
 		b.WriteString(k + "=" + f.Env[k] + "\x00")
 	}
@@ -162,11 +165,11 @@ func (a *Agent) loadFnConfig(ctx context.Context, id string) (fnConfig, error) {
 	var f fnConfig
 	var env []byte
 	err := a.pool.QueryRow(ctx, `
-		SELECT f.id, f.org_id, f.project_id, f.slug, p.slug, o.slug, f.runtime, f.handler, f.code_sha256, f.memory_mb, f.timeout_seconds, f.env,
+		SELECT f.id, f.org_id, f.project_id, f.slug, p.slug, o.slug, f.runtime, f.handler, f.code_sha256, f.memory_mb, f.timeout_seconds, f.env, f.web_command, f.web_port,
 		       coalesce((SELECT string_agg(s.name || ':' || s.current_version, ',' ORDER BY s.name) FROM org_secrets s
 		                 WHERE s.org_id = f.org_id AND EXISTS (SELECT 1 FROM jsonb_each_text(f.env) e WHERE e.value = '${secret:' || s.name || '}')), '')
 		FROM functions f JOIN projects p ON p.id = f.project_id JOIN orgs o ON o.id = f.org_id WHERE f.id = $1`, id).
-		Scan(&f.ID, &f.OrgID, &f.ProjectID, &f.Slug, &f.ProjectSlug, &f.OrgSlug, &f.Runtime, &f.Handler, &f.CodeSHA, &f.MemoryMB, &f.TimeoutSeconds, &env, &f.SecretVersions)
+		Scan(&f.ID, &f.OrgID, &f.ProjectID, &f.Slug, &f.ProjectSlug, &f.OrgSlug, &f.Runtime, &f.Handler, &f.CodeSHA, &f.MemoryMB, &f.TimeoutSeconds, &env, &f.WebCommand, &f.WebPort, &f.SecretVersions)
 	if err != nil {
 		return f, err
 	}
@@ -234,6 +237,28 @@ func (a *Agent) runInvocation(ctx context.Context, c claimed) {
 		event = []byte("{}")
 	}
 	deadline := time.Now().Add(time.Duration(f.TimeoutSeconds) * time.Second)
+	if f.WebCommand != "" {
+		wctx, cancel := context.WithDeadline(ctx, deadline)
+		out, err := webInvoke(wctx, w.webAddr, event, c.ID)
+		cancel()
+		switch {
+		case errors.Is(err, context.DeadlineExceeded) || errors.Is(wctx.Err(), context.DeadlineExceeded):
+			status, errType, errMsg = "timed_out", "Sandbox.Timedout", fmt.Sprintf("Task timed out after %d seconds", f.TimeoutSeconds)
+		case err != nil:
+			errType, errMsg = "WebApp.RequestFailed", err.Error()
+			a.discardWarm(ctx, f.ID, w) // the server may have crashed: start a fresh one next time
+		default:
+			var res fnResult
+			_ = json.Unmarshal(out, &res)
+			response = out
+			if res.OK {
+				status = "succeeded"
+			} else {
+				errType, errMsg = res.ErrorType, res.ErrorMessage
+			}
+		}
+		return
+	}
 	input, _ := json.Marshal(map[string]any{
 		"event": json.RawMessage(event),
 		"context": map[string]any{
@@ -330,6 +355,27 @@ func (a *Agent) warmContainer(ctx context.Context, f fnConfig, rt functions.Runt
 		return nil, true, err
 	}
 	w = &fnWarm{containerID: id, hash: hash, lastUsed: time.Now(), running: 1}
+	if f.WebCommand != "" {
+		addr, err := a.webAddr(ctx, id, f.WebPort)
+		if err == nil {
+			err = waitWebReady(ctx, addr, 60*time.Second, func() error {
+				info, err := a.dk.ContainerInspect(ctx, id)
+				if err != nil {
+					return err
+				}
+				if !info.State.Running {
+					return fmt.Errorf("the web app's process stopped (exit code %d) before listening", info.State.ExitCode)
+				}
+				return nil
+			})
+		}
+		if err != nil {
+			msg := err.Error() + a.tail(ctx, id)
+			_ = a.dk.ContainerRemove(context.WithoutCancel(ctx), id)
+			return nil, true, errors.New(msg)
+		}
+		w.webAddr = addr
+	}
 	a.fn.mu.Lock()
 	a.fn.warm[f.ID] = w
 	a.fn.mu.Unlock()
@@ -399,8 +445,13 @@ func (a *Agent) startFunctionContainer(ctx context.Context, f fnConfig, rt funct
 	suffix := make([]byte, 3)
 	_, _ = rand.Read(suffix)
 	name := "pf-" + model.Compact(f.ID)[:12] + "-" + hex.EncodeToString(suffix)
+	entry, cmd := []string{"sleep"}, []string{"infinity"}
+	if f.WebCommand != "" { // a web app: its server is the container's process
+		entry, cmd = []string{"sh", "-c"}, []string{"cd /var/task && exec " + f.WebCommand}
+		env = append(env, fmt.Sprintf("PORT=%d", f.WebPort), fmt.Sprintf("AWS_LWA_PORT=%d", f.WebPort))
+	}
 	id, err := a.dk.ContainerCreate(ctx, name, docker.ContainerConfig{
-		Image: rt.Image, User: "65534:65534", Entrypoint: []string{"sleep"}, Cmd: []string{"infinity"}, Env: env,
+		Image: rt.Image, User: "65534:65534", Entrypoint: entry, Cmd: cmd, Env: env,
 		Labels: map[string]string{"platform.function": f.ID, "platform.org": f.OrgID, "platform.project": f.ProjectID,
 			"platform.node": a.selfID, "platform.spec": hash},
 		HostConfig: hc,

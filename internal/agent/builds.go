@@ -45,6 +45,8 @@ type buildJob struct {
 	CreatedBy                                  *string
 	PreviewID                                  *string // pull request build: deploy to this preview
 	PR                                         *int
+	IsZip                                      bool   // zip deployment: the source is an uploaded archive
+	SourceName, SourceSHA                      string // the archive's file name and SHA-256
 }
 
 func (a *Agent) pokeBuilds() {
@@ -92,9 +94,10 @@ func (a *Agent) claimBuild(ctx context.Context) (buildJob, bool) {
 		FROM next, services s, orgs o
 		WHERE bu.id = next.id AND s.id = bu.service_id AND o.id = bu.org_id
 		RETURNING bu.id, bu.org_id, o.slug, s.id, s.slug, bu.number, s.source_repo, coalesce(nullif(bu.branch, ''), s.source_branch), s.source_dir,
-		          s.source_token_enc, bu.deploy, bu.created_by, bu.preview_service_id, bu.pr_number`).
+		          s.source_token_enc, bu.deploy, bu.created_by, bu.preview_service_id, bu.pr_number,
+		          bu.source_zip IS NOT NULL, bu.source_name, bu.source_sha256`).
 		Scan(&b.ID, &b.OrgID, &b.OrgSlug, &b.ServiceID, &b.ServiceSlug, &b.Number, &b.Repo, &b.Branch, &b.Dir,
-			&b.TokenEnc, &b.Deploy, &b.CreatedBy, &b.PreviewID, &b.PR)
+			&b.TokenEnc, &b.Deploy, &b.CreatedBy, &b.PreviewID, &b.PR, &b.IsZip, &b.SourceName, &b.SourceSHA)
 	if err != nil {
 		return b, false
 	}
@@ -141,17 +144,27 @@ func (a *Agent) runBuild(parent context.Context, b buildJob) {
 		a.log.Info("build failed", "build", b.ID, "err", msg)
 	}
 
-	if b.PR != nil {
+	if b.IsZip {
+		// The archive is only needed for this build: drop it whatever happens.
+		defer a.pool.Exec(context.Background(), `UPDATE builds SET source_zip = NULL WHERE id = $1`, b.ID)
+		b.Dir = ""
+	}
+	switch {
+	case b.IsZip:
+		log.step("build #%d of the uploaded archive %s (sha256 %s)", b.Number, b.SourceName, short12(b.SourceSHA))
+	case b.PR != nil:
 		log.step("build #%d of %s (pull request #%d, branch %s) for preview pr-%d", b.Number, b.Repo, *b.PR, b.Branch, *b.PR)
-	} else {
+	default:
 		log.step("build #%d of %s (branch %s)", b.Number, b.Repo, b.Branch)
 	}
-	if err := a.checkRepo(ctx, b.Repo); err != nil {
-		fail(err.Error())
-		return
+	if !b.IsZip {
+		if err := a.checkRepo(ctx, b.Repo); err != nil {
+			fail(err.Error())
+			return
+		}
 	}
 	token := ""
-	if len(b.TokenEnc) > 0 {
+	if len(b.TokenEnc) > 0 && !b.IsZip {
 		plain, err := a.box.Open(b.TokenEnc, "source:"+b.ServiceID)
 		if err != nil {
 			fail("cannot read the repository token")
@@ -185,9 +198,25 @@ func (a *Agent) runBuild(parent context.Context, b buildJob) {
 		return
 	}
 
-	// 1. clone
-	log.step("cloning")
-	cloneScript := `set -eu
+	// 1. clone (or unpack the uploaded archive)
+	var tarball []byte
+	if b.IsZip {
+		var zipData []byte
+		if err := a.pool.QueryRow(ctx, `SELECT source_zip FROM builds WHERE id = $1`, b.ID).Scan(&zipData); err != nil || zipData == nil {
+			fail("the uploaded archive is gone")
+			return
+		}
+		var n int
+		var err error
+		if tarball, n, err = zipToTar(zipData); err != nil {
+			fail("archive: " + err.Error())
+			return
+		}
+		log.step("unpacking %d files", n)
+	} else {
+		log.step("cloning")
+	}
+	gitScript := `set -eu
 cd /src
 URL="$REPO"
 if [ -n "${TOKEN:-}" ]; then URL="${REPO%%://*}://x-access-token:${TOKEN}@${REPO#*://}"; fi
@@ -201,7 +230,12 @@ if ! clone --depth 1 2>/tmp/err; then
 fi
 echo "COMMIT=$(git -C repo rev-parse HEAD)"
 rm -rf repo/.git
-D="repo/${DIR:-.}"
+`
+	zipScript := `set -eu
+cd /src
+echo "COMMIT=$SHA"
+`
+	commonScript := `D="repo/${DIR:-.}"
 if [ ! -d "$D" ]; then echo "Folder ${DIR} not found in the repository." >&2; exit 2; fi
 mkdir -p out plan && chmod 777 out
 if [ -f "$D/Dockerfile" ]; then
@@ -218,11 +252,15 @@ else
 fi
 chmod -R a+rX repo plan
 chown 1000:1000 /cache`
-	cloneID, code, out, err := a.runOnce(ctx, "build-clone-"+short, docker.ContainerConfig{
+	script := gitScript + commonScript
+	if b.IsZip {
+		script = zipScript + commonScript
+	}
+	cloneID, code, out, err := a.runOnceFiles(ctx, "build-clone-"+short, docker.ContainerConfig{
 		Image:      a.cfg.GitImage,
 		Entrypoint: []string{"/bin/sh", "-c"},
-		Cmd:        []string{cloneScript},
-		Env: []string{"REPO=" + b.Repo, "BRANCH=" + b.Branch, "DIR=" + b.Dir, "TOKEN=" + token,
+		Cmd:        []string{script},
+		Env: []string{"REPO=" + b.Repo, "BRANCH=" + b.Branch, "DIR=" + b.Dir, "TOKEN=" + token, "SHA=" + b.SourceSHA,
 			"HOME=/tmp", "GIT_TERMINAL_PROMPT=0"},
 		Labels: labels,
 		HostConfig: a.withDNS(docker.HostConfig{
@@ -233,7 +271,7 @@ chown 1000:1000 /cache`
 			Mounts:    []docker.Mount{{Type: "volume", Source: vol, Target: "/src"}, {Type: "volume", Source: cache, Target: "/cache"}},
 			LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "4m"}},
 		}),
-	}, 5*time.Minute, nil)
+	}, 5*time.Minute, nil, "/src", tarball)
 	if cloneID != "" {
 		defer a.dk.ContainerRemove(context.Background(), cloneID)
 	}
@@ -249,6 +287,9 @@ chown 1000:1000 /cache`
 	}
 	if err != nil || code != 0 || len(commit) < 12 {
 		msg := "could not clone the repository (check the address, branch and token)"
+		if b.IsZip {
+			msg = "could not unpack the archive"
+		}
 		switch code {
 		case 2:
 			msg = "folder " + b.Dir + " not found in the repository"
@@ -261,10 +302,15 @@ chown 1000:1000 /cache`
 		fail(msg)
 		return
 	}
-	log.step("commit %s", commit)
+	tag := "git-" + commit[:12]
+	if b.IsZip {
+		tag = "zip-" + commit[:12]
+	} else {
+		log.step("commit %s", commit)
+	}
 
 	// 2. build
-	image := fmt.Sprintf("%s/%s/%s:git-%s", a.cfg.RegistryHost, b.OrgSlug, b.ServiceSlug, commit[:12])
+	image := fmt.Sprintf("%s/%s/%s:%s", a.cfg.RegistryHost, b.OrgSlug, b.ServiceSlug, tag)
 	ctxDir := "/src/repo"
 	if b.Dir != "" {
 		ctxDir += "/" + b.Dir
@@ -407,9 +453,20 @@ func (a *Agent) deployBuilt(ctx context.Context, b buildJob, image string) error
 // runOnce runs a container to completion and returns its combined output. The caller
 // removes the container (its files may still be needed).
 func (a *Agent) runOnce(ctx context.Context, name string, cfg docker.ContainerConfig, timeout time.Duration, progress func(string)) (string, int, string, error) {
+	return a.runOnceFiles(ctx, name, cfg, timeout, progress, "", nil)
+}
+
+// runOnceFiles is runOnce with a tar archive copied into the container at dir before it
+// starts (into its volume when dir is a mount point).
+func (a *Agent) runOnceFiles(ctx context.Context, name string, cfg docker.ContainerConfig, timeout time.Duration, progress func(string), dir string, tarball []byte) (string, int, string, error) {
 	id, err := a.dk.ContainerCreate(ctx, name, cfg)
 	if err != nil {
 		return "", 0, "", fmt.Errorf("create %s: %w", name, err)
+	}
+	if tarball != nil {
+		if err := a.dk.ContainerPutArchive(ctx, id, dir, tarball); err != nil {
+			return id, 0, "", fmt.Errorf("copy files into %s: %w", name, err)
+		}
 	}
 	if err := a.dk.ContainerStart(ctx, id); err != nil {
 		return id, 0, "", fmt.Errorf("start %s: %w", name, err)
@@ -483,4 +540,11 @@ func (a *Agent) checkRepo(ctx context.Context, raw string) error {
 		}
 	}
 	return nil
+}
+
+func short12(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
 }
