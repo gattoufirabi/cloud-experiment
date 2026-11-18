@@ -1,0 +1,24 @@
+:root { --bg: #faf7f2; --fg: #2b2620; --muted: #776d62; --accent: #b4532a; --card: #fff; --line: #e8e0d5; }
+@media (prefers-color-scheme: dark) { :root { --bg: #1c1916; --fg: #f1ebe3; --muted: #a99e92; --accent: #e08a5f; --card: #26221e; --line: #3a342e; } }
+* { box-sizing: border-box; }
+body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+header, main, footer { max-width: 1040px; margin: 0 auto; padding: 1.25rem 1rem; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem 1.5rem; }
+header h1 { margin: 0; font-size: 1.8rem; }
+header p { flex: 1 1 360px; margin: 0; color: var(--muted); }
+#products { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+.product { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; display: flex; flex-direction: column; gap: .4rem; }
+.product h2 { margin: .25rem 0 0; font-size: 1.1rem; }
+.product p { margin: 0; }
+.product img, .placeholder { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px; background: var(--line); }
+.placeholder { display: grid; place-items: center; font-size: 2.5rem; color: var(--muted); }
+.price { font-weight: 600; margin-top: auto !important; }
+button { font: inherit; border: 0; border-radius: 999px; padding: .55rem 1rem; background: var(--accent); color: #fff; cursor: pointer; }
+button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+button:disabled { opacity: .5; cursor: default; }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--fg); width: min(480px, 92vw); }
+dialog form { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; }
+dialog label { flex: 1 1 100%; display: flex; flex-direction: column; gap: .25rem; }
+input { font: inherit; padding: .5rem .6rem; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.muted { color: var(--muted); }
+.error { color: var(--accent); }

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Corner Shop · example store</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Corner Shop</h1>
+    <p>An example store running on the platform: storefront, private API, worker, PostgreSQL, Redis, MongoDB, Kafka, a queue, object storage, functions and email.</p>
+    <button id="cart-button" type="button">Cart (<span id="cart-count">0</span>)</button>
+  </header>
+  <main>
+    <section id="products" aria-label="Products"><p class="muted">Loading the catalogue…</p></section>
+    <dialog id="cart">
+      <h2>Your cart</h2>
+      <ul id="cart-lines"></ul>
+      <p id="cart-total"></p>
+      <form id="checkout">
+        <label>Email for the confirmation <input type="email" name="email" required placeholder="you@example.org"></label>
+        <button type="submit">Place order</button>
+        <button type="button" id="close-cart" class="secondary">Close</button>
+      </form>
+      <p id="checkout-result" role="status"></p>
+    </dialog>
+  </main>
+  <footer><p id="health" class="muted"></p></footer>
+</body>
+</html>
