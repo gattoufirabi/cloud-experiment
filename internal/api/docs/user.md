@@ -397,24 +397,115 @@ Your plan sets the number of mailboxes and their total storage. Removing a mailb
 
 S3-compatible buckets for files, uploads, backups and static websites, on the organization's **Storage** page. Any S3 tool works: the AWS CLI and SDKs, rclone, Cyberduck, restic.
 
-1. **Create a bucket** (developers): give it a name such as `uploads` and a quota in MB. Its S3 name is `<organization>-<name>` (for example `acme-uploads`). Writes that would go beyond the quota are refused; raise it later in the bucket's settings. The quotas of all your buckets together stay within your plan's storage.
-2. **Create an access key** on the **Access keys** tab: name it and choose, for each bucket, *no access*, *read* or *read and write*. Copy the secret immediately: it is shown once. Delete a key to revoke it within seconds.
-3. **Use it** with the endpoint and region shown on the **Use from code** tab, with path-style addressing:
+### Get started
+
+1. **Create a bucket** (developers): give it a name such as `uploads` and a quota in MB. Its S3 name is `<organization>-<name>` (for example `acme-uploads`): use that name in code. Writes that would go beyond the quota are refused; raise it later in the bucket's settings. The quotas of all your buckets together stay within your plan's storage.
+2. **Create an access key** on the **Access keys** tab: name it and choose, for each bucket, *no access*, *read* or *read and write*. Copy the secret immediately: it is shown once. Delete a key to revoke it within seconds. API: `POST /api/v1/storage-keys` with `{"name": "ci", "buckets": {"uploads": "write"}}`.
+3. **Connect a service** instead of copying keys: on the bucket's **Connect** tab, choose a service and click **Connect**. The platform creates a key for that service only (read and write on this bucket) and adds these secrets to it; redeploy the service and SDKs pick them up by themselves:
+
+| Variable | Value |
+| --- | --- |
+| `AWS_ENDPOINT_URL` (and `AWS_ENDPOINT_URL_S3`) | `{{s3}}` |
+| `AWS_REGION` (and `AWS_DEFAULT_REGION`) | `{{s3region}}` |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | the service's own key |
+| `S3_BUCKET` | the bucket's S3 name, such as `acme-uploads` |
+
+**Connection settings for any tool:** endpoint `{{s3}}`, region `{{s3region}}`, **path-style addressing** (the bucket goes in the path, `{{s3}}/acme-uploads/file.txt`, not in the host name), Signature V4 (the SDKs' default).
+
+### Use it from code
+
+**AWS CLI**
 
 ```
 export AWS_ACCESS_KEY_ID=GK…  AWS_SECRET_ACCESS_KEY=…
 export AWS_ENDPOINT_URL={{s3}}  AWS_REGION={{s3region}}
 aws s3 cp ./report.pdf s3://acme-uploads/reports/report.pdf
+aws s3 ls s3://acme-uploads/reports/
+aws s3 sync ./public s3://acme-uploads/site --delete
 aws s3 presign s3://acme-uploads/reports/report.pdf --expires-in 3600
 ```
 
-- **From a service:** on the bucket's **Connect** tab, choose a service and click **Connect**. The platform creates a key for that service only (read and write on this bucket) and stores `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`, `AWS_REGION` and `S3_BUCKET` as its secrets. Redeploy the service; SDKs pick these variables up by themselves.
-- **Browse objects** on the bucket's **Objects** tab: open folders, download (through a link valid for 5 minutes), delete, and upload files of up to 25 MB. Use the S3 API for larger files and for whole folders (`aws s3 sync`).
+**Node.js** (`npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner`)
+
+```
+import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+const s3 = new S3Client({ forcePathStyle: true }); // endpoint, region and key from the variables above
+const Bucket = process.env.S3_BUCKET;
+
+await s3.send(new PutObjectCommand({ Bucket, Key: "avatars/42.png", Body: buffer, ContentType: "image/png" }));
+const obj = await s3.send(new GetObjectCommand({ Bucket, Key: "avatars/42.png" }));
+const bytes = await obj.Body.transformToByteArray();
+const list = await s3.send(new ListObjectsV2Command({ Bucket, Prefix: "avatars/" }));
+const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket, Key: "avatars/42.png" }), { expiresIn: 3600 });
+```
+
+**Python** (`pip install boto3`)
+
+```
+import os, boto3
+from botocore.config import Config
+
+s3 = boto3.client("s3", config=Config(s3={"addressing_style": "path"}))  # endpoint, region and key from the variables
+bucket = os.environ["S3_BUCKET"]
+
+s3.upload_file("report.pdf", bucket, "reports/report.pdf")            # multipart for large files, automatically
+s3.download_file(bucket, "reports/report.pdf", "/tmp/report.pdf")
+for o in s3.list_objects_v2(Bucket=bucket, Prefix="reports/").get("Contents", []):
+    print(o["Key"], o["Size"])
+url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": "reports/report.pdf"}, ExpiresIn=3600)
+```
+
+**Go** (`github.com/aws/aws-sdk-go-v2/service/s3`)
+
+```
+cfg, _ := config.LoadDefaultConfig(ctx) // reads the variables above
+client := s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = true })
+_, err := client.PutObject(ctx, &s3.PutObjectInput{
+    Bucket: aws.String(os.Getenv("S3_BUCKET")), Key: aws.String("notes/today.txt"), Body: strings.NewReader("hello"),
+})
+```
+
+**PHP** (`composer require aws/aws-sdk-php`)
+
+```
+$s3 = new Aws\S3\S3Client(['version' => 'latest', 'use_path_style_endpoint' => true]); // endpoint, region and key from the variables
+$s3->putObject(['Bucket' => getenv('S3_BUCKET'), 'Key' => 'invoices/1.pdf', 'SourceFile' => '/tmp/1.pdf']);
+```
+
+**rclone**: `rclone config create store s3 provider Other endpoint {{s3}} region {{s3region}} access_key_id GK… secret_access_key …`, then `rclone sync ./backups store:acme-backups`.
+
+### What you can do
+
+- **Upload, download, delete** objects of any size: up to 5 GB in one request, larger files with multipart upload (the SDKs' upload helpers, `aws s3 cp` and rclone switch to it by themselves). Batch delete removes up to 1000 objects in one call.
+- **Folders** are key prefixes: list one level with a prefix and the `/` delimiter; `aws s3 sync` copies whole trees.
+- **Content type and metadata**: set `Content-Type`, `Cache-Control`, `Content-Disposition` and your own `x-amz-meta-*` metadata when you upload; they come back on download and `HEAD`.
+- **Partial downloads** with the `Range` header (video seeking, resumable downloads), and **server-side copies** (`CopyObject`) without downloading.
+- **Presigned URLs** let someone download (`GET`) or upload (`PUT`) one object for a limited time without a key, or post a file from an HTML form (presigned `POST`). Create them in your backend with your SDK; they stop working when they expire or when the key is deleted.
+- **Browse objects** on the bucket's **Objects** tab: open folders, download (through a link valid for 5 minutes), delete, and upload files of up to 25 MB.
 - **Static website:** in the bucket's settings, tick **Public website**: every object becomes readable by anyone at `https://<organization>-<name>.web.{{apps}}/`, with HTTPS, serving `index.html` (or the index document you set) for a folder and an optional error document. Keep private files in another bucket.
-- **Presigned URLs** (`aws s3 presign`, or your SDK) let someone download or upload one object for a limited time without a key.
-- **Deleting a bucket** (admins) removes it with all its objects; this cannot be undone.
-- **Not supported:** bucket policies and ACLs (use keys with per-bucket access instead), versioning, object lock and server-side encryption options. Data is stored on the platform's own servers.
+- **React to files:** a function can run each time an object is created or deleted in a bucket, filtered by prefix and suffix (see **Functions**, bucket triggers).
+- **Isolation:** a key sees only the buckets it was given (listing all buckets shows those only); other organizations' buckets do not exist for it, and a key cannot create buckets.
+
+### Supported S3 operations
+
+| Works | Not available |
+| --- | --- |
+| PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects | Bucket policies and ACLs (use keys with per-bucket access) |
+| ListObjectsV2 / ListObjects (prefix, delimiter, pagination) | Object tagging |
+| CopyObject, ranges, conditional requests | Versioning and object lock |
+| Multipart upload (create, upload part, complete, abort, list) | Bucket CORS and lifecycle rules (not settable with a key) |
+| Presigned GET, PUT and POST | Creating or deleting buckets through S3 (use the console or the API) |
+| ListBuckets (the key's buckets), checksums | Storage classes, replication, Glacier |
+
+Server-side encryption headers are accepted and ignored: data is stored on the platform's own servers. Because bucket CORS cannot be set, a web page cannot upload straight to the storage from the browser yet: send the file to your service (or a function) and store it from there.
+
+### Limits and plans
+
+- **Quotas:** each bucket has its quota; uploads beyond it are refused (`QuotaExceeded`). Raise it in the bucket's settings, within your plan's storage.
 - **Plans:** Trial includes 2 buckets and 1 GB, Starter 10 buckets and 10 GB, Pro 100 buckets and 100 GB. Stored data is billed per GB-month.
+- **Deleting a bucket** (admins) removes it with all its objects; this cannot be undone.
 
 ## Public status page
 
