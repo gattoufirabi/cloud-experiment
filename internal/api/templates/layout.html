@@ -2,14 +2,89 @@
 
 {{define "status"}}<span class="st st-{{.}}">{{.}}</span>{{end}}
 
-{{define "opnav"}}<nav aria-label="Admin panel"><ul class="opnav">
-  <li><a href="/operator" {{if eq .OpSection "overview"}}aria-current="page"{{end}}>Overview</a></li>
-  <li><a href="/operator/users" {{if eq .OpSection "users"}}aria-current="page"{{end}}>Users</a></li>
-  <li><a href="/operator/resources" {{if eq .OpSection "resources"}}aria-current="page"{{end}}>Resources</a></li>
-  <li><a href="/operator/plans" {{if eq .OpSection "plans"}}aria-current="page"{{end}}>Plans and prices</a></li>
-  <li><a href="/operator/health" {{if eq .OpSection "health"}}aria-current="page"{{end}}>Health</a></li>
-  <li><a href="/operator/settings" {{if eq .OpSection "settings"}}aria-current="page"{{end}}>Settings</a></li>
-</ul></nav>{{end}}
+{{/* The admin panel's sections are in its left menu (opsidebar); kept for the pages that include it. */}}
+{{define "opnav"}}{{end}}
+
+{{/* Servers (nodes) of the platform, for the admin panel's overview and Servers page. */}}
+{{define "opnodes"}}
+  {{range .Nodes}}
+  <div class="section">
+    <div class="head">
+      <h2>{{.Name}}</h2>
+      {{if .Online}}<span class="st st-live">online</span>{{else}}<span class="st st-failed">offline · last seen {{ago .LastSeen}}</span>{{end}}
+      {{if .Cordoned}}<span class="st st-pending">cordoned</span>{{end}}
+      <span class="badge">{{.Role}}</span><span class="badge">cluster {{.Cluster}}</span>
+    </div>
+    <div class="meters">
+      <div><span>CPU load</span><progress class="meter" max="100" value="{{.LoadPct}}" aria-label="CPU load {{.LoadPct}}%"></progress><b>{{printf "%.2f" .Load1}} / {{.CPUs}} cores</b></div>
+      <div><span>Memory</span><progress class="meter" max="100" value="{{.MemPct}}" aria-label="Memory {{.MemPct}}%"></progress><b>{{.MemPct}}% of {{.MemMB}} MB</b></div>
+      <div><span>Disk</span><progress class="meter" max="100" value="{{.DiskPct}}" aria-label="Disk {{.DiskPct}}%"></progress><b>{{.DiskFreeMB}} MB free of {{.DiskTotalMB}}</b></div>
+    </div>
+    <p class="small"><strong>{{.Projects}}</strong> project{{if ne .Projects 1}}s{{end}} placed here · allocated {{.CPUAlloc}} millicores and {{.MemAlloc}} MB ({{.AllocMemPct}}% of memory){{if .Stateful}} · {{.Stateful}} with persistent data{{end}}</p>
+    <p class="small muted">{{.Containers}} containers · Docker {{.DockerVersion}} · agent {{.AgentVersion}}{{with .Address}} · {{.}}{{end}} · joined {{ago .Created}}</p>
+    <p class="health">{{$n := .}}{{range .ServiceNames}}{{$v := index $n.Services .}}<span class="st {{if eq $v "ok"}}st-live{{else}}st-failed{{end}}">{{.}}{{if ne $v "ok"}}: {{$v}}{{end}}</span> {{end}}</p>
+    <form method="post" action="/operator/nodes/{{.ID}}" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <label>Cluster <input name="cluster" value="{{.Cluster}}" maxlength="31" pattern="[a-z0-9][a-z0-9-]{0,30}"></label>
+      {{if .Cordoned}}<button type="submit" class="secondary">Uncordon</button>
+      {{else}}<input type="hidden" name="cordoned" value="1"><button type="submit" class="secondary" data-confirm="Cordon {{.Name}}? New projects go to other nodes; running ones stay.">Cordon</button>{{end}}
+    </form>
+    {{if .Projects}}
+    <form method="post" action="/operator/nodes/{{.ID}}/drain" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      {{if $.MovesEnabled}}<label class="check"><input type="checkbox" name="move_stateful" value="1"> also move projects with data <span class="hint">each stops while its data is copied</span></label>{{end}}
+      <button type="submit" class="danger" data-confirm="Drain {{.Name}}? It is cordoned and its projects move to other nodes (each app restarts once).">Drain</button>
+      <span class="small muted">{{if $.MovesEnabled}}Projects with persistent data move too when ticked; their folders and databases travel through the backup repository.{{else}}Moves stateless projects; projects with persistent data stay (moving them needs an off-site backup repository, BACKUP_REST_URL).{{end}}</span>
+    </form>
+    {{end}}
+  </div>
+  {{else}}<div class="section"><p class="muted">No node has reported yet (the agent sends a heartbeat every 30 seconds).</p></div>{{end}}
+  {{with .Moves}}
+  <div class="section" id="moves">
+    <h2>Moves</h2>
+    <table class="resources">
+      <thead><tr><th>Project</th><th>From</th><th>To</th><th>Status</th><th>When</th></tr></thead>
+      <tbody>{{range .}}<tr><td>{{.Org}}/{{.Project}}</td><td>{{.From}}</td><td>{{.To}}</td>
+        <td>{{if eq .Status "done"}}<span class="st st-live">done</span>{{else if eq .Status "failed"}}<span class="st st-failed">failed</span>{{else}}<span class="st st-deploying">{{.Status}}</span>{{end}} <span class="small muted">{{.Message}}</span></td>
+        <td class="nowrap">{{ago .Updated}}</td></tr>{{end}}</tbody>
+    </table>
+  </div>
+  {{end}}
+{{end}}
+
+{{define "opsidebar"}}
+<aside class="navbar navbar-vertical navbar-expand-lg side-nav side-admin" data-bs-theme="dark" aria-label="Admin panel">
+  <div class="container-fluid">
+    <button class="navbar-toggler" type="button" data-nav-toggle aria-controls="sidebar-menu" aria-expanded="false" aria-label="Show the menu"><span class="navbar-toggler-icon"></span></button>
+    <a class="navbar-brand brand" href="/operator" aria-label="Admin panel home"><span><span class="brand-mark">plat</span>form</span><span class="admin-tag">admin</span></a>
+    <div class="collapse navbar-collapse" id="sidebar-menu">
+      <nav aria-label="Admin panel sections">
+        <div class="nav-section">Platform</div>
+        <a class="nav-link{{if eq .OpSection "overview"}} active{{end}}" href="/operator" {{if eq .OpSection "overview"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "home"}}</span><span class="nav-link-title">Overview</span></a>
+        <a class="nav-link{{if eq .OpSection "servers"}} active{{end}}" href="/operator/servers" {{if eq .OpSection "servers"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "compute"}}</span><span class="nav-link-title">Servers</span></a>
+        <a class="nav-link{{if eq .OpSection "health"}} active{{end}}" href="/operator/health" {{if eq .OpSection "health"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "monitoring"}}</span><span class="nav-link-title">Health</span></a>
+        <a class="nav-link{{if eq .OpSection "features"}} active{{end}}" href="/operator/features" {{if eq .OpSection "features"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "grid"}}</span><span class="nav-link-title">Features</span></a>
+        <a class="nav-link{{if eq .OpSection "settings"}} active{{end}}" href="/operator/settings" {{if eq .OpSection "settings"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "secrets"}}</span><span class="nav-link-title">Settings</span></a>
+        <div class="nav-section">Customers</div>
+        <a class="nav-link{{if eq .OpSection "orgs"}} active{{end}}" href="/operator#op-orgs" {{if eq .OpSection "orgs"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "projects"}}</span><span class="nav-link-title">Organizations</span></a>
+        <a class="nav-link{{if eq .OpSection "users"}} active{{end}}" href="/operator/users" {{if eq .OpSection "users"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "iam"}}</span><span class="nav-link-title">Users</span></a>
+        <a class="nav-link{{if eq .OpSection "plans"}} active{{end}}" href="/operator/plans" {{if eq .OpSection "plans"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "billing"}}</span><span class="nav-link-title">Plans and prices</span></a>
+        <a class="nav-link" href="/operator#op-invoices"><span class="nav-link-icon">{{icon "billing"}}</span><span class="nav-link-title">Invoices</span></a>
+        <div class="nav-section">Services</div>
+        <a class="nav-link{{if eq .OpSection "resources"}} active{{end}}" href="/operator/resources" {{if eq .OpSection "resources"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "databases"}}</span><span class="nav-link-title">Resources</span></a>
+        <a class="nav-link{{if eq .OpSection "mail"}} active{{end}}" href="/operator/mail" {{if eq .OpSection "mail"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "mail"}}</span><span class="nav-link-title">Mail</span></a>
+        <a class="nav-link{{if eq .OpSection "dns"}} active{{end}}" href="/operator/dns" {{if eq .OpSection "dns"}}aria-current="page"{{end}}><span class="nav-link-icon">{{icon "dns"}}</span><span class="nav-link-title">DNS and domains</span></a>
+        <a class="nav-link" href="/operator#op-usage"><span class="nav-link-icon">{{icon "analytics"}}</span><span class="nav-link-title">Usage</span></a>
+        <a class="nav-link" href="/operator#op-audit"><span class="nav-link-icon">{{icon "iam"}}</span><span class="nav-link-title">Audit log</span></a>
+      </nav>
+      <div class="side-foot">
+        <a href="/">← Back to the console</a>
+        <a href="/docs/admin">Admin guide</a>
+      </div>
+    </div>
+  </div>
+</aside>
+{{end}}
 {{define "flash"}}{{with .Banner}}<p class="flash banner {{$.BannerLevel}}" role="status">{{.}}</p>{{end}}{{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}{{with .Err}}<p class="flash err" role="alert">{{.}}</p>{{end}}{{end}}
 
 {{/* Project filter used by the lists of every area. */}}
@@ -25,26 +100,7 @@
 </form>
 {{end}}
 
-{{/* Left menu: the current product's pages, or the resources of each project on the console home. */}}
-{{define "sidebar"}}
-{{with .AreaProduct}}
-<div class="side-area">
-  <a href="{{$.Org.Path}}{{.Path}}" class="side-title">{{icon .ID}}<span>{{.Name}}</span></a>
-</div>
-<nav aria-label="{{.Name}}">
-  {{range $.AreaNav}}<a href="{{$.Org.Path}}{{.Path}}" class="{{if eq .Path $.CurPath}}cur{{end}}">{{.Label}}</a>{{end}}
-</nav>
-{{if eq .ID "projects" "compute" "databases" "functions"}}
-<div class="side-h">Resources by project</div>
-{{template "tree" $}}
-{{end}}
-{{else}}
-<div class="side-area"><a href="{{.Org.Path}}" class="side-title">{{icon "home"}}<span>Console home</span></a></div>
-<div class="side-h">Resources by project</div>
-{{template "tree" .}}
-{{end}}
-{{end}}
-
+{{/* Resources of each project, for the left menu. */}}
 {{define "tree"}}
 {{range $p := .Nav}}
 <div class="side-proj">
@@ -56,8 +112,49 @@
   </ul>{{end}}
 </div>
 {{else}}
-<p class="empty">No projects yet. <a href="{{.Org.Path}}/projects">Create one</a></p>
+<p class="side-empty">No projects yet. <a href="{{.Org.Path}}/projects">Create one</a></p>
 {{end}}
+{{end}}
+
+{{/* Left menu (Tabler vertical navbar): home, favorites, every service by group with the
+     current service's pages under it, and the resources of each project. */}}
+{{define "sidebar"}}
+<aside class="navbar navbar-vertical navbar-expand-lg side-nav" data-bs-theme="dark" aria-label="Main menu">
+  <div class="container-fluid">
+    <button class="navbar-toggler" type="button" data-nav-toggle aria-controls="sidebar-menu" aria-expanded="false" aria-label="Show the menu"><span class="navbar-toggler-icon"></span></button>
+    <a class="navbar-brand brand" href="{{.Org.Path}}" aria-label="Console home"><span><span class="brand-mark">plat</span>form</span></a>
+    <div class="collapse navbar-collapse" id="sidebar-menu">
+      <ul class="navbar-nav">
+        <li class="nav-item"><a class="nav-link{{if not .Area}} active{{end}}" href="{{.Org.Path}}"><span class="nav-link-icon">{{icon "home"}}</span><span class="nav-link-title">Console home</span></a></li>
+      </ul>
+      <nav class="favbar" aria-label="Favorites">
+        <div class="nav-section">Favorites</div>
+        {{range .Favorites}}<a href="{{$.Org.Path}}{{.Path}}" class="nav-link{{if eq .ID $.Area}} cur active{{end}}"><span class="nav-link-icon">{{icon .ID}}</span><span class="nav-link-title">{{.Short}}</span></a>{{else}}<span class="side-empty">Pin services from the catalog to keep them here.</span>{{end}}
+      </nav>
+      {{range .Catalog}}
+      <div class="nav-section">{{.Name}}</div>
+      <ul class="navbar-nav">
+        {{range .Products}}
+        <li class="nav-item{{if eq .ID $.Area}} open{{end}}">
+          <a class="nav-link{{if eq .ID $.Area}} active{{end}}" href="{{$.Org.Path}}{{.Path}}" title="{{.Description}}"><span class="nav-link-icon">{{icon .ID}}</span><span class="nav-link-title">{{.Name}}</span></a>
+          {{if and (eq .ID $.Area) (gt (len $.AreaNav) 1)}}
+          <div class="nav-sub">{{range $.AreaNav}}<a href="{{$.Org.Path}}{{.Path}}" class="{{if eq .Path $.CurPath}}cur{{end}}">{{.Label}}</a>{{end}}</div>
+          {{end}}
+        </li>
+        {{end}}
+      </ul>
+      {{end}}
+      <details class="side-tree"{{if or $.CurProject (eq $.Area "projects" "compute" "databases" "functions" "")}} open{{end}}>
+        <summary class="nav-section">Resources by project</summary>
+        {{template "tree" $}}
+      </details>
+      <div class="side-foot">
+        <a href="{{.Org.Path}}/services">{{icon "grid"}} All services</a>
+        <a href="/docs/user">Docs</a>
+      </div>
+    </div>
+  </div>
+</aside>
 {{end}}
 
 {{define "projectmap"}}
@@ -79,101 +176,110 @@
 </div>
 {{end}}
 
+{{define "usermenu"}}
+{{with .User}}
+<details class="menu user-menu">
+  <summary><span class="avatar" aria-hidden="true">{{if .Email}}{{slice .Email 0 1}}{{else}}?{{end}}</span><span class="sr-only">Account menu</span></summary>
+  <div class="menu-panel right">
+    <span class="menu-meta">{{.Email}}</span>
+    <a href="/account">Account and security</a>
+    {{if .IsOperator}}<a href="/operator">Admin panel</a>{{end}}
+    <div class="menu-sep"></div>
+    <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">Log out</button></form>
+  </div>
+</details>
+{{else}}<a class="pill-link" href="/login">Log in</a>
+{{end}}
+{{end}}
+
 {{define "layout"}}<!doctype html>
-<html lang="en">
+<html lang="en"{{if or .HasNav .OpSection}} data-bs-navbar-position="vertical"{{end}}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   {{if .Refresh}}<meta http-equiv="refresh" content="3">{{end}}
   <title>{{block "title" .}}Platform{{end}} · Platform</title>
+  <link rel="stylesheet" href="/static/vendor/tabler-1.7.3.min.css">
   <link rel="stylesheet" href="/static/app.css?v={{.V}}">
   <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true,"historyCacheSize":0}'>
   <script src="/static/htmx.min.js?v={{.V}}" defer></script>
   <script src="/static/app.js?v={{.V}}" defer></script>
 </head>
 <body>
-<div class="frame">
-  <header class="top">
-    <a class="brand" href="{{with .Org}}{{.Path}}{{else}}/{{end}}" aria-label="Console home"><span class="brand-mark">plat</span>form</a>
-    {{if .HasNav}}
-    <details class="menu services-menu">
-      <summary>{{icon "grid"}}<span>Services</span></summary>
-      <div class="menu-panel catalog-panel">
-        <div class="catalog-head"><strong>All services</strong> <a href="{{.Org.Path}}/services">Open the catalog</a></div>
-        <div class="catalog-grid">
-          {{range .Catalog}}
-          <div class="catalog-group">
-            <div class="catalog-gname">{{.Name}}</div>
-            {{range .Products}}
-            <div class="catalog-item">
-              <a href="{{$.Org.Path}}{{.Path}}">{{icon .ID}}<span><strong>{{.Name}}</strong><small>{{.Description}}</small></span></a>
-              <form method="post" action="{{$.Org.Path}}/pins" class="pin-form">
-                <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="product" value="{{.ID}}"><input type="hidden" name="back" value="{{$.Org.Path}}{{$.CurPath}}">
-                <button type="submit" class="pin {{if .Pinned}}on{{end}}" title="{{if .Pinned}}Remove from{{else}}Add to{{end}} favorites" aria-label="{{if .Pinned}}Unpin{{else}}Pin{{end}} {{.Name}}" aria-pressed="{{if .Pinned}}true{{else}}false{{end}}">{{icon "star"}}</button>
-              </form>
+{{if .HasNav}}
+<div class="page">
+  {{template "sidebar" .}}
+  <div class="page-wrapper">
+    <header class="navbar d-print-none topbar">
+      <div class="container-xl topbar-in">
+        <form class="search" method="get" action="{{.Org.Path}}/search" role="search">
+          {{icon "search"}}<input name="q" type="search" placeholder="Search services, projects, resources" value="{{.Q}}" aria-label="Search" autocomplete="off"><kbd class="search-key" aria-hidden="true">/</kbd>
+        </form>
+        <span class="topbar-scope">{{template "scope" .}}</span>
+        <div class="top-right">
+          <details class="menu activity-menu" id="activity" data-url="{{.Org.Path}}/activity.json" hidden>
+            <summary><span class="spinner" aria-hidden="true"></span><span class="activity-count">0</span><span class="activity-word"> in progress</span></summary>
+            <div class="menu-panel right activity-panel">
+              <div class="menu-label">In progress</div>
+              <ul class="activity-list"></ul>
             </div>
-            {{end}}
-          </div>
-          {{end}}
+          </details>
+          <div id="activity-toast" class="toast" role="status" aria-live="polite" hidden></div>
+          <details class="menu org-menu">
+            <summary><span class="org-name">{{.Org.Name}}</span></summary>
+            <div class="menu-panel right">
+              <div class="menu-label">Organizations</div>
+              {{range .MyOrgs}}<a href="/o/{{.Slug}}" class="{{if eq .Slug $.Org.Slug}}cur{{end}}">{{.Name}}</a>{{end}}
+              <div class="menu-sep"></div>
+              <span class="menu-meta">Your role: {{.Org.Role}}{{if .Org.Suspended}} · suspended{{end}}</span>
+            </div>
+          </details>
+          {{template "usermenu" .}}
         </div>
       </div>
-    </details>
-    <form class="search" method="get" action="{{.Org.Path}}/search" role="search">
-      {{icon "search"}}<input name="q" type="search" placeholder="Search services, projects, resources" value="{{.Q}}" aria-label="Search" autocomplete="off">
-    </form>
-    {{end}}
-    <div class="top-right">
-      {{if .HasNav}}
-      <details class="menu activity-menu" id="activity" data-url="{{.Org.Path}}/activity.json" hidden>
-        <summary><span class="spinner" aria-hidden="true"></span><span class="activity-count">0</span><span class="activity-word"> in progress</span></summary>
-        <div class="menu-panel right activity-panel">
-          <div class="menu-label">In progress</div>
-          <ul class="activity-list"></ul>
+    </header>
+    <div class="page-body">
+      <main class="container-xl main" id="main">
+        {{if .Crumbs}}<nav class="crumbs" aria-label="Breadcrumb"><a href="{{.Org.Path}}">Console</a>{{range .Crumbs}}<span class="sep">›</span>{{if .Path}}<a href="{{$.Org.Path}}{{.Path}}">{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}{{end}}</nav>{{end}}
+        {{template "flash" .}}{{template "content" .}}
+      </main>
+    </div>
+    <footer class="legal">platform &nbsp;•&nbsp; self-hosted &nbsp;•&nbsp; open source</footer>
+  </div>
+</div>
+{{else if .OpSection}}
+<div class="page">
+  {{template "opsidebar" .}}
+  <div class="page-wrapper">
+    <header class="navbar d-print-none topbar">
+      <div class="container-xl topbar-in">
+        <span class="topbar-title">Admin panel</span>
+        <div class="top-right">
+          <a class="navlink" href="/docs/admin">Admin guide</a>
+          {{template "usermenu" .}}
         </div>
-      </details>
-      <div id="activity-toast" class="toast" role="status" aria-live="polite" hidden></div>
-      <details class="menu org-menu">
-        <summary><span class="org-name">{{.Org.Name}}</span></summary>
-        <div class="menu-panel right">
-          <div class="menu-label">Organizations</div>
-          {{range .MyOrgs}}<a href="/o/{{.Slug}}" class="{{if eq .Slug $.Org.Slug}}cur{{end}}">{{.Name}}</a>{{end}}
-          <div class="menu-sep"></div>
-          <span class="menu-meta">Your role: {{.Org.Role}}{{if .Org.Suspended}} · suspended{{end}}</span>
-        </div>
-      </details>
-      {{end}}
-      <a class="navlink" href="/docs/user">Docs</a>
-      {{with .User}}
-      <details class="menu user-menu">
-        <summary><span class="avatar" aria-hidden="true">{{if .Email}}{{slice .Email 0 1}}{{else}}?{{end}}</span><span class="sr-only">Account menu</span></summary>
-        <div class="menu-panel right">
-          <span class="menu-meta">{{.Email}}</span>
-          <a href="/account">Account and security</a>
-          {{if .IsOperator}}<a href="/operator">Operator console</a>{{end}}
-          <div class="menu-sep"></div>
-          <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">Log out</button></form>
-        </div>
-      </details>
-      {{else}}<a class="pill-link" href="/login">Log in</a>
-      {{end}}
+      </div>
+    </header>
+    <div class="page-body">
+      <main class="container-xl main" id="main">{{template "flash" .}}{{template "content" .}}</main>
+    </div>
+    <footer class="legal">platform &nbsp;•&nbsp; admin panel &nbsp;•&nbsp; every action is audited</footer>
+  </div>
+</div>
+{{else}}
+<div class="page page-single">
+  <header class="navbar d-print-none topbar topbar-single">
+    <div class="container-xl topbar-in">
+      <a class="brand" href="/" aria-label="Home"><span><span class="brand-mark">plat</span>form</span></a>
+      <div class="top-right">
+        <a class="navlink" href="/docs/user">Docs</a>
+        {{template "usermenu" .}}
+      </div>
     </div>
   </header>
-  {{if .HasNav}}
-  <nav class="favbar" aria-label="Favorites">
-    {{range .Favorites}}<a href="{{$.Org.Path}}{{.Path}}" class="{{if eq .ID $.Area}}cur{{end}}">{{icon .ID}}{{.Short}}</a>{{else}}<span class="muted small">Pin services from the Services menu to keep them here.</span>{{end}}
-    <span class="favbar-r">{{template "scope" .}}</span>
-  </nav>
-  <div class="workspace">
-    <aside class="side" aria-label="Navigation">{{template "sidebar" .}}</aside>
-    <main class="main">
-      {{if .Crumbs}}<nav class="crumbs" aria-label="Breadcrumb"><a href="{{.Org.Path}}">Console</a>{{range .Crumbs}}<span class="sep">›</span>{{if .Path}}<a href="{{$.Org.Path}}{{.Path}}">{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}{{end}}</nav>{{end}}
-      {{template "flash" .}}{{template "content" .}}
-    </main>
-  </div>
-  {{else}}
-  <main class="main single">{{template "flash" .}}{{template "content" .}}</main>
-  {{end}}
+  <main class="main single" id="main">{{template "flash" .}}{{template "content" .}}</main>
   <footer class="legal">platform &nbsp;•&nbsp; self-hosted &nbsp;•&nbsp; open source</footer>
 </div>
+{{end}}
 </body>
 </html>{{end}}

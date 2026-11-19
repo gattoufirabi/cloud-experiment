@@ -73,6 +73,11 @@ func (s *Server) apiAuth(minRole string, h func(http.ResponseWriter, *http.Reque
 			apiError(w, http.StatusForbidden, "this token's role ("+role+") cannot do this; it needs "+minRole)
 			return
 		}
+		s.loadFeaturesOff(r.Context(), &o)
+		if area := apiArea(r.URL.Path); o.Off[area] {
+			apiError(w, http.StatusForbidden, productByID(area).Name+" is turned off for this organization")
+			return
+		}
 		actor := ""
 		if createdBy != nil {
 			actor = *createdBy

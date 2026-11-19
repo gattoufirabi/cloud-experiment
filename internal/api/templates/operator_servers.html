@@ -1,0 +1,39 @@
+{{define "title"}}Servers · Admin panel{{end}}
+{{define "content"}}
+<div class="head"><h1>Servers</h1></div>
+<p class="lede">Every server of the platform with its load, its platform services and the projects placed on it. Cordon a server to stop placing new projects on it, drain it to move them away.</p>
+
+{{template "opnodes" .}}
+
+<div class="section" id="restart">
+  <h2>Restart a platform service</h2>
+  <p class="small muted">Stops and starts the service's container on the primary server. The console and the API are briefly unavailable while <code>api</code> restarts; apps keep running. Use it when a service is stuck; the agent records the result below.</p>
+  <form method="post" action="/operator/servers/restart" class="inline" data-confirm="Restart this platform service?">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <select name="service" aria-label="Service to restart">{{range .Restartable}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+    <button type="submit" class="secondary">Restart</button>
+  </form>
+  {{with .Restarts}}
+  <table class="resources compact">
+    <thead><tr><th>Service</th><th>Asked</th><th>Result</th></tr></thead>
+    <tbody>{{range .}}<tr><td><code>{{.Service}}</code></td><td class="nowrap">{{ago .Requested}}</td>
+      <td>{{if not .Done}}<span class="st st-pending">waiting</span>{{else if .Error}}<span class="st st-failed">failed</span> <span class="small muted">{{.Error}}</span>{{else}}<span class="st st-live">restarted</span>{{end}}</td></tr>{{end}}</tbody>
+  </table>
+  {{end}}
+</div>
+
+<div class="section" id="add-server">
+  <h2>Add a server</h2>
+  <p class="small muted">A worker server runs the agent and the projects placed on it; the primary keeps the console, the database and the proxy. Servers talk over WireGuard.</p>
+  <ol class="steps-list">
+    <li>Connect the new server to the primary with WireGuard and note both private addresses (for example 10.8.0.1 and 10.8.0.2).</li>
+    <li>On the primary, set <code>CONTROL_PLANE_ADDRESS</code> in <code>deploy/.env</code> to its private address and run <code>docker compose -f compose.prod.yml up -d</code>.</li>
+    <li>On the primary, create the join bundle (it holds secrets, copy it over SSH only):
+      <pre class="cmd select">sudo bash /opt/platform/host/node-bundle.sh --node-id node-2 --node-address 10.8.0.2 --cluster default</pre></li>
+    <li>On the new server, with the code in /opt/platform:
+      <pre class="cmd select">sudo bash host/deploy.sh --worker --bundle &lt;bundle&gt;</pre></li>
+    <li>It appears above within a minute; new projects go to the online server with the most free memory.</li>
+  </ol>
+  <p class="small"><a href="/docs/admin#several-servers-nodes-and-clusters">Admin guide: several servers ↗</a></p>
+</div>
+{{end}}

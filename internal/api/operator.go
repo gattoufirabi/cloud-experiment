@@ -426,6 +426,12 @@ func (s *Server) operatorOrgPage(w http.ResponseWriter, r *http.Request) {
 	var cluster string
 	_ = s.pool.QueryRow(r.Context(), `SELECT cluster FROM operator_org_cluster($1)`, slug).Scan(&cluster)
 	_ = db.Audit(r.Context(), s.pool, "", sessionFrom(r).UserID, "operator.viewed_org", "org:"+slug, nil, clientIP(r))
-	s.render(w, r, "operator_org", http.StatusOK, data{"OpSection": "overview", "O": org, "Services": services, "Databases": dbs, "Domains": domains,
+	var ownOff []string
+	_ = s.pool.QueryRow(r.Context(), `SELECT features_off FROM orgs WHERE slug = $1`, slug).Scan(&ownOff)
+	orgOff := map[string]bool{}
+	for _, f := range ownOff {
+		orgOff[f] = true
+	}
+	s.render(w, r, "operator_org", http.StatusOK, data{"OpSection": "orgs", "O": org, "OrgOff": orgOff, "Switchable": s.switchable(), "Services": services, "Databases": dbs, "Domains": domains,
 		"Incidents": incidents, "Usage": usage, "Cluster": cluster})
 }

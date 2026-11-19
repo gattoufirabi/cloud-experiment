@@ -1775,6 +1775,20 @@ check "an unused plan is deleted" "$(code_of ja -X POST "$BASE/operator/plans/$P
 RES=$(c ja "$BASE/operator/resources?q=$A")
 check "resources list A's services" "$(grep -c '<td>service</td>' <<<"$RES" | sed 's/^[1-9][0-9]*$/yes/')" yes
 if grep -q "tenant-a-secret\|API_KEY" <<<"$RES"; then bad "resources page leaks secrets"; else ok "resources page shows no secrets"; fi
+# feature switches: a service turned off for one organization leaves its menus, pages and API
+form_on() { grep -o "name=\"$1[a-z0-9_-]*\"[^>]*$2" | grep -o 'name="[^"]*"' | sed 's/^name="//; s/"$/=1/' | sort -u | paste -sd '&' -; }
+ON_ALL=$(c ja "$BASE/operator/orgs/$A" | form_on on_)
+check "[A] queues turned off for A by the operator" "$(code_of ja -X POST "$BASE/operator/orgs/$A/features" --data "csrf=$OPCSRF&$(tr '&' '\n' <<<"$ON_ALL" | grep -v '^on_queues=' | paste -sd '&' -)"):$(code_of ja "$BASE/o/$A/queues"):$(c ja "$BASE/o/$A/compute" | grep -c "href=\"/o/$A/queues\"")" "303:403:0"
+check "[API] A's queues answer that they are off" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" -o /dev/null -w '%{http_code}' "$BASE/api/v1/queues")" 403
+check "[B] B keeps its queues" "$(code_of jb "$BASE/o/$B/queues")" 200
+check "[A] queues back on" "$(code_of ja -X POST "$BASE/operator/orgs/$A/features" --data "csrf=$OPCSRF&$ON_ALL"):$(code_of ja "$BASE/o/$A/queues")" "303:200"
+FEAT_ON=$(c ja "$BASE/operator/features" | form_on '\(on\|plan\)_' checked)
+check "a service off for everyone leaves every organization" "$(code_of ja -X POST "$BASE/operator/features" --data "csrf=$OPCSRF&$(tr '&' '\n' <<<"$FEAT_ON" | grep -v '^on_queues=' | paste -sd '&' -)"):$(code_of jb "$BASE/o/$B/queues")" "303:403"
+code_of ja -X POST "$BASE/operator/features" --data "csrf=$OPCSRF&$FEAT_ON" >/dev/null
+check "everything back on" "$(code_of jb "$BASE/o/$B/queues")" 200
+check "feature switches audited" "$(owner_sql "SELECT count(*) >= 4 FROM audit_events WHERE action IN ('operator.org_features', 'operator.features') AND created_at > now() - interval '10 minutes'")" t
+check "a platform service restarted from the panel" "$(code_of ja -X POST "$BASE/operator/servers/restart" -d csrf=$OPCSRF -d service=trivy):$(until_is t 60 owner_sql "SELECT done_at IS NOT NULL AND error = '' FROM platform_restarts ORDER BY id DESC LIMIT 1")" "303:t"
+check "the mail page shows its deliverability checks" "$(c ja "$BASE/operator/mail" | grep -c -e 'Mail server answers' -e 'Reverse DNS (PTR)')" 2
 check "invoice generation requested from the panel" "$(code_of ja -X POST "$BASE/operator/invoices/generate" -d csrf=$OPCSRF -d "month=$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)")" 303
 check "a future month is refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/operator/invoices/generate" -d csrf=$OPCSRF -d "month=$(date -u -d '+1 month' +%Y-%m)" | grep -c 'err=')" 1
 

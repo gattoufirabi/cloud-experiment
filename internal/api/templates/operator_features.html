@@ -1,0 +1,26 @@
+{{define "title"}}Features · Admin panel{{end}}
+{{define "content"}}
+{{template "opnav" .}}
+<div class="head"><h1>Features</h1></div>
+<p class="lede">Turn platform services on or off for everyone, for each plan, or (on an organization's page) for one organization. A service that is off disappears from the console's menus; its pages and its API answer that it is off. Resources that already exist keep running. Projects, access management and billing are always on.</p>
+<form method="post" action="/operator/features" class="section">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="scroll-x">
+  <table class="resources" id="features-table">
+    <thead><tr><th>Service</th><th>Group</th><th class="num">Everyone</th>{{range .Plans}}<th class="num">{{.Name}}</th>{{end}}</tr></thead>
+    <tbody>
+    {{range $f := .Features}}
+    <tr>
+      <td><strong>{{$f.Name}}</strong></td>
+      <td class="muted small">{{$f.Group}}</td>
+      <td class="num"><input type="checkbox" name="on_{{$f.ID}}" value="1"{{if $f.Global}} checked{{end}} aria-label="{{$f.Name}} on for everyone"></td>
+      {{range $.Plans}}<td class="num"><input type="checkbox" name="plan_{{.ID}}_{{$f.ID}}" value="1"{{if index $f.Plans .ID}} checked{{end}} aria-label="{{$f.Name}} on for plan {{.Name}}"></td>{{end}}
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p class="small muted">A service is available to an organization only when it is on for everyone, on for the organization's plan and not turned off on the organization's own page.</p>
+  <div class="inline"><button type="submit">Save switches</button></div>
+</form>
+{{end}}

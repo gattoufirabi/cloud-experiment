@@ -57,6 +57,15 @@
   </div>
 </div>
 
+<form method="post" action="/operator/orgs/{{.O.Slug}}/features" class="section" id="features">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <h2>Services for this organization</h2>
+  <p class="small muted">Untick a service to turn it off for {{.O.Name}} only. It must also be on for everyone and for its plan (<a href="/operator/features">Features</a>).</p>
+  <div class="feature-grid">
+    {{range .Switchable}}<label class="check"><input type="checkbox" name="on_{{.ID}}" value="1"{{if not (index $.OrgOff .ID)}} checked{{end}}> {{.Name}}</label>{{end}}
+  </div>
+  <div class="inline"><button type="submit" class="secondary">Save services</button></div>
+</form>
 <div class="section">
   <h2>Incidents</h2>
   {{if .Incidents}}<ul class="list">{{range .Incidents}}<li><span class="st st-{{.Status}}">{{.Status}}</span> <strong>{{.Title}}</strong>{{with .Service}} · {{.}}{{end}} <span class="small muted">{{ago .Started}}</span></li>{{end}}</ul>

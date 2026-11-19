@@ -33,6 +33,7 @@ type orgInfo struct {
 	Suspended     bool
 	SuspendReason string
 	TrialEnds     *time.Time
+	Off           map[string]bool // services turned off by the operator (feature switches)
 }
 
 // TrialDaysLeft is shown on the organization page during a trial.
@@ -131,6 +132,13 @@ func (s *Server) org(w http.ResponseWriter, r *http.Request, minRole string) (*o
 	if !model.RoleAtLeast(o.Role, minRole) {
 		s.forbidden(w, r)
 		return nil, false
+	}
+	s.loadFeaturesOff(r.Context(), &o)
+	if area := areaOf(o.Path(), r.URL.Path); o.Off[area] {
+		if p := productByID(area); p != nil {
+			s.featureOffPage(w, r, p)
+			return nil, false
+		}
 	}
 	if o.Suspended && r.Method == http.MethodPost {
 		back(w, r, o.Path(), "", o.suspendedMessage())

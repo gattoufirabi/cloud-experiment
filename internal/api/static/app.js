@@ -435,3 +435,13 @@ document.addEventListener("submit", (e) => {
   // Back/forward cache: the page may come back with the button still busy.
   window.addEventListener("pageshow", () => { b.classList.remove("is-busy"); b.removeAttribute("aria-busy"); b.disabled = false; }, { once: true });
 });
+
+// ---------- left menu on small screens: the menu button shows or hides it ----------
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest && e.target.closest("[data-nav-toggle]");
+  if (!btn) return;
+  const menu = document.getElementById(btn.getAttribute("aria-controls"));
+  if (!menu) return;
+  const open = menu.classList.toggle("show");
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+});

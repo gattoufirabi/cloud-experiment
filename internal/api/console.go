@@ -170,13 +170,15 @@ func (s *Server) addConsole(r *http.Request, d data, o *orgInfo) {
 	var favs []*product
 	for i := range products {
 		p := &products[i]
-		if !s.productEnabled(p) {
+		if !s.productEnabled(p) || o.Off[p.ID] {
 			continue
 		}
 		groups[p.Group] = append(groups[p.Group], productView{p, pinned[p.ID]})
 	}
 	for _, id := range pins {
-		favs = append(favs, productByID(id))
+		if !o.Off[id] {
+			favs = append(favs, productByID(id))
+		}
 	}
 	type group struct {
 		Name     string

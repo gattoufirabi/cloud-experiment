@@ -442,3 +442,35 @@ func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.query(ctx, "Domain", nil)
 	return err
 }
+
+// ---------- operator views ----------
+
+// QueueSize is the number of messages waiting in the outgoing queue.
+func (c *Client) QueueSize(ctx context.Context) (int, error) {
+	ids, err := c.query(ctx, "QueuedMessage", nil)
+	return len(ids), err
+}
+
+// BlockedIP is an address the server banned (failed sign-ins, abuse, scans).
+type BlockedIP struct {
+	ID      string     `json:"id"`
+	Address string     `json:"address"`
+	Reason  string     `json:"reason"`
+	Created time.Time  `json:"createdAt"`
+	Expires *time.Time `json:"expiresAt"`
+}
+
+// BlockedIPs lists the banned addresses.
+func (c *Client) BlockedIPs(ctx context.Context) ([]BlockedIP, error) {
+	var out []BlockedIP
+	err := c.get(ctx, "BlockedIp", nil, nil, &out)
+	return out, err
+}
+
+// Unban lifts a ban and makes the server forget it at once.
+func (c *Client) Unban(ctx context.Context, id string) error {
+	if _, err := c.set(ctx, "BlockedIp", map[string]any{"destroy": []string{id}}); err != nil {
+		return err
+	}
+	return c.action(ctx, "ReloadBlockedIps")
+}

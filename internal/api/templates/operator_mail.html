@@ -1,0 +1,45 @@
+{{define "title"}}Mail · Admin panel{{end}}
+{{define "content"}}
+<div class="head"><h1>Mail</h1></div>
+<p class="lede">The mail server of hosted mailboxes (<code>{{.MailHost}}</code>): whether it answers and can deliver, its queue, the addresses it banned, and every organization's mail domains. Mailbox names and mail are never shown here.</p>
+{{if not .Enabled}}
+<div class="panel"><p>Hosted mailboxes are off: set <code>STALWART_ADMIN_PASSWORD</code> and start the mail server (<a href="/docs/admin#hosted-mailboxes-mail-server">admin guide</a>).</p></div>
+{{else}}
+<div class="stats">
+  <div class="stat"><span>Mail domains</span><b>{{len .Domains}}</b></div>
+  <div class="stat{{with .Queue}}{{if gt . 50}} warn{{end}}{{end}}"><span>Outgoing queue</span><b>{{with .Queue}}{{.}}{{else}}0{{end}}</b></div>
+  <div class="stat{{if .Blocked}} warn{{end}}"><span>Banned addresses</span><b>{{len .Blocked}}</b></div>
+</div>
+<div class="section">
+  <h2>Checks</h2>
+  <table class="resources">
+    <tbody>{{range .Checks}}<tr><td class="nowrap">{{if .OK}}<span class="st st-live">ok</span>{{else}}<span class="st st-failed">attention</span>{{end}}</td><td><strong>{{.Name}}</strong></td><td class="small">{{.Detail}}</td></tr>{{end}}</tbody>
+  </table>
+  <p class="small muted">Receiving servers (Gmail, Outlook) refuse or file as spam mail from a server whose reverse DNS does not name it. Outgoing port 25 must also be open at the hosting provider.</p>
+</div>
+<div class="section" id="blocked">
+  <h2>Banned addresses <span class="count">{{len .Blocked}}</span></h2>
+  <p class="small muted">The mail server bans an address for an hour after too many failed sign-ins, relay attempts or scans. Lift a ban when a customer was locked out.</p>
+  {{if .Blocked}}
+  <table class="resources">
+    <thead><tr><th>Address</th><th>Reason</th><th>Since</th><th>Until</th><th></th></tr></thead>
+    <tbody>{{range .Blocked}}<tr><td><code>{{.Address}}</code></td><td>{{.Reason}}</td><td class="nowrap">{{ago .Created}}</td><td class="nowrap">{{with .Expires}}{{.Format "2006-01-02 15:04"}} UTC{{else}}no end{{end}}</td>
+      <td><form method="post" action="/operator/mail/unban" class="inline flush"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="address" value="{{.Address}}"><button type="submit" class="link">unban</button></form></td></tr>{{end}}</tbody>
+  </table>
+  {{else}}<p class="small muted">No address is banned.</p>{{end}}
+</div>
+{{end}}
+<div class="section">
+  <div class="table-tools"><h2>Mail domains <span class="count">{{len .Domains}}</span></h2>{{if .Domains}}<input type="search" data-filter="mail-domains" placeholder="Find a domain or organization" aria-label="Find a domain or organization">{{end}}</div>
+  {{if .Domains}}
+  <div class="scroll-x">
+  <table id="mail-domains" class="resources">
+    <thead><tr><th>Domain</th><th>Organization</th><th>Status</th><th class="num">Mailboxes</th><th class="num">Storage given</th><th>Added</th></tr></thead>
+    <tbody>{{range .Domains}}<tr><td><strong>{{.Domain}}</strong></td><td><a href="/operator/orgs/{{.Org}}">{{.Org}}</a></td>
+      <td>{{if .Active}}<span class="st st-live">receiving</span>{{else}}<span class="st st-pending">waiting for verification</span>{{end}}</td>
+      <td class="num">{{.Mailboxes}}</td><td class="num">{{.QuotaMB}} MB</td><td class="nowrap">{{ago .Created}}</td></tr>{{end}}</tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">No organization hosts mail yet.</p>{{end}}
+</div>
+{{end}}

@@ -259,6 +259,8 @@ func (a *Agent) listen(ctx context.Context) {
 							a.pokeBudgets()
 						case "dns":
 							a.pokeDNS()
+						case "restart":
+							go a.runRestarts(ctx)
 						default:
 							a.poke()
 						}

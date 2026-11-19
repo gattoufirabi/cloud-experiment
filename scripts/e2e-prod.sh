@@ -395,7 +395,7 @@ fi
 if want "Hosted mailboxes"; then
 section "Hosted mailboxes"
 MZ=m$RUN.test; MP="Mailbox-pass-$RUN"
-check "mail server ports answer (25, 587, 993, 995)" "$(for p in 25 587; do curl -s --max-time 5 "smtp://127.0.0.1:$p" -o /dev/null && echo -n y; done; for p in 993 995; do timeout 5 openssl s_client -connect 127.0.0.1:$p </dev/null >/dev/null 2>&1 && echo -n y; done)" yyyy
+check "mail server ports answer (25, 587, 993, 995)" "$(for p in 25 587; do [ "$(timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/$p; head -c 3 <&3")" = 220 ] && echo -n y; done; for p in 993 995; do timeout 5 openssl s_client -connect 127.0.0.1:$p </dev/null >/dev/null 2>&1 && echo -n y; done)" yyyy
 check "IMAP presents the mail host's certificate" "$(timeout 5 openssl s_client -connect 127.0.0.1:993 -servername "$(val CONSOLE_HOST)" </dev/null 2>/dev/null | openssl x509 -noout -ext subjectAltName 2>/dev/null | grep -c "$(val CONSOLE_HOST)")" 1
 code_of ja -X POST "$BASE/o/$A/dns" -d csrf=$CSRF_A -d "domain=$MZ" >/dev/null
 owner_sql "UPDATE dns_zones SET status = 'active', active_at = now() WHERE domain = '$MZ'; SELECT pg_notify('deployments', 'dns')" >/dev/null   # stands in for the delegation
