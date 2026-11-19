@@ -319,11 +319,19 @@ func (s *Server) apiService1(w http.ResponseWriter, r *http.Request, o *orgInfo)
 		if err != nil {
 			return err
 		}
+		url := s.appURL(s.serviceHost(o, p, sv))
+		if !sv.DefaultAddress && !sv.isPreview() {
+			var host string
+			if tx.QueryRow(r.Context(), `SELECT hostname FROM domains WHERE service_id = $1 AND verified_at IS NOT NULL ORDER BY hostname LIMIT 1`, sv.ID).Scan(&host) == nil {
+				url = "https://" + host
+			}
+		}
 		resp = map[string]any{
-			"id": sv.Slug, "project": p.Slug, "image": sv.Image, "port": sv.Port, "health_path": sv.HealthPath,
+			"default_address": sv.DefaultAddress,
+			"id":              sv.Slug, "project": p.Slug, "image": sv.Image, "port": sv.Port, "health_path": sv.HealthPath,
 			"cpu_millis": sv.CPUMillis, "memory_mb": sv.MemoryMB, "volume_path": sv.VolumePath,
 			"instances": sv.Instances, "worker": sv.Worker,
-			"url":         s.appURL(s.serviceHost(o, p, sv)),
+			"url":         url,
 			"deployments": toAPIDeployments(deps),
 		}
 		return nil

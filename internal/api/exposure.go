@@ -260,3 +260,48 @@ func (s *Server) apiDeleteServicePort(w http.ResponseWriter, r *http.Request, o 
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
+
+// setDefaultAddress turns the service's platform address off (only its verified custom
+// domains answer) or back on. It can be turned off only while a custom domain is verified;
+// with none left, the address answers again on its own.
+func (s *Server) setDefaultAddress(w http.ResponseWriter, r *http.Request) {
+	on := r.PostFormValue("on") != "0"
+	var formErr string
+	o, p, sv, err, ok := s.withService(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
+		if sv.isPreview() || sv.Worker {
+			formErr = "Only a web service has a platform address to turn off."
+			return nil
+		}
+		if !on {
+			var n int
+			if err := tx.QueryRow(r.Context(), `SELECT count(*) FROM domains WHERE service_id = $1 AND verified_at IS NOT NULL`, sv.ID).Scan(&n); err != nil {
+				return err
+			}
+			if n == 0 {
+				formErr = "Verify a custom domain first: without one, the service would have no address."
+				return nil
+			}
+		}
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET default_address = $2 WHERE id = $1`, sv.ID, on); err != nil {
+			return err
+		}
+		s.audit(r, tx, o.ID, "service.default_address", "service:"+sv.Slug, map[string]bool{"on": on})
+		_, err := tx.Exec(r.Context(), `SELECT pg_notify('deployments', '')`)
+		return err
+	})
+	if !ok {
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	msg := "The platform address answers again."
+	if !on {
+		msg = "The platform address is off: the service answers only on its custom domains."
+	}
+	if formErr != "" {
+		msg = ""
+	}
+	back(w, r, svcPath(o, p, sv)+"#domains", msg, formErr)
+}

@@ -148,6 +148,7 @@ func (s *Server) apiConsoleRoutes(m *http.ServeMux) {
 	m.HandleFunc("POST "+p+"/services", s.apiAuth("viewer", s.apiConsole(s.createService, nil)))
 	m.HandleFunc("PUT "+p+"/services/{service}/settings", s.apiAuth("viewer", s.apiConsole(s.saveSettings, nil)))
 	m.HandleFunc("POST "+p+"/services/{service}/domains", s.apiAuth("viewer", s.apiConsole(s.addDomain, nil)))
+	m.HandleFunc("POST "+p+"/services/{service}/default-address", s.apiAuth("viewer", s.apiConsole(s.setDefaultAddress, nil)))
 	m.HandleFunc("POST "+p+"/databases", s.apiAuth("viewer", s.apiConsole(s.createDatabase, nil)))
 	m.HandleFunc("POST "+p+"/databases/{db}/attach", s.apiAuth("viewer", s.apiConsole(s.attachDatabase, nil)))
 	m.HandleFunc("POST "+p+"/databases/{db}/public", s.apiAuth("viewer", s.apiConsole(s.databasePublic, nil)))

@@ -149,6 +149,16 @@ for _ in 1 2 3; do app_get "$HOST_A" "/?probe=$RUN" >/dev/null; done
 check "[A] request lines searchable" "$(for _ in $(seq 1 30); do grep -q "probe=$RUN" <<<"$(c ja "$BASE$SVC_A/logs.json?q=probe=$RUN")" && { echo yes; break; }; sleep 2; done)" yes
 check "[A] deployments audited" "$(owner_sql "SELECT count(*) FROM audit_events a JOIN orgs o ON o.id = a.org_id WHERE o.slug = '$A' AND a.action = 'deployment.live' AND a.created_at > now() - interval '1 hour'" | yes_if)" yes
 
+section "Platform address off"
+check "[A] cannot turn it off without a verified domain" "$(code_of ja -X POST "$BASE$SVC_A/default-address" -d csrf=$CSRF_A -d on=0):$(owner_sql "SELECT default_address FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'web'")" "303:t"
+owner_sql "INSERT INTO domains (org_id, service_id, hostname, verify_token, verified_at) SELECT s.org_id, s.id, 'www.addr-$RUN.test', 'x', now() FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'web'" >/dev/null   # stands in for a verified domain
+check "[A] platform address turned off" "$(code_of ja -X POST "$BASE$SVC_A/default-address" -d csrf=$CSRF_A -d on=0)" 303
+check "[A] the platform address no longer serves the app" "$(for _ in $(seq 1 15); do app_get "$HOST_A" 2>/dev/null | grep -q nginx || { echo yes; break; }; sleep 1; done)" yes
+check "[A] platform address back on and serving" "$(code_of ja -X POST "$BASE$SVC_A/default-address" -d csrf=$CSRF_A -d on=1):$(for _ in $(seq 1 15); do app_get "$HOST_A" 2>/dev/null | grep -q nginx && { echo yes; break; }; sleep 1; done)" "303:yes"
+owner_sql "UPDATE services SET default_address = false WHERE slug = 'web' AND org_id = (SELECT id FROM orgs WHERE slug = '$A'); DELETE FROM domains WHERE hostname = 'www.addr-$RUN.test'; SELECT pg_notify('deployments', '')" >/dev/null
+check "[A] with no verified domain left, the platform address answers again" "$(for _ in $(seq 1 15); do app_get "$HOST_A" 2>/dev/null | grep -q nginx && { echo yes; break; }; sleep 1; done)" yes
+owner_sql "UPDATE services SET default_address = true WHERE slug = 'web' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')" >/dev/null
+
 section "Private registry"
 if [ -n "$REGHOST" ]; then
   TOK_REG=$(c ja -X POST "$BASE/o/$A/registry-tokens" -d csrf=$CSRF_A -d name=e2e -d push=1 | grep -o 'plr_[A-Za-z0-9_-]*' | head -1)

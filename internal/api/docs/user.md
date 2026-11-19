@@ -425,7 +425,7 @@ Every web service answers on a private name, `<service>.<project>.internal`, ove
 
 ## Custom domains and HTTPS
 
-Every service is always reachable at its platform address; you can add your own domains, with automatic HTTPS once you prove you own them.
+Every service has a platform address; you can add your own domains, with automatic HTTPS once you prove you own them.
 
 1. On the **Domains** tab, enter the domain (for example `shop.example.com`) and click **Add domain**.
 2. At your DNS provider, create a **TXT** record named `_platform-challenge.shop.example.com` with the value `platform-verify=<token>` shown on screen.
@@ -433,6 +433,8 @@ Every service is always reachable at its platform address; you can add your own 
 4. Click **Verify**. DNS changes can take a few minutes; try again if the record is not found yet.
 
 Once verified, the domain serves the application within seconds, and an HTTPS certificate is issued on the first visit. Starter plans allow 3 custom domains, Pro plans 20. A domain can belong to only one organization.
+
+**Turning off the platform address:** once a custom domain is verified, **Turn off the platform address** on the **Domains** tab makes the service answer only on its own domains (extra public ports keep their addresses). If the service has no verified domain left, the platform address answers again on its own. API: `POST /api/v1/projects/PROJECT/services/SERVICE/default-address` with `{"on": "0"}` or `{"on": "1"}`.
 
 ### Paths served by other services
 

@@ -41,7 +41,7 @@ func (a *Agent) expandRoutes(ctx context.Context, routes []route) []route {
 			}
 			base := routes[i]
 			r := base
-			r.Hosts = []string{label + "." + base.Hosts[0]}
+			r.Hosts = []string{label + "." + base.BaseHost}
 			r.Dials = nil
 			for _, n := range base.Names {
 				r.Dials = append(r.Dials, n+":"+strconv.Itoa(port))

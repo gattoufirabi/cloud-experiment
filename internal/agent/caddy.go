@@ -77,6 +77,7 @@ type route struct {
 	InternalHost     string   // <service>.<project>.internal ("" for previews)
 	AllowFrom        []string // subnets allowed to use the private name
 	Hosts            []string
+	BaseHost         string   // the platform address (extra ports hang off it even when it is not served)
 	Dials            []string // one per instance
 	Zone             string   // rate-limit zone name (service ID)
 	WAF              bool     // OWASP Core Rule Set
@@ -93,7 +94,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		SELECT d.container_name, (d.spec->>'port')::int, s.slug, p.slug, o.slug,
 		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}'),
 		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.blocked_ips::text[],
-		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances, o.id, p.id, s.edge_cache, coalesce(ps.public, s.public)
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances, o.id, p.id, s.edge_cache, coalesce(ps.public, s.public), s.default_address
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
 		LEFT JOIN services ps ON ps.id = s.preview_of
@@ -113,15 +114,20 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		var custom, blocked []string
 		var previewName, parentSlug, upstream string
 		var insts []instance
+		var defaultAddr bool
 		rt := route{}
-		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream, &insts, &rt.OrgID, &rt.ProjectID, &rt.Cache, &rt.Public); err != nil {
+		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream, &insts, &rt.OrgID, &rt.ProjectID, &rt.Cache, &rt.Public, &defaultAddr); err != nil {
 			return route{}, err
 		}
 		host := model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)
 		if previewName != "" { // preview: <name>.<parent>-<project>-<org>.<apps domain>
 			host = previewName + "." + model.DefaultHost(parentSlug, proj, org, a.cfg.AppsDomain)
 		}
+		rt.BaseHost = host
 		rt.Hosts = append([]string{host}, custom...)
+		if !defaultAddr && previewName == "" && len(custom) > 0 { // only its own domains
+			rt.Hosts = custom
+		}
 		if previewName == "" {
 			rt.InternalHost = svc + "." + proj + internalSuffix
 		}

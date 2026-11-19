@@ -228,8 +228,20 @@
   <div class="section">
     <h2>Platform address</h2>
     {{if .Service.Public}}
-    <p><a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a></p>
-    <p class="small muted">Always available. HTTPS is automatic. Other services reach it privately at <code>http://{{.Service.Slug}}.{{.Project.Slug}}.internal</code>.</p>
+    {{if and (not .Service.DefaultAddress) .HasVerifiedDomain}}
+    <p><span class="badge">off</span> <s class="muted">{{.PlatformURL}}</s></p>
+    <p class="small muted">Turned off: the service answers only on its custom domains. Other services reach it privately at <code>http://{{.Service.Slug}}.{{.Project.Slug}}.internal</code>.</p>
+    {{else}}
+    <p><a href="{{.PlatformURL}}" target="_blank" rel="noopener">{{.PlatformURL}}</a></p>
+    <p class="small muted">HTTPS is automatic. Other services reach it privately at <code>http://{{.Service.Slug}}.{{.Project.Slug}}.internal</code>.{{if not .Service.DefaultAddress}} It answers again because the service has no verified custom domain.{{end}}</p>
+    {{end}}
+    {{if and .CanEdit (not .Service.PreviewName) (or .HasVerifiedDomain (not .Service.DefaultAddress))}}
+    <form method="post" action="{{.Path}}/default-address" class="inline"{{if .Service.DefaultAddress}} data-confirm="Stop answering on {{.PlatformURL}}? Links to it stop working; your custom domains keep working."{{end}}>
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="on" value="{{if .Service.DefaultAddress}}0{{else}}1{{end}}">
+      <button type="submit" class="secondary">{{if .Service.DefaultAddress}}Turn off the platform address{{else}}Turn the platform address back on{{end}}</button>
+    </form>
+    {{else if and .CanEdit (not .Service.PreviewName)}}<p class="small muted">Once a custom domain is verified, you can turn this address off.</p>{{end}}
     {{else}}
     <p><span class="badge">private</span> No public address: other services reach it at <code>http://{{.Service.Slug}}.{{.Project.Slug}}.internal</code>. Untick <strong>Private</strong> in the settings to publish it.</p>
     {{end}}

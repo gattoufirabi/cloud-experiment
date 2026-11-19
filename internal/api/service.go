@@ -31,6 +31,7 @@ type serviceInfo struct {
 	AnalyticsKey                            string // web analytics script key ("" = off)
 	EdgeCache                               bool   // the proxy caches responses that allow it
 	Public                                  bool   // has a public address (false: only its .internal name)
+	DefaultAddress                          bool   // the platform address answers (false: only its verified custom domains)
 	PreviewName, ParentSlug                 string // set for preview environments
 	Expires                                 *time.Time
 }
@@ -57,12 +58,12 @@ func (s *Server) loadService(r *http.Request, tx pgx.Tx, projectID string) (*ser
 	err := tx.QueryRow(r.Context(), `
 		SELECT s.id, s.slug, s.image, s.health_path, s.volume_path, s.port, s.cpu_millis, s.memory_mb, s.env,
 		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), s.expires_at, s.worker, s.instances, s.ports,
-		       s.autoscale_min, s.autoscale_max, s.autoscale_cpu, s.metrics_path, s.metrics_port, coalesce(s.analytics_key, ''), s.edge_cache, s.public
+		       s.autoscale_min, s.autoscale_max, s.autoscale_cpu, s.metrics_path, s.metrics_port, coalesce(s.analytics_key, ''), s.edge_cache, s.public, s.default_address
 		FROM services s LEFT JOIN services ps ON ps.id = s.preview_of
 		WHERE s.project_id = $1 AND s.slug = $2`, projectID, r.PathValue("service")).
 		Scan(&sv.ID, &sv.Slug, &sv.Image, &sv.HealthPath, &sv.VolumePath, &sv.Port, &sv.CPUMillis, &sv.MemoryMB, &sv.Env,
 			&sv.PreviewName, &sv.ParentSlug, &sv.Expires, &sv.Worker, &sv.Instances, &sv.Ports, &sv.AutoMin, &sv.AutoMax, &sv.AutoCPU,
-			&sv.MetricsPath, &sv.MetricsPort, &sv.AnalyticsKey, &sv.EdgeCache, &sv.Public)
+			&sv.MetricsPath, &sv.MetricsPort, &sv.AnalyticsKey, &sv.EdgeCache, &sv.Public, &sv.DefaultAddress)
 	if sv.Env == nil {
 		sv.Env = map[string]string{}
 	}
@@ -290,11 +291,21 @@ func (s *Server) servicePage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	host := s.serviceHost(o, p, sv)
+	url := s.appURL(host)
+	var verified []string
+	for _, d := range domains {
+		if d.Verified {
+			verified = append(verified, d.Hostname)
+		}
+	}
+	if !sv.DefaultAddress && !sv.isPreview() && len(verified) > 0 {
+		url = "https://" + verified[0]
+	}
 	s.render(w, r, "service", http.StatusOK, data{
 		"Jobs": jobs, "JobRuns": jobRuns, "Schedules": schedules, "ExtraPorts": extraPorts, "DomainPaths": domainPaths, "PathTargets": pathTargets,
 		"Org": o, "Project": p, "Service": sv, "EnvText": model.FormatEnv(sv.Env),
 		"Deployments": deps, "Secrets": secrets, "Domains": domains, "ProjectVars": projectVars,
-		"URL": s.appURL(host), "Path": svcPath(o, p, sv), "AppsDomain": s.cfg.AppsDomain,
+		"URL": url, "PlatformURL": s.appURL(host), "HasVerifiedDomain": len(verified) > 0, "Path": svcPath(o, p, sv), "AppsDomain": s.cfg.AppsDomain,
 		"PortHost": host, "PortsText": model.PortsText(sv.Ports),
 		"CanEdit": model.RoleAtLeast(o.Role, "developer"),
 		"Scan":    scan, "Findings": findings, "RegistryHost": s.cfg.RegistryHost,

@@ -345,6 +345,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET "+svc+"/job-runs/{run}", s.auth(authFull, s.jobRunLog))
 	m.HandleFunc("POST "+svc+"/secrets/{name}/delete", s.auth(authFull, s.deleteSecret))
 	m.HandleFunc("POST "+svc+"/domains", s.auth(authFull, s.addDomain))
+	m.HandleFunc("POST "+svc+"/default-address", s.auth(authFull, s.setDefaultAddress))
 	m.HandleFunc("POST "+svc+"/domains/{id}/verify", s.auth(authFull, s.verifyDomain))
 	m.HandleFunc("POST "+svc+"/domains/{id}/delete", s.auth(authFull, s.deleteDomain))
 	m.HandleFunc("POST "+svc+"/domains/{id}/paths", s.auth(authFull, s.addDomainPathForm))
