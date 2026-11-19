@@ -130,9 +130,9 @@ func (s *Server) upsertPreview(r *http.Request, tx pgx.Tx, o *orgInfo, p *projec
 		envJSON, _ := json.Marshal(spec.Env)
 		if err := tx.QueryRow(r.Context(), `
 			INSERT INTO services (org_id, project_id, slug, image, port, cpu_millis, memory_mb, health_path, volume_path, env,
-			                      waf_enabled, rate_limit_rpm, blocked_ips, preview_of, preview_name, expires_at, worker)
+			                      waf_enabled, rate_limit_rpm, max_inflight, blocked_ips, preview_of, preview_name, expires_at, worker)
 			SELECT $1, $2, $3, $4, port, cpu_millis, memory_mb, health_path, '', $5,
-			       waf_enabled, rate_limit_rpm, blocked_ips, id, $6, $7, worker
+			       waf_enabled, rate_limit_rpm, max_inflight, blocked_ips, id, $6, $7, worker
 			FROM services WHERE id = $8
 			RETURNING id`, o.ID, p.ID, slug, spec.Image, envJSON, req.Name, expires, parent.ID).Scan(&id); err != nil {
 			return res, err

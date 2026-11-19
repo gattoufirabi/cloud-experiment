@@ -10,7 +10,10 @@ func TestDesiredInstances(t *testing.T) {
 		want             int
 	}{
 		{1, 100, 50, 1, 5, 2}, // twice the target: double
-		{2, 90, 70, 1, 5, 3},  // ceil(2*90/70) = 3
+		{2, 85, 70, 1, 5, 3},  // ceil(2*85/70) = 3
+		{2, 90, 70, 1, 5, 4},  // at the CPU limit: at least double
+		{3, 98, 70, 1, 10, 6}, // at the CPU limit: double, not ceil(3*98/70) = 5
+		{4, 99, 70, 1, 5, 5},  // doubling still stops at max
 		{4, 20, 70, 1, 5, 2},  // ceil(4*20/70) = 2
 		{3, 5, 70, 2, 5, 2},   // never below min
 		{2, 400, 50, 1, 4, 4}, // never above max

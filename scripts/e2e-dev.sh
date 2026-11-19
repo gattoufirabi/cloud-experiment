@@ -1224,6 +1224,10 @@ if [ "$N429" -ge 4 ]; then ok "visitors over the limit get 429 ($N429 of 15)"; e
 check "[A] block every address" "$(code_of ja -X POST "$BASE$SVC_A/protection" -d csrf=$CSRF_A --data-urlencode $'blocked=0.0.0.0/0\n::/0')" 303
 check "blocked visitors get 403" "$(wait_app_code / 403)" 403
 check "protection saved in the audit log" "$(owner_sql "SELECT count(*) >= 3 FROM audit_events WHERE action = 'service.protection' AND target = 'service:web' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
+if c ja -L "$BASE$SVC_A/protection" -d csrf=$CSRF_A -d inflight=0.5 | grep -q "Requests in progress per instance"; then ok "overload limit out of range refused"; else bad "inflight=0.5 accepted"; fi
+check "[A] overload limit of 25 requests per instance" "$(code_of ja -X POST "$BASE$SVC_A/protection" -d csrf=$CSRF_A -d inflight=25)" 303
+check "the proxy applies the overload limit" "$(for _ in $(seq 1 20); do MSYS_NO_PATHCONV=1 docker exec platform-caddy curl -s --unix-socket /run/caddy/admin.sock http://caddy/config/ | grep -q '"unhealthy_request_count":25' && { echo yes; break; }; sleep 1; done)" yes
+check "the app still answers under the limit" "$(wait_app_code / 200)" 200
 check "[A] protection turned off" "$(code_of ja -X POST "$BASE$SVC_A/protection" -d csrf=$CSRF_A)" 303
 check "app answers normally again" "$(wait_app_code "$XSS" 200)" 200
 
@@ -2116,8 +2120,8 @@ check "[B->A] B cannot add a schedule to A's service (404)" "$(curl -sS --resolv
 owner_sql "UPDATE scaling_schedules SET created_at = now() - interval '400 days' WHERE label = 'e2e'" >/dev/null   # its last 1 January is now due
 SQ="SELECT s.instances || ':' || coalesce((SELECT jsonb_array_length(d.instances) FROM deployments d WHERE d.service_id = s.id AND d.status = 'live'), 0) FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'sched'"
 check "the due schedule scales the service to 2 running instances" "$(until_is 2:2 150 owner_sql "$SQ")" 2:2
-check "applied once, recorded and audited" "$(owner_sql "SELECT last_run IS NOT NULL AND last_error = '' FROM scaling_schedules WHERE label = 'e2e'"):$(owner_sql "SELECT count(*) FROM audit_events WHERE org_id = '$ORG_A' AND action = 'service.scheduled_scaling' AND target = 'service:shop/sched'")" "t:1"
-check "the service page lists the schedule" "$(c ja "$BASE/o/$A/p/shop/s/sched" | grep -c 'id="schedules-table"')" 1
+check "applied once, recorded and audited" "$(owner_sql "SELECT last_run IS NOT NULL AND last_error = '' FROM scaling_schedules WHERE label = 'e2e'"):$(owner_sql "SELECT count(*) FROM audit_events WHERE org_id = (SELECT id FROM orgs WHERE slug = '$A') AND action = 'service.scheduled_scaling' AND target = 'service:shop/sched'")" "t:1"
+check "the settings page lists the schedule" "$(c ja "$BASE/o/$A/p/shop/s/sched/settings" | grep -c 'id="schedules-table"')" 1
 check "[API] schedule deleted" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/shop/services/sched/schedules/$(owner_sql "SELECT id FROM scaling_schedules WHERE label = 'e2e'")")" 204
 code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/sched >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null

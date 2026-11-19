@@ -53,6 +53,49 @@ func (c *caddyClient) load(ctx context.Context, body []byte) error {
 	return nil
 }
 
+// waitDrained waits until the proxy has no request in flight to the given containers
+// (the instances a deployment replaces), for at most max: requests already sent to them
+// finish instead of being cut when the containers stop.
+func (a *Agent) waitDrained(ctx context.Context, names []string, max time.Duration) {
+	if !a.isPrimary() || len(names) == 0 {
+		return
+	}
+	deadline := time.Now().Add(max)
+	for time.Now().Before(deadline) {
+		body, err := a.caddy.get(ctx, "/reverse_proxy/upstreams")
+		if err != nil {
+			return
+		}
+		var ups []upstreamLoad
+		if json.Unmarshal(body, &ups) != nil || !busyUpstream(ups, names) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// upstreamLoad is one entry of the proxy's /reverse_proxy/upstreams.
+type upstreamLoad struct {
+	Address     string `json:"address"`
+	NumRequests int    `json:"num_requests"`
+}
+
+// busyUpstream: does one of the named containers still have requests in flight?
+func busyUpstream(ups []upstreamLoad, names []string) bool {
+	for _, u := range ups {
+		for _, n := range names {
+			if u.NumRequests > 0 && strings.HasPrefix(u.Address, n+":") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // get reads a path of the admin API (used by the health check).
 func (c *caddyClient) get(ctx context.Context, path string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://caddy"+path, nil)
@@ -82,6 +125,7 @@ type route struct {
 	Zone             string   // rate-limit zone name (service ID)
 	WAF              bool     // OWASP Core Rule Set
 	RPM              int      // requests per minute per visitor IP; 0 = no limit
+	MaxInflight      int      // requests in progress per instance before 503; 0 = no limit
 	Blocked          []string // CIDR ranges refused with 403
 	Public           bool     // false: no public address (only the private name)
 	Names            []string // local instance container names (none when it runs on another node)
@@ -93,7 +137,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 	rows, err := a.pool.Query(ctx, `
 		SELECT d.container_name, (d.spec->>'port')::int, s.slug, p.slug, o.slug,
 		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}'),
-		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.blocked_ips::text[],
+		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.max_inflight, s.blocked_ips::text[],
 		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances, o.id, p.id, s.edge_cache, coalesce(ps.public, s.public), s.default_address
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
@@ -116,7 +160,7 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 		var insts []instance
 		var defaultAddr bool
 		rt := route{}
-		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &blocked, &previewName, &parentSlug, &upstream, &insts, &rt.OrgID, &rt.ProjectID, &rt.Cache, &rt.Public, &defaultAddr); err != nil {
+		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &rt.MaxInflight, &blocked, &previewName, &parentSlug, &upstream, &insts, &rt.OrgID, &rt.ProjectID, &rt.Cache, &rt.Public, &defaultAddr); err != nil {
 			return route{}, err
 		}
 		host := model.DefaultHost(svc, proj, org, a.cfg.AppsDomain)
@@ -296,6 +340,14 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 			// proxy) is skipped for 20 s and the request is retried on another one; a whole node
 			// going silent is handled by node failover (scaling.go).
 			rp["health_checks"] = obj{"passive": obj{"fail_duration": "20s", "max_fails": 1, "unhealthy_status": []int{502, 503, 504}}}
+		}
+		if r.MaxInflight > 0 { // overload protection: a full instance takes no more; none free = 503 at once
+			hc, _ := rp["health_checks"].(obj)
+			if hc == nil {
+				hc = obj{"passive": obj{}}
+				rp["health_checks"] = hc
+			}
+			hc["passive"].(obj)["unhealthy_request_count"] = r.MaxInflight
 		}
 		for _, pr := range r.PathRules { // a path of this domain served by another service
 			h := []any{}

@@ -486,6 +486,14 @@ func (a *Agent) deploy(ctx context.Context, j job) error {
 		_, _ = a.pool.Exec(ctx, `SELECT pg_notify('deployments', '')`)
 		time.Sleep(3 * time.Second)
 	}
+	// Let requests already sent to the old instances finish before stopping them.
+	var oldNames []string
+	for _, oid := range old {
+		if info, err := a.dk.ContainerInspect(ctx, oid); oid != "" && err == nil {
+			oldNames = append(oldNames, strings.TrimPrefix(info.Name, "/"))
+		}
+	}
+	a.waitDrained(ctx, oldNames, 15*time.Second)
 	for _, oid := range old {
 		if oid != "" {
 			_ = a.dk.ContainerStop(ctx, oid, 10)

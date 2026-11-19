@@ -9,7 +9,7 @@
 </nav>
 <!-- ============ members ============ -->
 <section class="pane" id="members" role="tabpanel" aria-label="Members">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: members and roles ↗</a></p>
+  <p class="help"><a href="/docs/team" target="_blank" rel="noopener">Guide: members and roles ↗</a></p>
 
   {{with .InviteLink}}
   <div class="panel strong">
@@ -69,7 +69,7 @@
 
 <!-- ============ API ============ -->
 <section class="pane" id="api" role="tabpanel" aria-label="API">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: API and command-line tool ↗</a></p>
+  <p class="help"><a href="/docs/api-and-cli" target="_blank" rel="noopener">Guide: API and command-line tool ↗</a></p>
   {{with .APIToken}}
   <div class="panel strong">
     <h2>API token "{{$.APITokenName}}"</h2>
@@ -124,7 +124,7 @@ curl -X POST -H "Authorization: Bearer $PLATFORM_TOKEN"   -d '{"image": "&lt;ima
 
 {{if roleAtLeast .Org.Role "admin"}}
 <section class="pane" id="sso" role="tabpanel" aria-label="Single sign-on">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: single sign-on ↗</a></p>
+  <p class="help"><a href="/docs/single-sign-on" target="_blank" rel="noopener">Guide: single sign-on ↗</a></p>
   <div class="section">
     <h2>Single sign-on (OpenID Connect)</h2>
     <p class="small muted">Members sign in with your identity provider (Google Workspace, Microsoft Entra ID, Okta, Keycloak, Authentik...) from the login page, using their work email. Accounts are created at their first sign-in.</p>

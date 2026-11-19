@@ -77,6 +77,10 @@ func TestDocLinks(t *testing.T) {
 	for _, n := range names {
 		b, _ := templateFS.ReadFile(n)
 		check(n, string(b))
+		// A "Guide: ..." help link opens its topic, never just the index.
+		if strings.Contains(string(b), `href="/docs" target="_blank"`) {
+			t.Errorf("%s: a help link points at the docs index instead of its topic", n)
+		}
 	}
 	docs, _ := fs.Glob(docsFS, "docs/*/*.md")
 	docs2, _ := fs.Glob(docsFS, "docs/*.md")

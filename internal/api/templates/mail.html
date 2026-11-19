@@ -5,7 +5,7 @@
   {{if and .CanEdit .Enabled}}<a class="button-link right" href="#add">Add a domain</a>{{end}}
 </div>
 <p class="lede">Real mailboxes on your own domains, for any mail app (Outlook, Apple Mail, Thunderbird, phones): IMAP, POP3 and SMTP, with aliases, a catch-all and spam filtering. {{.Count}} of {{.MaxBoxes}} mailboxes, {{.UsedMB}} of {{.MaxMB}} MB of storage given out.</p>
-<p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: mailboxes ↗</a></p>
+<p class="help"><a href="/docs/mailboxes" target="_blank" rel="noopener">Guide: mailboxes ↗</a></p>
 {{with .Webmail}}<div class="panel strong"><p><strong>Webmail:</strong> every mailbox reads and sends mail in the browser at <a href="{{.}}" target="_blank" rel="noopener">{{.}}</a>, signing in with its address and password (no platform account needed). Share this address with the people who use the mailboxes.</p></div>{{end}}
 {{if not .Enabled}}
 <div class="panel"><p>Mailboxes are not available on this platform yet.</p></div>

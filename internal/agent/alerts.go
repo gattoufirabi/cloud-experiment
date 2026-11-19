@@ -350,6 +350,11 @@ func (a *Agent) checkResources(ctx context.Context) {
 }
 
 func (a *Agent) vmVector(ctx context.Context, query string) map[string]float64 {
+	return a.vmVectorBy(ctx, query, "service_id")
+}
+
+// vmVectorBy runs an instant query and keys the values by one label of each series.
+func (a *Agent) vmVectorBy(ctx context.Context, query, label string) map[string]float64 {
 	out := map[string]float64{}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		a.cfg.VictoriaMetricsURL+"/api/v1/query?"+url.Values{"query": {query}}.Encode(), nil)
@@ -375,7 +380,7 @@ func (a *Agent) vmVector(ctx context.Context, query string) map[string]float64 {
 	for _, r := range body.Data.Result {
 		if s, ok := r.Value[1].(string); ok {
 			if v, err := strconv.ParseFloat(s, 64); err == nil {
-				out[r.Metric["service_id"]] = v
+				out[r.Metric[label]] = v
 			}
 		}
 	}

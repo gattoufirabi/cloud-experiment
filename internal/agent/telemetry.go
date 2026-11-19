@@ -209,7 +209,9 @@ func (a *Agent) metricsLoop(ctx context.Context) {
 			if inst == "" {
 				inst = "0"
 			}
-			l := fmt.Sprintf(`{org_id="%s",project_id="%s",service_id="%s",instance="%s"}`, t.OrgID, t.ProjectID, t.ServiceID, inst)
+			// deployment_id keeps the old and new containers of a redeploy in separate series
+			// (same instance number): mixed together their counters look like resets.
+			l := fmt.Sprintf(`{org_id="%s",project_id="%s",service_id="%s",instance="%s",deployment_id="%s"}`, t.OrgID, t.ProjectID, t.ServiceID, inst, t.DeploymentID)
 			fmt.Fprintf(&buf, "platform_container_cpu_seconds_total%s %f %d\n", l, float64(st.CPUStats.CPUUsage.TotalUsage)/1e9, now)
 			fmt.Fprintf(&buf, "platform_container_memory_bytes%s %d %d\n", l, mem, now)
 			fmt.Fprintf(&buf, "platform_container_memory_limit_bytes%s %d %d\n", l, st.MemoryStats.Limit, now)

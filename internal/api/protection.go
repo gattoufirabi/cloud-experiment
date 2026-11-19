@@ -16,14 +16,15 @@ import (
 type protection struct {
 	WAF       bool
 	RPM       *int
+	Inflight  int // requests in progress per instance before 503; 0 = no limit
 	Blocked   []string
 	BlockedTx string // textarea content
 }
 
 func loadProtection(r *http.Request, tx pgx.Tx, serviceID string) (protection, error) {
 	var p protection
-	err := tx.QueryRow(r.Context(), `SELECT waf_enabled, rate_limit_rpm, blocked_ips::text[] FROM services WHERE id = $1`, serviceID).
-		Scan(&p.WAF, &p.RPM, &p.Blocked)
+	err := tx.QueryRow(r.Context(), `SELECT waf_enabled, rate_limit_rpm, max_inflight, blocked_ips::text[] FROM services WHERE id = $1`, serviceID).
+		Scan(&p.WAF, &p.RPM, &p.Inflight, &p.Blocked)
 	p.BlockedTx = strings.Join(p.Blocked, "\n")
 	return p, err
 }
@@ -71,17 +72,26 @@ func (s *Server) protectionSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		rpm = &n
 	}
+	inflight := 0
+	if v := strings.TrimSpace(r.PostFormValue("inflight")); v != "" && v != "0" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 100000 {
+			back(w, r, r.URL.Path[:strings.LastIndex(r.URL.Path, "/")]+"#security", "", "Requests in progress per instance: from 1 to 100000, or empty for no limit.")
+			return
+		}
+		inflight = n
+	}
 	blocked, msg := parseBlocked(r.PostFormValue("blocked"))
 	if msg != "" {
 		back(w, r, r.URL.Path[:strings.LastIndex(r.URL.Path, "/")]+"#security", "", msg)
 		return
 	}
 	o, p, sv, err, ok := s.withService(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
-		if _, err := tx.Exec(r.Context(), `UPDATE services SET waf_enabled = $2, rate_limit_rpm = $3, blocked_ips = $4::cidr[] WHERE id = $1`,
-			sv.ID, waf, rpm, blocked); err != nil {
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET waf_enabled = $2, rate_limit_rpm = $3, blocked_ips = $4::cidr[], max_inflight = $5 WHERE id = $1`,
+			sv.ID, waf, rpm, blocked, inflight); err != nil {
 			return err
 		}
-		s.audit(r, tx, o.ID, "service.protection", "service:"+sv.Slug, map[string]any{"waf": waf, "rate_limit_rpm": rpm, "blocked": len(blocked)})
+		s.audit(r, tx, o.ID, "service.protection", "service:"+sv.Slug, map[string]any{"waf": waf, "rate_limit_rpm": rpm, "blocked": len(blocked), "max_inflight": inflight})
 		_, err := tx.Exec(r.Context(), `SELECT pg_notify('deployments', '')`) // agent refreshes the proxy
 		return err
 	})

@@ -195,8 +195,12 @@ Autoscaling adds instances when your service is busy and removes them when it is
 2. Choose the **Minimum instances**, **Maximum instances** (1 to 10) and a **CPU target** (10 to 95% of the CPU you give each instance; 70% by default).
 3. Click **Save and deploy**.
 
-- Every minute the platform compares the average CPU of the service's instances (over the last two minutes) with the target, and computes how many instances are needed to get back to it.
-- It **scales out** within a minute when the CPU is above the target, and **scales in** only after 5 minutes without changes and when the CPU is well below it, so short spikes do not make it flap.
+- Every 15 seconds the platform compares the average CPU of the service's live instances (over the last minute) with the target, and computes how many instances are needed to get back to it.
+- It **scales out** as soon as the CPU is above the target and the current instances have run for about 35 seconds (long enough to be measured). An instance cannot use more than its CPU limit, so when the instances are at 90% of it or more, the real demand is unknown: the number of instances then at least **doubles** (within the maximum) instead of growing one at a time.
+- It **scales in** only after 5 minutes without changes and when the CPU is well below the target, so short spikes do not make it flap.
+- Each change is a deployment of the live settings with the new number of instances: the new instances start next to the old ones, traffic moves when they are all healthy (usually 3 to 5 seconds), and the old ones stop once the requests they were serving have finished.
+- What to expect: in a test where traffic jumped at once from 10 to 60 requests per second (about 3 times what one instance could serve), the first extra instance started after about 80 seconds, the service reached 4 then 5 instances within the next 2 minutes, and from then on every request was answered normally. Requests that arrived during those first minutes waited or failed.
+- If a sudden rush must never queue, also set an overload limit (see [Traffic protection](/docs/traffic-protection)), keep a higher minimum, or schedule scaling before a known peak.
 - Each change is a normal deployment with no downtime, recorded in the audit log with the measured CPU.
 - Your plan's instance limit, CPU and memory are checked against the maximum, so the maximum must fit in your plan.
 - Services with a persistent folder or public TCP/UDP ports run a single instance and cannot autoscale. Previews do not autoscale.
@@ -383,7 +387,8 @@ A deployment or scale call answers `202` with `revision`, `status` (`pending`) a
 
 - Each update starts the new revision next to the old one, scans the image, waits for the health check, then switches traffic.
 - The proxy skips an instance that fails for 20 seconds, also when it answers 502, 503 or 504.
-- Autoscaling runs every minute on the average CPU of the last two minutes. Scale-in waits 5 minutes without changes.
+- Autoscaling runs every 15 seconds on the average CPU of the live instances over the last minute; it waits about 35 seconds after a deployment goes live before measuring it, doubles the instances when they are at their CPU limit, and waits 5 minutes without changes before scaling in. Only the live deployment's containers are measured, so the old containers of a switch do not count.
+- During every deployment, the old instances stop only when the requests in progress on them have finished (at most 15 seconds).
 - Scheduled scaling is applied within a minute of its time.
 - On an installation with several servers, a service with several instances stays up when one instance stops answering: the proxy retries the request on another instance. There is nothing to set up.
 - When a whole server stops reporting for a few minutes (3 by default), the platform stops placing work on it and redeploys its projects without data on the other servers. Projects with a database or a persistent folder wait for the operator, who brings the server back or restores them from backups (see [admin guide](/docs/admin)). Running several instances is the best way to ride out a server failure.

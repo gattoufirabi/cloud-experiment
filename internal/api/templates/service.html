@@ -22,7 +22,7 @@
 
 <!-- ============ overview ============ -->
 {{if ne .View "settings"}}<section class="pane" id="overview" role="tabpanel" aria-label="Overview">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: updates and rollbacks ↗</a></p>
+  <p class="help"><a href="/docs/applications#update-redeploy-and-roll-back" target="_blank" rel="noopener">Guide: updates and rollbacks ↗</a></p>
   {{with .Service.Ports}}
   <div class="section">
     <h2>Public TCP/UDP endpoints</h2>
@@ -91,7 +91,7 @@
 
 <!-- ============ logs ============ -->
 {{if ne .View "settings"}}<section class="pane" id="logs-pane" role="tabpanel" aria-label="Logs">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: logs and metrics ↗</a></p>
+  <p class="help"><a href="/docs/logs-and-metrics" target="_blank" rel="noopener">Guide: logs and metrics ↗</a></p>
 
   <div class="section">
     <h2>Logs</h2>
@@ -106,7 +106,7 @@
 
 <!-- ============ settings ============ -->
 {{if eq .View "settings"}}<section class="pane" id="settings" role="tabpanel" aria-label="Settings">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: service settings ↗</a></p>
+  <p class="help"><a href="/docs/applications#change-the-settings-of-a-service" target="_blank" rel="noopener">Guide: service settings ↗</a></p>
 
   <div class="section">
     <h2>Container</h2>
@@ -223,7 +223,7 @@
 
 <!-- ============ domains ============ -->
 {{if ne .View "settings"}}<section class="pane" id="domains" role="tabpanel" aria-label="Domains">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: custom domains ↗</a></p>
+  <p class="help"><a href="/docs/domains" target="_blank" rel="noopener">Guide: custom domains ↗</a></p>
 
   <div class="section">
     <h2>Platform address</h2>
@@ -322,7 +322,7 @@
 
 <!-- ============ security ============ -->
 {{if ne .View "settings"}}<section class="pane" id="security" role="tabpanel" aria-label="Security">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: traffic protection ↗</a> · <a href="/docs" target="_blank" rel="noopener">security scanning ↗</a></p>
+  <p class="help"><a href="/docs/traffic-protection" target="_blank" rel="noopener">Guide: traffic protection ↗</a> · <a href="/docs/security-scanning" target="_blank" rel="noopener">security scanning ↗</a></p>
 
   <div class="section">
     <h2>Traffic protection</h2>
@@ -330,6 +330,7 @@
     {{with .Protection}}
     <p class="small">{{if .WAF}}{{template "status" "live"}} Web application firewall on{{else}}Web application firewall off{{end}}
       · {{with .RPM}}limit {{.}} requests/minute per visitor{{else}}no request limit{{end}}
+      · {{with .Inflight}}at most {{.}} requests in progress per instance{{else}}no overload limit{{end}}
       · {{len .Blocked}} blocked address{{if ne (len .Blocked) 1}}es{{end}}</p>
     {{end}}
     {{if .CanEdit}}
@@ -339,6 +340,8 @@
         Web application firewall <span class="hint">OWASP Core Rule Set: blocks common attacks such as SQL injection, cross-site scripting and path traversal (answers 403). Test your app after turning it on.</span></label>
       <label>Requests per minute per visitor <span class="hint">10–100000; above it visitors get 429 "Too Many Requests". Empty = no limit.</span>
         <input type="number" name="rpm" min="10" max="100000" value="{{with .Protection.RPM}}{{.}}{{end}}" placeholder="no limit"></label>
+      <label>Requests in progress per instance <span class="hint">Overload protection: when every instance already has this many requests in progress, new ones get 503 "Service Unavailable" at once instead of waiting in a queue, and the app recovers as soon as traffic drops. Empty = no limit. Not for WebSockets or long polling: open connections count as requests in progress.</span>
+        <input type="number" name="inflight" min="1" max="100000" value="{{with .Protection.Inflight}}{{.}}{{end}}" placeholder="no limit"></label>
       <label>Blocked addresses <span class="hint">IPv4/IPv6 addresses or ranges (CIDR), one per line, at most 100. They get 403.</span>
         <textarea name="blocked" rows="3" placeholder="203.0.113.7&#10;198.51.100.0/24">{{.Protection.BlockedTx}}</textarea></label>
       <div><button type="submit" class="secondary">Save protection</button></div>
@@ -378,7 +381,7 @@
 <!-- ============ backups ============ -->
 {{if .Service.VolumePath}}{{with .Backups}}
 {{if ne $.View "settings"}}<section class="pane" id="backups" role="tabpanel" aria-label="Backups">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: backups and restore ↗</a></p>
+  <p class="help"><a href="/docs/backups" target="_blank" rel="noopener">Guide: backups and restore ↗</a></p>
 
   <div class="section">
     <h2>Backups of {{$.Service.VolumePath}}</h2>
@@ -441,7 +444,7 @@
 
 <!-- ============ alerts ============ -->
 {{if ne .View "settings"}}<section class="pane" id="alerts" role="tabpanel" aria-label="Alerts">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: alerts ↗</a></p>
+  <p class="help"><a href="/docs/alerts" target="_blank" rel="noopener">Guide: alerts ↗</a></p>
 
   <div class="section">
     <h2>Health and thresholds</h2>
@@ -474,7 +477,7 @@
 <!-- ============ builds ============ -->
 {{if and .BuildsEnabled (not .Service.PreviewName)}}
 {{if ne .View "settings"}}<section class="pane" id="builds" role="tabpanel" aria-label="Builds">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: builds from git ↗</a></p>
+  <p class="help"><a href="/docs/builds" target="_blank" rel="noopener">Guide: builds from git ↗</a></p>
   <div class="section">
     <h2>Build from git</h2>
     <p class="small muted">The platform clones the branch and builds it in an isolated sandbox: with its Dockerfile if there is one, otherwise with Railpack, which detects Node, Python, Go, PHP, Ruby, Java, Rust, Elixir and static sites. The image is stored in your registry space, scanned and, if you choose, deployed with this service's settings.</p>
@@ -547,7 +550,7 @@
 <!-- ============ jobs ============ -->
 {{if not .Service.PreviewName}}
 {{if ne .View "settings"}}<section class="pane" id="jobs" role="tabpanel" aria-label="Jobs">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: scheduled jobs ↗</a></p>
+  <p class="help"><a href="/docs/scheduled-jobs" target="_blank" rel="noopener">Guide: scheduled jobs ↗</a></p>
   <div class="section">
     <p class="small muted">A job runs a command on a schedule in a fresh container made from this service's current deployment: same image, variables, secrets and private network. Times are UTC. A job never overlaps itself.</p>
     {{if .Jobs}}
@@ -613,7 +616,7 @@
 <!-- ============ previews ============ -->
 {{if not .Service.PreviewName}}
 {{if ne .View "settings"}}<section class="pane" id="previews" role="tabpanel" aria-label="Previews">
-  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: preview environments ↗</a></p>
+  <p class="help"><a href="/docs/previews" target="_blank" rel="noopener">Guide: preview environments ↗</a></p>
   <div class="section">
     <h2>Preview environments</h2>
     <p class="small muted">A temporary copy of this service, with the same settings and secrets but another image, at its own address. Typical use: one preview per pull request, created by your CI. No persistent folder; deleted automatically when it expires. At most {{.MaxPreviews}} per service; they share your plan's CPU and memory.</p>
