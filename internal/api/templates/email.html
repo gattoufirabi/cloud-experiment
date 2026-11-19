@@ -2,7 +2,7 @@
 {{define "content"}}
 <div class="head">
   <h1>Email</h1>
-  {{if .CanEdit}}<a class="button-link right" href="#domains">Add domain</a>{{end}}
+  {{if .CanEdit}}<a class="button-link right" href="#add-domain">Add domain</a>{{end}}
 </div>
 <p class="lede">Send transactional email (receipts, password resets, notifications) from your own domains. Each message is signed with the domain's DKIM key. {{.SentToday}} of {{.MaxDay}} emails sent in the last 24 hours.</p>
 <p class="help"><a href="/docs/user#email" target="_blank" rel="noopener">Guide: sending email ↗</a></p>
@@ -76,7 +76,7 @@
     {{else}}<p class="small muted">Add a domain you own to send from it.</p>{{end}}
   </div>
   {{if .CanEdit}}
-  <div class="section">
+  <div class="section" id="add-domain">
     <h2>Add domain</h2>
     {{if .Enabled}}
     <form method="post" action="{{.Org.Path}}/email/domains" class="inline">

@@ -445,3 +445,34 @@ document.addEventListener("click", (e) => {
   const open = menu.classList.toggle("show");
   btn.setAttribute("aria-expanded", open ? "true" : "false");
 });
+
+// ---------- create forms in a modal ----------
+// A header button such as "Create service" or "Add a domain" points at the page's form
+// section (#create, #add). With JavaScript that section becomes a dialog the button
+// opens: the form is no longer shown at the bottom of the page. A page reloaded with the
+// form's hash (after an error) opens it again. Without JavaScript the link still scrolls
+// to the form.
+document.querySelectorAll('.head a.button-link[href^="#"]').forEach((btn) => {
+  const section = document.getElementById(btn.getAttribute("href").slice(1));
+  if (!section || section.classList.contains("pane") || !section.querySelector("form")) return;
+  const dlg = document.createElement("dialog");
+  dlg.className = "modal";
+  dlg.setAttribute("aria-label", btn.textContent.trim());
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "modal-close";
+  close.setAttribute("aria-label", "Close");
+  close.textContent = "×";
+  close.addEventListener("click", () => dlg.close());
+  section.parentNode.insertBefore(dlg, section);
+  dlg.append(close, section);
+  btn.setAttribute("aria-haspopup", "dialog");
+  const open = () => {
+    dlg.showModal();
+    const first = dlg.querySelector("input:not([type=hidden]), select, textarea");
+    if (first) first.focus();
+  };
+  btn.addEventListener("click", (e) => { e.preventDefault(); open(); });
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); }); // click outside
+  if (location.hash === btn.getAttribute("href")) open();
+});

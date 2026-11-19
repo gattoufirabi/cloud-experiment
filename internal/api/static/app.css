@@ -790,3 +790,14 @@ svg[data-chart] path.area { fill: var(--primary-soft); }
   .page-wrapper { margin: 0 !important; }
   body { background: #fff !important; color: #000; }
 }
+
+/* ---------- modal dialogs (create forms) ---------- */
+dialog.modal { width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 64px); padding: 0; border: 0; border-radius: var(--radius-lg); background: var(--surface); color: var(--text); box-shadow: var(--hairline), 0 24px 64px rgba(0, 0, 0, .55); overflow: auto; }
+dialog.modal::backdrop { background: rgba(0, 0, 0, .6); backdrop-filter: blur(3px); }
+dialog.modal > .section { margin: 0; box-shadow: none; background: transparent; padding: 26px 28px 28px; }
+dialog.modal > .section > h2:first-child { font-size: 19px; margin-bottom: 14px; padding-right: 32px; }
+dialog.modal .stack, dialog.modal .form-grid { max-width: none; }
+.modal-close { position: absolute; top: 14px; right: 14px; width: 32px; height: 32px; min-height: 0; padding: 0; border-radius: 50%; background: transparent; color: var(--text-2); box-shadow: none; font-size: 20px; line-height: 1; }
+.modal-close:hover { background: var(--idle-soft); color: var(--text); }
+@media (prefers-reduced-motion: no-preference) { dialog.modal[open] { animation: modal-in .16s ease-out; } }
+@keyframes modal-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
