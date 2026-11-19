@@ -546,6 +546,11 @@ check "secret not shown again on the storage page" "$(c ja "$BASE/o/$A/storage" 
 echo "hello-s3-$RUN" > "$TMP/s3obj.txt"
 check "[S3] read-write key uploads an object" "$(s3code "$KW" "$SW" -T "$TMP/s3obj.txt" "$S3/$A-uploads/docs/hello.txt")" 200
 check "[S3] the object reads back" "$(s3c "$KW" "$SW" "$S3/$A-uploads/docs/hello.txt")" "hello-s3-$RUN"
+preflight() { curl -s -o /dev/null -D - --resolve "s3.localhost:$PORT:127.0.0.1" -X OPTIONS "http://s3.localhost:$PORT/$A-uploads/docs/hello.txt" -H "Origin: $1" -H "Access-Control-Request-Method: PUT" | grep -ci "^access-control-allow-origin: $1"; }
+check "[A] browser access (CORS) saved for one site" "$(code_of ja -X POST "$BASE/o/$A/storage/b/uploads/cors" -d csrf=$CSRF_A --data-urlencode "origins=https://shop-$RUN.example"):$(until_is 1 10 preflight "https://shop-$RUN.example")" "303:1"
+check "another site is not allowed" "$(preflight https://other.example)" 0
+check "an origin with a path is refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/storage/b/uploads/cors" -d csrf=$CSRF_A --data-urlencode "origins=https://shop.example/x" | grep -c 'err=')" 1
+check "browser access removed" "$(code_of ja -X POST "$BASE/o/$A/storage/b/uploads/cors" -d csrf=$CSRF_A -d origins=):$(preflight "https://shop-$RUN.example")" "303:0"
 if grep -q "<Key>docs/hello.txt</Key>" <<<"$(s3c "$KR" "$SR" "$S3/$A-uploads?list-type=2")"; then ok "[S3] read-only key lists the bucket"; else bad "[S3] read-only key cannot list"; fi
 check "[S3] read-only key cannot write (403)" "$(s3code "$KR" "$SR" -T "$TMP/s3obj.txt" "$S3/$A-uploads/denied.txt")" 403
 check "[S3] request without credentials refused (403)" "$(curl -sS --resolve "s3.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' "$S3/$A-uploads/docs/hello.txt")" 403

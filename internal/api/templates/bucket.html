@@ -104,6 +104,18 @@
       </fieldset>
     </form>
   </div>
+  <div class="section" id="cors">
+    <h2>Browser access (CORS)</h2>
+    <p class="small muted">Web pages of these sites may use the bucket directly from the browser, for example to upload a file with a presigned URL your service created, or to read objects with <code>fetch</code>. One site per line, such as <code>https://shop.example.com</code> (no path); <code>*</code> allows every site. Leave empty to turn it off. A page still needs a presigned URL or a public website to reach objects: this only lets the browser make the request.</p>
+    <form method="post" action="{{.Path}}/cors" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <fieldset {{if not .CanEdit}}disabled{{end}}>
+      <label>Allowed sites<textarea name="origins" rows="3" placeholder="https://shop.example.com">{{range $i, $o := .Bucket.CORSOrigins}}{{if $i}}
+{{end}}{{$o}}{{end}}</textarea></label>
+      <div class="inline"><button type="submit" class="secondary">Save browser access</button></div>
+      </fieldset>
+    </form>
+  </div>
   {{if .CanDelete}}
   <div class="section">
     <h2>Delete bucket</h2>

@@ -410,7 +410,7 @@ S3-compatible buckets for files, uploads, backups and static websites, on the or
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | the service's own key |
 | `S3_BUCKET` | the bucket's S3 name, such as `acme-uploads` |
 
-**Connection settings for any tool:** endpoint `{{s3}}`, region `{{s3region}}`, **path-style addressing** (the bucket goes in the path, `{{s3}}/acme-uploads/file.txt`, not in the host name), Signature V4 (the SDKs' default).
+**Connection settings for any tool:** endpoint `{{s3}}`, region `{{s3region}}`, **path-style addressing** (the bucket goes in the path, `{{s3}}/acme-uploads/file.txt`, not in the host name), **Signature V4** (the default of most SDKs; with boto3 set `signature_version="s3v4"`, or presigned URLs are refused).
 
 ### Use it from code
 
@@ -447,7 +447,7 @@ const url = await getSignedUrl(s3, new GetObjectCommand({ Bucket, Key: "avatars/
 import os, boto3
 from botocore.config import Config
 
-s3 = boto3.client("s3", config=Config(s3={"addressing_style": "path"}))  # endpoint, region and key from the variables
+s3 = boto3.client("s3", config=Config(signature_version="s3v4", s3={"addressing_style": "path"}))  # endpoint, region and key from the variables
 bucket = os.environ["S3_BUCKET"]
 
 s3.upload_file("report.pdf", bucket, "reports/report.pdf")            # multipart for large files, automatically
@@ -482,7 +482,7 @@ $s3->putObject(['Bucket' => getenv('S3_BUCKET'), 'Key' => 'invoices/1.pdf', 'Sou
 - **Folders** are key prefixes: list one level with a prefix and the `/` delimiter; `aws s3 sync` copies whole trees.
 - **Content type and metadata**: set `Content-Type`, `Cache-Control`, `Content-Disposition` and your own `x-amz-meta-*` metadata when you upload; they come back on download and `HEAD`.
 - **Partial downloads** with the `Range` header (video seeking, resumable downloads), and **server-side copies** (`CopyObject`) without downloading.
-- **Presigned URLs** let someone download (`GET`) or upload (`PUT`) one object for a limited time without a key, or post a file from an HTML form (presigned `POST`). Create them in your backend with your SDK; they stop working when they expire or when the key is deleted.
+- **Presigned URLs** let someone download (`GET`) or upload (`PUT`) one object for a limited time without a key, or post a file from an HTML form (presigned `POST`). Create them in your backend with your SDK; they stop working when they expire or when the key is deleted. With **browser access** set for your site, a web page can use them directly (see below).
 - **Browse objects** on the bucket's **Objects** tab: open folders, download (through a link valid for 5 minutes), delete, and upload files of up to 25 MB.
 - **Static website:** in the bucket's settings, tick **Public website**: every object becomes readable by anyone at `https://<organization>-<name>.web.{{apps}}/`, with HTTPS, serving `index.html` (or the index document you set) for a folder and an optional error document. Keep private files in another bucket.
 - **React to files:** a function can run each time an object is created or deleted in a bucket, filtered by prefix and suffix (see **Functions**, bucket triggers).
@@ -495,11 +495,30 @@ $s3->putObject(['Bucket' => getenv('S3_BUCKET'), 'Key' => 'invoices/1.pdf', 'Sou
 | PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects | Bucket policies and ACLs (use keys with per-bucket access) |
 | ListObjectsV2 / ListObjects (prefix, delimiter, pagination) | Object tagging |
 | CopyObject, ranges, conditional requests | Versioning and object lock |
-| Multipart upload (create, upload part, complete, abort, list) | Bucket CORS and lifecycle rules (not settable with a key) |
+| Multipart upload (create, upload part, complete, abort, list) | Lifecycle rules; CORS through S3 (set it in the bucket's settings instead) |
 | Presigned GET, PUT and POST | Creating or deleting buckets through S3 (use the console or the API) |
 | ListBuckets (the key's buckets), checksums | Storage classes, replication, Glacier |
 
-Server-side encryption headers are accepted and ignored: data is stored on the platform's own servers. Because bucket CORS cannot be set, a web page cannot upload straight to the storage from the browser yet: send the file to your service (or a function) and store it from there.
+Server-side encryption headers are accepted and ignored: data is stored on the platform's own servers.
+
+### Upload from the browser
+
+A web page can send a file straight to the storage, without passing it through your service:
+
+1. In the bucket's **Settings**, under **Browser access (CORS)**, add your site, such as `https://shop.example.com` (one per line, no path; `*` for every site). API: `PUT /api/v1/buckets/BUCKET/cors` with `{"origins": ["https://shop.example.com"]}`; `[]` turns it off.
+2. Your service creates a presigned `PUT` URL for the object (it keeps the key; the page never sees it):
+
+```
+const url = await getSignedUrl(s3, new PutObjectCommand({ Bucket, Key: `uploads/${userId}/${name}`, ContentType: type }), { expiresIn: 300 });
+```
+
+3. The page uploads with it:
+
+```
+await fetch(url, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+```
+
+The same setting lets pages read objects with `fetch` through presigned `GET` URLs (or from a public website bucket). Browsers of other sites are refused, and a page still needs a presigned URL: browser access alone never makes objects public.
 
 ### Limits and plans
 

@@ -234,3 +234,28 @@ func (s *Server) apiDeleteStorageKey(w http.ResponseWriter, r *http.Request, o *
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
+
+// apiBucketCORS: PUT /api/v1/buckets/{bucket}/cors with {"origins": ["https://shop.example.com"]}
+// ([] removes browser access).
+func (s *Server) apiBucketCORS(w http.ResponseWriter, r *http.Request, o *orgInfo) {
+	var in struct {
+		Origins []string `json:"origins"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&in); err != nil {
+		apiError(w, http.StatusBadRequest, `body must be JSON: {"origins": ["https://shop.example.com"]}`)
+		return
+	}
+	origins, err := parseOrigins(strings.Join(in.Origins, " "))
+	if err == nil {
+		err = db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+			b, err := scanBucket(tx.QueryRow(r.Context(), `SELECT `+bucketCols+` FROM buckets WHERE name = $1`, r.PathValue("bucket")))
+			if err != nil {
+				return err
+			}
+			return s.setBucketCORSTx(r, tx, o, b, origins)
+		})
+	}
+	if apiTx(w, s, err) {
+		writeJSON(w, map[string]any{"bucket": r.PathValue("bucket"), "origins": origins})
+	}
+}

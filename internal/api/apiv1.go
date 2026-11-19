@@ -218,6 +218,7 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("POST /api/v1/queues/{queue}/purge", s.apiAuth("developer", s.apiPurgeQueue))
 	m.HandleFunc("GET /api/v1/buckets", s.apiAuth("viewer", s.apiBuckets))
 	m.HandleFunc("POST /api/v1/buckets", s.apiAuth("developer", s.apiCreateBucket))
+	m.HandleFunc("PUT /api/v1/buckets/{bucket}/cors", s.apiAuth("developer", s.apiBucketCORS))
 	m.HandleFunc("DELETE /api/v1/buckets/{bucket}", s.apiAuth("admin", s.apiDeleteBucket))
 	m.HandleFunc("GET /api/v1/storage-keys", s.apiAuth("viewer", s.apiStorageKeys))
 	m.HandleFunc("POST /api/v1/storage-keys", s.apiAuth("developer", s.apiCreateStorageKey))

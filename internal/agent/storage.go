@@ -187,7 +187,7 @@ func (a *Agent) syncBuckets(ctx context.Context, g *garage.Client) {
 		}
 		want := map[string]garage.Perms{}
 		if !b.Suspended {
-			want[b.ConsoleKeyID] = garage.Perms{Read: true, Write: true}
+			want[b.ConsoleKeyID] = garage.Perms{Read: true, Write: true, Owner: true} // the platform's own key: sets CORS
 			for kid, write := range wanted[b.ID] {
 				want[kid] = garage.Perms{Read: true, Write: write}
 			}

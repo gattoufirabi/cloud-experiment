@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -43,6 +44,7 @@ type bucketInfo struct {
 	Objects, Bytes                                             int64
 	UsageAt                                                    *time.Time
 	CreatedAt                                                  time.Time
+	CORSOrigins                                                []string // web pages allowed to use the bucket from the browser
 }
 
 // UsedMB and UsedPercent describe the bucket's fill level for templates.
@@ -81,12 +83,12 @@ func (s *Server) storageOff(w http.ResponseWriter, r *http.Request) bool {
 func storagePath(o *orgInfo) string { return o.Path() + "/storage" }
 
 const bucketCols = `id, name, full_name, garage_id, index_document, error_document, quota_mb, website, console_key_id, console_secret_enc,
-	objects, bytes, usage_at, created_at`
+	objects, bytes, usage_at, created_at, cors_origins`
 
 func scanBucket(row pgx.Row) (*bucketInfo, error) {
 	var b bucketInfo
 	err := row.Scan(&b.ID, &b.Name, &b.FullName, &b.GarageID, &b.IndexDocument, &b.ErrorDocument, &b.QuotaMB, &b.Website,
-		&b.ConsoleKeyID, &b.ConsoleSecretEnc, &b.Objects, &b.Bytes, &b.UsageAt, &b.CreatedAt)
+		&b.ConsoleKeyID, &b.ConsoleSecretEnc, &b.Objects, &b.Bytes, &b.UsageAt, &b.CreatedAt, &b.CORSOrigins)
 	return &b, err
 }
 
@@ -464,6 +466,75 @@ func (s *Server) bucketSettings(w http.ResponseWriter, r *http.Request) {
 		msg = "Settings saved. The bucket is now public as a website at " + s.websiteURL(b)
 	}
 	back(w, r, bucketPath(o, b)+"#settings", msg, "")
+}
+
+// corsOriginRe: a web origin, scheme and host with an optional port, no path.
+var corsOriginRe = regexp.MustCompile(`^https?://[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?$`)
+
+// parseOrigins reads origins separated by commas, spaces or lines; "*" allows every site.
+func parseOrigins(v string) ([]string, error) {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, o := range strings.FieldsFunc(strings.ToLower(v), func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+		o = strings.TrimSuffix(o, "/")
+		if o != "*" && !corsOriginRe.MatchString(o) {
+			return nil, apiErr{http.StatusUnprocessableEntity, "origin " + o + ": a site address such as https://shop.example.com (no path), or * for every site"}
+		}
+		if !seen[o] {
+			seen[o] = true
+			out = append(out, o)
+		}
+	}
+	if len(out) > 20 {
+		return nil, apiErr{http.StatusUnprocessableEntity, "at most 20 origins"}
+	}
+	return out, nil
+}
+
+// setBucketCORSTx applies the origins on the storage (with the platform's own key for the
+// bucket, which needs owner rights for it) and records them.
+func (s *Server) setBucketCORSTx(r *http.Request, tx pgx.Tx, o *orgInfo, b *bucketInfo, origins []string) error {
+	g := s.garageClient()
+	if err := g.SetPerms(r.Context(), b.GarageID, b.ConsoleKeyID, garage.Perms{Read: true, Write: true, Owner: true}); err != nil {
+		return err
+	}
+	cl, err := s.consoleClient(b)
+	if err != nil {
+		return err
+	}
+	if err := cl.SetCORS(r.Context(), b.FullName, origins); err != nil {
+		return apiErr{http.StatusBadGateway, "the storage refused the rule: " + err.Error()}
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE buckets SET cors_origins = $2 WHERE id = $1`, b.ID, origins); err != nil {
+		return err
+	}
+	b.CORSOrigins = origins
+	s.audit(r, tx, o.ID, "bucket.cors", "bucket:"+b.FullName, map[string]any{"origins": origins})
+	return nil
+}
+
+func (s *Server) bucketCORS(w http.ResponseWriter, r *http.Request) {
+	origins, perr := parseOrigins(r.PostFormValue("origins"))
+	o, b, err, ok := s.withBucket(w, r, "developer", func(tx pgx.Tx, o *orgInfo, b *bucketInfo) error {
+		if perr != nil {
+			return perr
+		}
+		return s.setBucketCORSTx(r, tx, o, b, origins)
+	})
+	if !ok {
+		return
+	}
+	var ae apiErr
+	switch {
+	case errors.As(err, &ae):
+		back(w, r, bucketPath(o, b)+"#settings", "", ae.msg)
+	case err != nil:
+		s.serverError(w, r, err)
+	case len(origins) == 0:
+		back(w, r, bucketPath(o, b)+"#settings", "Browser access removed.", "")
+	default:
+		back(w, r, bucketPath(o, b)+"#settings", "Browser access saved: pages of "+strings.Join(origins, ", ")+" can use the bucket with presigned URLs.", "")
+	}
 }
 
 func (s *Server) deleteBucket(w http.ResponseWriter, r *http.Request) {

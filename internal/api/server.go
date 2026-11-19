@@ -343,6 +343,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST "+st+"/keys/{id}/delete", s.auth(authFull, s.deleteStorageKey))
 	m.HandleFunc("GET "+st+"/b/{bucket}", s.auth(authFull, s.bucketPage))
 	m.HandleFunc("GET "+st+"/b/{bucket}/settings", s.auth(authFull, settingsView(s.bucketPage)))
+	m.HandleFunc("POST "+st+"/b/{bucket}/cors", s.auth(authFull, s.bucketCORS))
 	m.HandleFunc("POST "+st+"/b/{bucket}/settings", s.auth(authFull, s.bucketSettings))
 	m.HandleFunc("POST "+st+"/b/{bucket}/attach", s.auth(authFull, s.attachBucket))
 	m.HandleFunc("POST "+st+"/b/{bucket}/delete", s.auth(authFull, s.deleteBucket))

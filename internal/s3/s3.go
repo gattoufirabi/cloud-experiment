@@ -3,9 +3,12 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
@@ -273,4 +276,56 @@ func (c *Client) Empty(ctx context.Context, bucket string, limit int) (int, erro
 		}
 	}
 	return n, fmt.Errorf("more than %d objects", limit)
+}
+
+// SetCORS lets web pages of these origins use the bucket from the browser (GET, HEAD, PUT
+// and POST, any request header, ETag readable); no origins removes the rule. It needs a
+// key with owner rights on the bucket.
+func (c *Client) SetCORS(ctx context.Context, bucket string, origins []string) error {
+	if len(origins) == 0 {
+		resp, err := c.do(ctx, http.MethodDelete, bucket, "", url.Values{"cors": {""}}, nil, 0, "")
+		if err != nil {
+			var e *Error
+			if errors.As(err, &e) && (e.Status == http.StatusNotFound || e.Code == "NoSuchCORSConfiguration") {
+				return nil
+			}
+			return err
+		}
+		resp.Body.Close()
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString(`<CORSConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><CORSRule>`)
+	for _, o := range origins {
+		b.WriteString("<AllowedOrigin>")
+		_ = xml.EscapeText(&b, []byte(o))
+		b.WriteString("</AllowedOrigin>")
+	}
+	for _, m := range []string{"GET", "HEAD", "PUT", "POST"} {
+		b.WriteString("<AllowedMethod>" + m + "</AllowedMethod>")
+	}
+	b.WriteString(`<AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>3600</MaxAgeSeconds></CORSRule></CORSConfiguration>`)
+	body := []byte(b.String())
+	sum := md5.Sum(body)
+	u := c.Endpoint + "/" + bucket + "?cors="
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Content-Type", "application/xml")
+	req.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(sum[:]))
+	Sign(req, c.Creds, sha256Hex(string(body)), time.Now())
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		e := &Error{Status: resp.StatusCode}
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = xml.Unmarshal(data, e)
+		return e
+	}
+	return nil
 }
