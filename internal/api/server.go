@@ -53,7 +53,7 @@ type Server struct {
 	hc            *http.Client
 	regKey        *ecdsa.PrivateKey // signs registry tokens; nil when the registry is disabled
 	assetV        string            // content hash of static files, for cache busting
-	docs          map[string]docPage
+	docs          *docsSite
 	wa            *webauthn.WebAuthn
 	settingsCache settingsCache
 	ceremonies    *ceremonyStore
@@ -147,7 +147,7 @@ func (s *Server) routes() http.Handler {
 	static, _ := fs.Sub(staticFS, "static")
 	m.Handle("GET /static/", http.StripPrefix("/static/", cacheStatic(http.FileServerFS(static))))
 
-	m.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/docs/user", http.StatusSeeOther) })
+	m.HandleFunc("GET /docs", s.docsIndex)
 	m.HandleFunc("GET /docs/{guide}", s.docsPage)
 	m.HandleFunc("GET /status/{org}/{project}", s.statusPage)
 	m.HandleFunc("POST /hooks/build/{token}", s.buildHook)

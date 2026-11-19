@@ -191,6 +191,10 @@ onboard jb "$B" "owner@$B.test"
 fi
 if want "Unauthenticated access"; then
 section "Unauthenticated access"
+check "docs index lists every topic" "$(curl -sS "$BASE/docs" | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 31
+check "a topic page has its four parts" "$(curl -sS "$BASE/docs/databases" | grep -cE 'id="(overview|use-cases|how-to-use-it|technical-reference)"')" 4
+check "old guide links are forwarded" "$(curl -sS "$BASE/docs/user" | grep -c 'data-legacy=')" 1
+check "unknown topic is 404" "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/docs/nope")" 404
 check "console redirects anonymous users to login" "$(curl -sS --resolve console.localhost:$PORT:127.0.0.1 -o /dev/null -w '%{http_code}' $BASE/o/$A)" 303
 
 fi

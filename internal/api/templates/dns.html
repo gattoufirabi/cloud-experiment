@@ -2,7 +2,7 @@
 {{define "content"}}
 <div class="head"><h1>DNS</h1>{{if .CanEdit}}<a class="button-link right" href="#add">Add a domain</a>{{end}}</div>
 <p class="lede">Host your domains' DNS here: point a domain's name servers to the platform at your registrar, then manage its records (A, AAAA, CNAME, MX, TXT, CAA, NS) and point names at your services in one click.</p>
-<p class="help"><a href="/docs/user#dns-hosting" target="_blank" rel="noopener">Guide: DNS hosting ↗</a></p>
+<p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: DNS hosting ↗</a></p>
 <div class="section" id="zones">
   <h2>Hosted zones <span class="count">{{len .Zones}}</span></h2>
   {{if .Zones}}

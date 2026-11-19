@@ -5,7 +5,7 @@
   {{if .CanEdit}}<a class="button-link right" href="#add-domain">Add domain</a>{{end}}
 </div>
 <p class="lede">Send transactional email (receipts, password resets, notifications) from your own domains. Each message is signed with the domain's DKIM key. {{.SentToday}} of {{.MaxDay}} emails sent in the last 24 hours.</p>
-<p class="help"><a href="/docs/user#email" target="_blank" rel="noopener">Guide: sending email ↗</a></p>
+<p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: sending email ↗</a></p>
 
 <nav class="tabs" role="tablist" aria-label="Email sections">
   <a role="tab" href="#log">Sending log</a>
@@ -163,7 +163,7 @@
 <section class="pane" id="webhook" role="tabpanel" aria-label="Webhook">
   <div class="section">
     <h2>Delivery webhook</h2>
-    <p class="small muted">The platform calls your URL with a signed JSON body for each recipient's result: <code>email.delivered</code>, <code>email.bounced</code>, <code>email.failed</code>, <code>email.suppressed</code>. Failed calls are retried for about a day.</p>
+    <p class="small muted">The platform calls your URL with a signed JSON body for each recipient's result: <code>delivered</code>, <code>bounced</code>, <code>failed</code>, <code>suppressed</code>. Failed calls are retried 8 times over about four hours.</p>
     {{with .Webhook}}
     <p><code>{{.URL}}</code> · {{range $i, $e := .Events}}{{if $i}}, {{end}}{{$e}}{{end}}{{with .LastStatus}} · <span class="small muted">last call: {{.}}</span>{{end}}</p>
     {{end}}

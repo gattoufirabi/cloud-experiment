@@ -22,7 +22,7 @@
 
 <!-- ============ overview ============ -->
 {{if ne .View "settings"}}<section class="pane" id="overview" role="tabpanel" aria-label="Overview">
-  <p class="help"><a href="/docs/user#updates-and-rollbacks" target="_blank" rel="noopener">Guide: updates and rollbacks ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: updates and rollbacks ↗</a></p>
   {{with .Service.Ports}}
   <div class="section">
     <h2>Public TCP/UDP endpoints</h2>
@@ -91,7 +91,7 @@
 
 <!-- ============ logs ============ -->
 {{if ne .View "settings"}}<section class="pane" id="logs-pane" role="tabpanel" aria-label="Logs">
-  <p class="help"><a href="/docs/user#logs-and-metrics" target="_blank" rel="noopener">Guide: logs and metrics ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: logs and metrics ↗</a></p>
 
   <div class="section">
     <h2>Logs</h2>
@@ -106,7 +106,7 @@
 
 <!-- ============ settings ============ -->
 {{if eq .View "settings"}}<section class="pane" id="settings" role="tabpanel" aria-label="Settings">
-  <p class="help"><a href="/docs/user#service-settings" target="_blank" rel="noopener">Guide: service settings ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: service settings ↗</a></p>
 
   <div class="section">
     <h2>Container</h2>
@@ -223,7 +223,7 @@
 
 <!-- ============ domains ============ -->
 {{if ne .View "settings"}}<section class="pane" id="domains" role="tabpanel" aria-label="Domains">
-  <p class="help"><a href="/docs/user#custom-domains-and-https" target="_blank" rel="noopener">Guide: custom domains ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: custom domains ↗</a></p>
 
   <div class="section">
     <h2>Platform address</h2>
@@ -322,7 +322,7 @@
 
 <!-- ============ security ============ -->
 {{if ne .View "settings"}}<section class="pane" id="security" role="tabpanel" aria-label="Security">
-  <p class="help"><a href="/docs/user#traffic-protection" target="_blank" rel="noopener">Guide: traffic protection ↗</a> · <a href="/docs/user#security-scanning" target="_blank" rel="noopener">security scanning ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: traffic protection ↗</a> · <a href="/docs" target="_blank" rel="noopener">security scanning ↗</a></p>
 
   <div class="section">
     <h2>Traffic protection</h2>
@@ -378,7 +378,7 @@
 <!-- ============ backups ============ -->
 {{if .Service.VolumePath}}{{with .Backups}}
 {{if ne $.View "settings"}}<section class="pane" id="backups" role="tabpanel" aria-label="Backups">
-  <p class="help"><a href="/docs/user#backups-and-restore" target="_blank" rel="noopener">Guide: backups and restore ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: backups and restore ↗</a></p>
 
   <div class="section">
     <h2>Backups of {{$.Service.VolumePath}}</h2>
@@ -441,7 +441,7 @@
 
 <!-- ============ alerts ============ -->
 {{if ne .View "settings"}}<section class="pane" id="alerts" role="tabpanel" aria-label="Alerts">
-  <p class="help"><a href="/docs/user#alerts" target="_blank" rel="noopener">Guide: alerts ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: alerts ↗</a></p>
 
   <div class="section">
     <h2>Health and thresholds</h2>
@@ -474,7 +474,7 @@
 <!-- ============ builds ============ -->
 {{if and .BuildsEnabled (not .Service.PreviewName)}}
 {{if ne .View "settings"}}<section class="pane" id="builds" role="tabpanel" aria-label="Builds">
-  <p class="help"><a href="/docs/user#builds-from-git" target="_blank" rel="noopener">Guide: builds from git ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: builds from git ↗</a></p>
   <div class="section">
     <h2>Build from git</h2>
     <p class="small muted">The platform clones the branch and builds it in an isolated sandbox: with its Dockerfile if there is one, otherwise with Railpack, which detects Node, Python, Go, PHP, Ruby, Java, Rust, Elixir and static sites. The image is stored in your registry space, scanned and, if you choose, deployed with this service's settings.</p>
@@ -547,7 +547,7 @@
 <!-- ============ jobs ============ -->
 {{if not .Service.PreviewName}}
 {{if ne .View "settings"}}<section class="pane" id="jobs" role="tabpanel" aria-label="Jobs">
-  <p class="help"><a href="/docs/user#scheduled-jobs" target="_blank" rel="noopener">Guide: scheduled jobs ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: scheduled jobs ↗</a></p>
   <div class="section">
     <p class="small muted">A job runs a command on a schedule in a fresh container made from this service's current deployment: same image, variables, secrets and private network. Times are UTC. A job never overlaps itself.</p>
     {{if .Jobs}}
@@ -613,7 +613,7 @@
 <!-- ============ previews ============ -->
 {{if not .Service.PreviewName}}
 {{if ne .View "settings"}}<section class="pane" id="previews" role="tabpanel" aria-label="Previews">
-  <p class="help"><a href="/docs/user#preview-environments" target="_blank" rel="noopener">Guide: preview environments ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: preview environments ↗</a></p>
   <div class="section">
     <h2>Preview environments</h2>
     <p class="small muted">A temporary copy of this service, with the same settings and secrets but another image, at its own address. Typical use: one preview per pull request, created by your CI. No persistent folder; deleted automatically when it expires. At most {{.MaxPreviews}} per service; they share your plan's CPU and memory.</p>

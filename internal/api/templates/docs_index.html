@@ -1,0 +1,25 @@
+{{define "title"}}Documentation{{end}}
+{{define "content"}}
+<div class="docs docs-home"{{with .Legacy}} data-legacy="{{.}}"{{end}}>
+  <header class="docs-hero">
+    <h1>Documentation</h1>
+    <p class="lede">Everything {{.Product}} offers, one topic per service: what it is, when to use it, how to use it, and the full technical reference.</p>
+    <label class="docs-search"><span class="sr-only">Filter topics</span><input type="search" id="docs-filter" placeholder="Filter topics: databases, email, domains…" autocomplete="off"></label>
+  </header>
+  {{range .Groups}}
+  <section class="docs-group">
+    <h2>{{.Name}}</h2>
+    <div class="docs-cards">
+      {{range .Topics}}<a class="docs-card" href="/docs/{{.Slug}}"><strong>{{.Title}}</strong><span>{{.Summary}}</span></a>{{end}}
+    </div>
+  </section>
+  {{end}}
+  <section class="docs-group">
+    <h2>{{.Admin.Group}}</h2>
+    <div class="docs-cards">
+      <a class="docs-card" href="/docs/{{.Admin.Slug}}"><strong>{{.Admin.Title}}</strong><span>{{.Admin.Summary}}</span></a>
+    </div>
+  </section>
+  <p class="docs-empty muted" hidden>No topic matches this filter.</p>
+</div>
+{{end}}

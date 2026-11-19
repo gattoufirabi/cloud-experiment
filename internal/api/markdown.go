@@ -13,10 +13,14 @@ import (
 // HTML-escaped first; links are only kept for /path, #anchor and https:// targets.
 // No dependency, nothing to configure, nothing that can inject markup.
 
-type tocEntry struct{ ID, Title string }
+type tocEntry struct {
+	ID, Title string
+	Sub       []tocEntry // the ### headings under a ## heading
+}
 
 type docPage struct {
 	Title string
+	Lede  template.HTML // the first paragraph, before any ## heading
 	HTML  template.HTML
 	TOC   []tocEntry
 }
@@ -83,6 +87,11 @@ func renderMarkdown(src string) docPage {
 	var para []string
 	flush := func() {
 		if len(para) > 0 {
+			if page.Lede == "" && len(page.TOC) == 0 && b.Len() == 0 {
+				page.Lede = template.HTML(inline(strings.Join(para, " ")))
+				para = nil
+				return
+			}
 			b.WriteString("<p>" + inline(strings.Join(para, " ")) + "</p>\n")
 			para = nil
 		}
@@ -113,7 +122,11 @@ func renderMarkdown(src string) docPage {
 		case strings.HasPrefix(t, "### "):
 			flush()
 			h := strings.TrimSpace(t[4:])
-			fmt.Fprintf(&b, "<h3 id=\"%s\">%s</h3>\n", slugify(h), inline(h))
+			id := slugify(h)
+			if n := len(page.TOC); n > 0 {
+				page.TOC[n-1].Sub = append(page.TOC[n-1].Sub, tocEntry{ID: id, Title: h})
+			}
+			fmt.Fprintf(&b, "<h3 id=\"%s\">%s</h3>\n", id, inline(h))
 		case strings.HasPrefix(t, "|"):
 			flush()
 			var rows [][]string

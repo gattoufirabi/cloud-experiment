@@ -60,7 +60,7 @@ docker compose -f compose.prod.yml exec api /platform admin create-org --slug ac
 
 2. **Send the printed invite link privately.** It works once and expires in 7 days. Create a new one with `admin invite --org acme --email owner@acme.example --role owner`.
 3. **Optionally** set `set-scan-policy --slug acme --policy block-critical`.
-4. **Give the client** the console address, the registry host, the CNAME target for custom domains, and the [User guide](/docs/user).
+4. **Give the client** the console address, the registry host, the CNAME target for custom domains, and the [User guide](/docs).
 
 | Plan | Services | CPU in total | Memory in total | Custom domains |
 | --- | --- | --- | --- | --- |

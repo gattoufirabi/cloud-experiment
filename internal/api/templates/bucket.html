@@ -10,7 +10,7 @@
 </nav>
 
 {{if ne .View "settings"}}<section class="pane" id="objects" role="tabpanel" aria-label="Objects">
-  <p class="help"><a href="/docs/user#object-storage" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
   <div class="section">
     <h2>{{if .Prefix}}<a href="{{.Path}}#objects">{{.Bucket.Name}}</a> / {{.Prefix}}{{else}}Objects{{end}}</h2>
     {{with .ListError}}<p class="error">{{.}}</p>{{end}}

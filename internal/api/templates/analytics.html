@@ -6,7 +6,7 @@
 {{define "content"}}
 <div class="head"><h1>Analytics</h1></div>
 <p class="lede">Every request to your services, measured at the platform's proxy (no code needed), and what visitors do on your pages with a cookieless script. No IP address or cookie is stored.</p>
-<p class="help"><a href="/docs/user#analytics" target="_blank" rel="noopener">Guide: analytics ↗</a></p>
+<p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: analytics ↗</a></p>
 {{if .Services}}
 <form method="get" action="{{.Org.Path}}/analytics" class="inline section">
   <select name="service" aria-label="Service">{{range .Services}}<option value="{{.Project}}/{{.Slug}}" {{if and $.Current (eq .ID $.Current.ID)}}selected{{end}}>{{.Project}}/{{.Slug}}</option>{{end}}</select>

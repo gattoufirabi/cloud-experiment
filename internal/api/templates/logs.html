@@ -2,7 +2,7 @@
 {{define "content"}}
 <div class="head"><h1>Logs</h1></div>
 <p class="lede">The output of every service of {{.Org.Name}}. Your plan keeps logs <strong>{{.Scope.Retention}} day{{if ne .Scope.Retention 1}}s{{end}}</strong>; export them to keep them longer.</p>
-<p class="help"><a href="/docs/user#logs-and-metrics" target="_blank" rel="noopener">Guide: logs ↗</a></p>
+<p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: logs ↗</a></p>
 
 <div class="section">
   <form method="get" action="{{.Org.Path}}/monitoring/logs" class="inline logs-filter">

@@ -174,6 +174,35 @@ if (toc) {
   mark();
 }
 
+// ---------- docs index: filter topics, forward old /docs/user#anchor links ----------
+const docsHome = document.querySelector(".docs-home");
+if (docsHome) {
+  if (docsHome.dataset.legacy) {
+    try {
+      const map = JSON.parse(docsHome.dataset.legacy);
+      const anchor = location.hash.slice(1);
+      if (anchor && map[anchor]) location.replace(map[anchor]);
+    } catch (e) { /* stay on the index */ }
+  }
+  const input = document.getElementById("docs-filter");
+  const empty = docsHome.querySelector(".docs-empty");
+  if (input) input.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    let shown = 0;
+    docsHome.querySelectorAll(".docs-group").forEach((g) => {
+      let n = 0;
+      g.querySelectorAll(".docs-card").forEach((c) => {
+        const hit = !q || c.textContent.toLowerCase().includes(q);
+        c.hidden = !hit;
+        if (hit) n++;
+      });
+      g.hidden = n === 0;
+      shown += n;
+    });
+    if (empty) empty.hidden = shown > 0;
+  });
+}
+
 /* ---------- passkeys (WebAuthn) ---------- */
 (function () {
   var b64u = {

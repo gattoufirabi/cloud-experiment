@@ -20,7 +20,7 @@
 </nav>
 
 {{if ne .View "settings"}}<section class="pane" id="code" role="tabpanel" aria-label="Code">
-  <p class="help"><a href="/docs/user#functions" target="_blank" rel="noopener">Guide: functions ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: functions ↗</a></p>
   <div class="section">
     <div class="table-tools"><h2><code>{{.MainFile}}</code></h2><span class="muted small">{{len .Files}} file{{if ne (len .Files) 1}}s{{end}} · {{bytes (int64 .CodeSize)}} zipped</span></div>
     {{if .Editable}}

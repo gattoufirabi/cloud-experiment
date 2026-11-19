@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io/fs"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,9 @@ func TestTableEscapedBar(t *testing.T) {
 
 // Every table of the guides has the same number of cells on each row.
 func TestGuideTables(t *testing.T) {
-	for _, name := range []string{"user", "admin"} {
+	names, _ := fs.Glob(docsFS, "docs/user/*.md")
+	for _, name := range append(names, "docs/admin.md") {
+		name = strings.TrimSuffix(strings.TrimPrefix(name, "docs/"), ".md")
 		raw, err := docsFS.ReadFile("docs/" + name + ".md")
 		if err != nil {
 			t.Fatal(err)

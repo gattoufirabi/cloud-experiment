@@ -7,7 +7,7 @@ import (
 
 func TestMarkdownEscapesHTML(t *testing.T) {
 	p := renderMarkdown("# T\n\nHello <script>alert(1)</script> & `<b>code</b>`\n\n| a | b |\n| --- | --- |\n| <img src=x> | ok |\n")
-	out := string(p.HTML)
+	out := string(p.Lede) + string(p.HTML)
 	for _, bad := range []string{"<script>", "<img", "<b>code"} {
 		if strings.Contains(out, bad) {
 			t.Fatalf("unescaped %q in %s", bad, out)
@@ -19,7 +19,8 @@ func TestMarkdownEscapesHTML(t *testing.T) {
 }
 
 func TestMarkdownLinksAreRestricted(t *testing.T) {
-	out := string(renderMarkdown("[ok](/docs/user) [anchor](#x) [ext](https://example.com) [js](javascript:alert(1)) [proto](//evil.example)").HTML)
+	p0 := renderMarkdown("[ok](/docs/user) [anchor](#x) [ext](https://example.com) [js](javascript:alert(1)) [proto](//evil.example)")
+	out := string(p0.Lede) + string(p0.HTML)
 	for _, want := range []string{`<a href="/docs/user">ok</a>`, `<a href="#x">anchor</a>`, `<a href="https://example.com">ext</a>`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %s in %s", want, out)
@@ -35,7 +36,7 @@ func TestMarkdownStructure(t *testing.T) {
 	if p.Title != "Guide" || len(p.TOC) != 2 || p.TOC[0].ID != "first-part" || p.TOC[1].Title != "Second part" {
 		t.Fatalf("bad title/toc: %+v", p)
 	}
-	out := string(p.HTML)
+	out := string(p.Lede) + string(p.HTML)
 	for _, want := range []string{`<h2 id="first-part">`, `<ol start="1">`, `<strong>two</strong>`, `<pre class="doc-code"><code>code &lt;x&gt;</code></pre>`, `<ol start="3">`, `<em>b</em>`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %s in %s", want, out)
@@ -44,7 +45,7 @@ func TestMarkdownStructure(t *testing.T) {
 }
 
 func TestEmbeddedDocsRender(t *testing.T) {
-	for _, name := range []string{"user", "admin"} {
+	for _, name := range []string{"admin"} { // topic pages: TestDocTopicsStructure
 		raw, err := docsFS.ReadFile("docs/" + name + ".md")
 		if err != nil {
 			t.Fatal(err)

@@ -46,7 +46,7 @@
 </section>{{end}}
 
 {{if ne .View "settings"}}<section class="pane" id="services" role="tabpanel" aria-label="Services">
-  <p class="help"><a href="/docs/user#deploy-your-first-application" target="_blank" rel="noopener">Guide: deploy your first application ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: deploy your first application ↗</a></p>
 
   <div class="section">
     {{if .Services}}
@@ -76,7 +76,7 @@
 </section>{{end}}
 
 {{if ne .View "settings"}}<section class="pane" id="databases" role="tabpanel" aria-label="Databases">
-  <p class="help"><a href="/docs/user#managed-databases" target="_blank" rel="noopener">Guide: managed databases ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: managed databases ↗</a></p>
   <div class="section">
     {{if .Databases}}
     <table>
@@ -106,7 +106,7 @@
 </section>{{end}}
 
 {{if ne .View "settings"}}<section class="pane" id="variables" role="tabpanel" aria-label="Variables">
-  <p class="help"><a href="/docs/user#project-variables" target="_blank" rel="noopener">Guide: shared project variables ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: shared project variables ↗</a></p>
   <div class="section">
     <p class="small muted">Passed to every service in this project, and its previews, as environment variables. A service's own variable or secret with the same name wins. Secret values are encrypted and never shown again.</p>
     {{if .Variables}}

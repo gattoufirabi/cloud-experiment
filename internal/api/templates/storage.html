@@ -23,7 +23,7 @@
 </nav>
 
 <section class="pane" id="buckets" role="tabpanel" aria-label="Buckets">
-  <p class="help"><a href="/docs/user#object-storage" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
   <div class="section">
     {{if .Buckets}}
   {{if .CanEdit}}
@@ -69,7 +69,7 @@
 </section>
 
 <section class="pane" id="keys" role="tabpanel" aria-label="Access keys">
-  <p class="help"><a href="/docs/user#object-storage" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
+  <p class="help"><a href="/docs" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
   <div class="section">
     {{if .Keys}}
     <div class="scroll-x">
@@ -123,7 +123,7 @@ rclone lsf store:
 rclone copy ./photo.jpg store:{{.Org.Slug}}-uploads/photos/
 rclone sync ./site store:{{.Org.Slug}}-site
 rclone link --expire 1h store:{{.Org.Slug}}-uploads/photos/photo.jpg</pre></div>
-    <p class="small muted">s3cmd, Cyberduck and every S3 SDK work too: give them the endpoint, region and key above, with path-style addressing and Signature V4. From a service of this organization, use <strong>Connect to a service</strong> on the bucket page instead of copying keys. <a href="/docs/user#object-storage">Guide and code examples</a></p>
+    <p class="small muted">s3cmd, Cyberduck and every S3 SDK work too: give them the endpoint, region and key above, with path-style addressing and Signature V4. From a service of this organization, use <strong>Connect to a service</strong> on the bucket page instead of copying keys. <a href="/docs">Guide and code examples</a></p>
   </div>
 </section>
 {{end}}

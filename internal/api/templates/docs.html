@@ -1,18 +1,50 @@
-{{define "title"}}{{.DocTitle}}{{end}}
+{{define "title"}}{{.DocTitle}} · Docs{{end}}
+{{define "docsnav"}}
+<nav class="docs-nav" aria-label="Documentation topics">
+  <a class="docs-nav-home" href="/docs">All topics</a>
+  {{$cur := .Topic.Slug}}
+  {{range .Groups}}
+  <div class="docs-nav-group">
+    <div class="docs-nav-h">{{.Name}}</div>
+    {{range .Topics}}<a href="/docs/{{.Slug}}"{{if eq .Slug $cur}} class="cur" aria-current="page"{{end}}>{{.Title}}</a>{{end}}
+  </div>
+  {{end}}
+  <div class="docs-nav-group">
+    <div class="docs-nav-h">{{.Admin.Group}}</div>
+    <a href="/docs/{{.Admin.Slug}}"{{if eq .Admin.Slug $cur}} class="cur" aria-current="page"{{end}}>{{.Admin.Title}}</a>
+  </div>
+</nav>
+{{end}}
 {{define "content"}}
-<div class="docs">
-  <div class="head"><h1>Documentation</h1></div>
-  <p class="lede">How to use the platform, and how to run it.</p>
-  <nav class="tabs" aria-label="Guides">
-    <a href="/docs/user"{{if eq .Guide "user"}} aria-selected="true" aria-current="page"{{end}}>User guide</a>
-    <a href="/docs/admin"{{if eq .Guide "admin"}} aria-selected="true" aria-current="page"{{end}}>Admin guide</a>
-  </nav>
-  <div class="docs-layout">
-    <aside class="side docs-toc" aria-label="Sections of the {{.DocTitle}}">
-      <div class="side-h">{{.DocTitle}}</div>
-      {{range .TOC}}<a href="#{{.ID}}">{{.Title}}</a>{{end}}
+<div class="docs docs-topic">
+  <details class="docs-nav-mobile">
+    <summary>Topics</summary>
+    {{template "docsnav" .}}
+  </details>
+  <div class="docs-grid">
+    <aside class="docs-side">{{template "docsnav" .}}</aside>
+    <article class="doc-main">
+      <nav class="crumbs docs-crumbs" aria-label="Breadcrumb"><a href="/docs">Docs</a><span class="sep">/</span><span>{{.Topic.Group}}</span></nav>
+      <h1 class="doc-title">{{.DocTitle}}</h1>
+      {{with .Lede}}<p class="doc-lede">{{.}}</p>{{end}}
+      {{if .TOC}}
+      <details class="docs-outline-mobile">
+        <summary>On this page</summary>
+        <ol>{{range .TOC}}<li><a href="#{{.ID}}">{{.Title}}</a></li>{{end}}</ol>
+      </details>
+      {{end}}
+      <div class="doc">{{.Body}}</div>
+      <nav class="doc-pager" aria-label="Previous and next topics">
+        {{with .Prev}}{{if .Slug}}<a class="prev" href="/docs/{{.Slug}}"><span>Previous</span><strong>{{.Title}}</strong></a>{{end}}{{end}}
+        {{with .Next}}{{if .Slug}}<a class="next" href="/docs/{{.Slug}}"><span>Next</span><strong>{{.Title}}</strong></a>{{end}}{{end}}
+      </nav>
+    </article>
+    {{if .TOC}}
+    <aside class="docs-toc" aria-label="On this page">
+      <div class="docs-toc-h">On this page</div>
+      {{range .TOC}}<a href="#{{.ID}}">{{.Title}}</a>{{range .Sub}}<a class="sub" href="#{{.ID}}">{{.Title}}</a>{{end}}{{end}}
     </aside>
-    <article class="doc">{{.Body}}</article>
+    {{end}}
   </div>
 </div>
 {{end}}

@@ -3,46 +3,202 @@ package api
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"net/http"
 	"strings"
 
 	"platform/internal/config"
 )
 
-// Built-in documentation at /docs/user and /docs/admin. Public (people read it before
-// they can log in), rendered once at startup, with this installation's real console,
-// registry and apps addresses filled in.
+// Built-in documentation. Public (people read it before they can log in), rendered
+// once at startup, with this installation's real console, registry and apps addresses
+// filled in.
+//
+// /docs           index of every topic, grouped
+// /docs/<topic>   one page per product or service (docs/user/<topic>.md)
+// /docs/admin     the operator's guide
+// /docs/user      the former single-page guide: sends old /docs/user#anchor links to
+//                 the topic page that now covers them
 
-//go:embed docs/*.md
+//go:embed docs/*.md docs/user/*.md
 var docsFS embed.FS
 
-func loadDocs(cfg config.Config) (map[string]docPage, error) {
+type docTopic struct {
+	Slug, Title, Summary string
+	Group                string
+}
+
+type docGroup struct {
+	Name   string
+	Topics []docTopic
+}
+
+// docGroups is the table of contents of the documentation, in reading order.
+var docGroups = []docGroup{
+	{"Get started", []docTopic{
+		{Slug: "getting-started", Title: "Getting started", Summary: "Create your account, sign in safely and learn how organizations, projects and services fit together."},
+	}},
+	{"Run applications", []docTopic{
+		{Slug: "applications", Title: "Applications", Summary: "Deploy containers from an image or from git, scale them, expose ports and roll back in one click."},
+		{Slug: "builds", Title: "Builds from git", Summary: "Build images from your repository on every push, with or without a Dockerfile."},
+		{Slug: "previews", Title: "Preview environments", Summary: "A temporary copy of your app for every branch or pull request."},
+		{Slug: "scheduled-jobs", Title: "Scheduled jobs", Summary: "Run commands on a schedule: reports, clean-ups, imports."},
+		{Slug: "variables", Title: "Variables and secrets", Summary: "Configure services with shared variables and encrypted secrets."},
+		{Slug: "functions", Title: "Functions", Summary: "Run code on demand without a server: HTTP endpoints, schedules and queue consumers."},
+	}},
+	{"Data and messaging", []docTopic{
+		{Slug: "databases", Title: "Managed databases", Summary: "PostgreSQL, MySQL, Redis and more, with backups, users and connection details handled for you."},
+		{Slug: "object-storage", Title: "Object storage", Summary: "S3-compatible buckets for files, uploads, backups and static websites."},
+		{Slug: "queues", Title: "Queues", Summary: "Hand work from one service to another reliably, with retries and dead-letter queues."},
+	}},
+	{"Email", []docTopic{
+		{Slug: "email", Title: "Transactional email", Summary: "Send email from your applications through SMTP or the API, from your own domain."},
+		{Slug: "mailboxes", Title: "Mail hosting", Summary: "Mailboxes, aliases and webmail on your own domain."},
+	}},
+	{"Networking", []docTopic{
+		{Slug: "domains", Title: "Custom domains and HTTPS", Summary: "Serve your apps on your own domain names with automatic certificates."},
+		{Slug: "dns", Title: "DNS hosting", Summary: "Host your domain's DNS zone and manage its records."},
+		{Slug: "cdn", Title: "Edge cache (CDN)", Summary: "Cache responses at the edge to make sites faster and lighten your apps."},
+		{Slug: "private-network", Title: "Private network", Summary: "Let services of different projects talk to each other privately."},
+		{Slug: "traffic-protection", Title: "Traffic protection", Summary: "Rate limits, IP allow and block lists, and protection against abuse."},
+	}},
+	{"Monitoring", []docTopic{
+		{Slug: "logs-and-metrics", Title: "Logs and metrics", Summary: "Live logs, search, resource graphs, and Prometheus and Grafana integration."},
+		{Slug: "analytics", Title: "Analytics", Summary: "Privacy-friendly visitor statistics for your sites."},
+		{Slug: "alerts", Title: "Alerts", Summary: "Be told by email or webhook when something goes wrong."},
+		{Slug: "status-page", Title: "Status page", Summary: "A public page showing the health of your services."},
+	}},
+	{"Security and recovery", []docTopic{
+		{Slug: "registry", Title: "Image registry", Summary: "A private registry for your container images."},
+		{Slug: "security-scanning", Title: "Security scanning", Summary: "Find known vulnerabilities in the images you run."},
+		{Slug: "backups", Title: "Backups and restore", Summary: "Automatic backups of your data and how to restore them."},
+	}},
+	{"Account and automation", []docTopic{
+		{Slug: "team", Title: "Team and roles", Summary: "Invite people and decide what each of them can do."},
+		{Slug: "single-sign-on", Title: "Single sign-on", Summary: "Let your team sign in with your company's identity provider."},
+		{Slug: "account", Title: "Account security", Summary: "Passwords, two-step login, passkeys and sessions."},
+		{Slug: "billing", Title: "Billing and usage", Summary: "Plans, usage, invoices and disk limits."},
+		{Slug: "api-and-cli", Title: "API and command-line tool", Summary: "Automate everything with the REST API, API tokens and platformctl."},
+		{Slug: "good-practices", Title: "Limits and troubleshooting", Summary: "Platform limits, good practices and fixes for common problems."},
+	}},
+}
+
+// adminTopic is the operator's guide, listed last.
+var adminTopic = docTopic{Slug: "admin", Title: "Running the platform", Summary: "Install, configure and operate your own installation (for operators).", Group: "Operators"}
+
+type docsSite struct {
+	pages  map[string]docPage
+	order  []docTopic // every topic in reading order, admin last
+	legacy string     // JSON: old /docs/user anchor -> new URL
+}
+
+func loadDocs(cfg config.Config) (*docsSite, error) {
 	registry := cfg.RegistryHost
 	if registry == "" {
 		registry = "registry.example.com"
 	}
 	repl := strings.NewReplacer("{{console}}", cfg.BaseURL, "{{registry}}", registry, "{{apps}}", cfg.AppsDomain, "{{s3}}", cfg.S3PublicURL(), "{{s3region}}", cfg.S3Region)
-	pages := map[string]docPage{}
-	for _, name := range []string{"user", "admin"} {
-		raw, err := docsFS.ReadFile("docs/" + name + ".md")
-		if err != nil {
-			return nil, err
+	site := &docsSite{pages: map[string]docPage{}}
+	for _, g := range docGroups {
+		for _, t := range g.Topics {
+			t.Group = g.Name
+			raw, err := docsFS.ReadFile("docs/user/" + t.Slug + ".md")
+			if err != nil {
+				return nil, err
+			}
+			site.pages[t.Slug] = renderMarkdown(repl.Replace(string(raw)))
+			site.order = append(site.order, t)
 		}
-		pages[name] = renderMarkdown(repl.Replace(string(raw)))
 	}
-	return pages, nil
+	raw, err := docsFS.ReadFile("docs/admin.md")
+	if err != nil {
+		return nil, err
+	}
+	site.pages["admin"] = renderMarkdown(repl.Replace(string(raw)))
+	site.order = append(site.order, adminTopic)
+
+	// Old links: keep the anchor when the topic page still has it.
+	legacy := map[string]string{}
+	for anchor, slug := range legacyDocAnchors {
+		url := "/docs/" + slug
+		if hasAnchor(site.pages[slug], anchor) {
+			url += "#" + anchor
+		}
+		legacy[anchor] = url
+	}
+	b, _ := json.Marshal(legacy)
+	site.legacy = string(b)
+	return site, nil
 }
 
-func (s *Server) docsPage(w http.ResponseWriter, r *http.Request) {
-	guide := r.PathValue("guide")
-	page, ok := s.docs[guide]
-	if !ok {
-		s.notFound(w, r)
-		return
+func hasAnchor(p docPage, id string) bool {
+	for _, e := range p.TOC {
+		if e.ID == id {
+			return true
+		}
+		for _, s := range e.Sub {
+			if s.ID == id {
+				return true
+			}
+		}
 	}
+	return false
+}
+
+// legacyURL is where an old /docs/user#anchor link now points ("/docs" when unknown).
+func (d *docsSite) legacyURL(anchor string) string {
+	slug, ok := legacyDocAnchors[anchor]
+	if !ok {
+		return "/docs"
+	}
+	if hasAnchor(d.pages[slug], anchor) {
+		return "/docs/" + slug + "#" + anchor
+	}
+	return "/docs/" + slug
+}
+
+func (s *Server) withDocsSession(r *http.Request) *http.Request {
 	// Show the signed-in header when there is a fully authenticated session.
 	if sess := s.loadSession(r); sess != nil && sess.TOTPOK {
 		r = r.WithContext(context.WithValue(r.Context(), sessKey, sess))
 	}
-	s.render(w, r, "docs", http.StatusOK, data{"Guide": guide, "DocTitle": page.Title, "Body": page.HTML, "TOC": page.TOC})
+	return r
+}
+
+func (s *Server) docsIndex(w http.ResponseWriter, r *http.Request) {
+	r = s.withDocsSession(r)
+	s.render(w, r, "docs_index", http.StatusOK, data{"Groups": docGroups, "Admin": adminTopic, "Legacy": ""})
+}
+
+func (s *Server) docsPage(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("guide")
+	if slug == "user" {
+		// The former single-page guide. The anchor never reaches the server, so the
+		// page carries the map and app.js forwards #anchor to its new place.
+		r = s.withDocsSession(r)
+		s.render(w, r, "docs_index", http.StatusOK, data{"Groups": docGroups, "Admin": adminTopic, "Legacy": s.docs.legacy})
+		return
+	}
+	page, ok := s.docs.pages[slug]
+	if !ok {
+		s.notFound(w, r)
+		return
+	}
+	var cur, prev, next docTopic
+	for i, t := range s.docs.order {
+		if t.Slug == slug {
+			cur = t
+			if i > 0 {
+				prev = s.docs.order[i-1]
+			}
+			if i+1 < len(s.docs.order) {
+				next = s.docs.order[i+1]
+			}
+		}
+	}
+	r = s.withDocsSession(r)
+	s.render(w, r, "docs", http.StatusOK, data{
+		"Topic": cur, "DocTitle": page.Title, "Lede": page.Lede, "Body": page.HTML, "TOC": page.TOC,
+		"Groups": docGroups, "Admin": adminTopic, "Prev": prev, "Next": next,
+	})
 }
