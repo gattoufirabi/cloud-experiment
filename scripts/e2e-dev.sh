@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # End-to-end test against the local dev stack (deploy/compose.dev.yml must be running).
 # Creates two tenants, deploys an app for each, then tries to cross between them.
-# Usage: bash scripts/e2e-dev.sh
+# Usage: bash scripts/e2e-dev.sh                    (everything, about 30 minutes)
+#        ONLY="DNS|mailboxes" bash scripts/e2e-dev.sh   (just those sections and their setup)
+#        FAST=1 bash scripts/e2e-dev.sh             (skips the slow sections that rarely change)
 set -uo pipefail
 cd "$(dirname "$0")/../deploy"
 
@@ -17,6 +19,15 @@ until_is() { local want=$1 n=$2 out=; shift 2; for _ in $(seq 1 "$n"); do out=$(
 # section "name": prints how long the previous section took (to find the slow parts)
 T0=$(date +%s); SEC_T=$T0; SEC_N=setup
 section() { local now; now=$(date +%s); echo "   ($SEC_N: $((now - SEC_T)) s)"; SEC_N=$1; SEC_T=$now; echo "== $1"; }
+# Faster runs: ONLY="<regex>" runs just the sections whose name matches (plus the setup
+# sections they need: ^(Tenant |Unauthenticated|API tokens)); FAST=1 skips the slow sections that rarely change (^(Builds from git|Preview per pull request|Self-signup and trials|Autoscaling|Scheduled scaling|Managed (MySQL and MariaDB|Kafka|MongoDB)|Several servers|Observability|Several instances per service|Usage metering)).
+ALWAYS='^(Tenant |Unauthenticated|API tokens)'
+SLOW='^(Builds from git|Preview per pull request|Self-signup and trials|Autoscaling|Scheduled scaling|Managed (MySQL and MariaDB|Kafka|MongoDB)|Several servers|Observability|Several instances per service|Usage metering)'
+want() {
+  if [ -n "${ONLY:-}" ]; then [[ $1 =~ $ALWAYS ]] || [[ $1 =~ $ONLY ]]; return; fi
+  if [ "${FAST:-0}" = 1 ] && [[ $1 =~ $SLOW ]]; then echo "   (skipped, FAST=1: $1)"; return 1; fi
+}
+[ -n "${ONLY:-}" ] && set +u   # variables from skipped sections may be unset
 # Container names, resolved once: "docker exec" is about twice as fast as "docker compose exec"
 PG_C=$(docker compose -f compose.dev.yml ps --format '{{.Name}}' postgres); API_C=$(docker compose -f compose.dev.yml ps --format '{{.Name}}' api)
 NTFY_C=$(docker compose -f compose.dev.yml ps --format '{{.Name}}' ntfy)
@@ -63,13 +74,127 @@ wait_status() { # wait_status <jar> <service path> -> prints final status
 }
 
 A=a$RUN; B=b$RUN
+# helpers used by the sections (defined up front so any section can run alone)
+# Remove this run's test organizations when the script ends, even when it is interrupted
+# (their apps, databases and networks follow), so runs do not pile up containers.
+# KEEP=1 keeps them for debugging.
+teardown() {
+  [ "${KEEP:-0}" = 1 ] && return
+  owner_sql "DELETE FROM orgs WHERE slug IN ('$A', '$B', 't$RUN')" >/dev/null 2>&1
+  owner_sql "SELECT pg_notify('deployments', '')" >/dev/null 2>&1
+  rm -rf "$TMP"
+}
+trap teardown EXIT
+trap 'exit 130' INT TERM
+owner_sql() { docker exec -i "$PG_C" psql -qtA -U platform_owner platform -c "$1" | tr -d '\r'; }
+new_token() { c "$1" -X POST "$BASE/o/$2/registry-tokens" -d "csrf=$3" -d name=ci -d push=1 | grep -o 'plr_[A-Za-z0-9_-]*' | head -1; }
+dx() { MSYS_NO_PATHCONV=1 docker "$@"; }
+wait_backup() {
+  local s
+  for _ in $(seq 1 90); do
+    s=$(owner_sql "SELECT j.status FROM backup_jobs j JOIN services s ON s.id = j.service_id JOIN orgs o ON o.id = j.org_id
+                   WHERE o.slug = '$A' AND s.slug = 'files' ORDER BY j.created_at DESC LIMIT 1")
+    if [ "$s" = done ] || [ "$s" = error ]; then echo "$s"; return; fi
+    sleep 2
+  done
+  echo timeout
+}
+db_sql() { dx exec -e PGPASSWORD=x "$DB_CID" psql -U app -d app -h 127.0.0.1 -tA -c "$1" 2>&1 | tr -d '\r'; }
+wait_dbjob() {
+  local s
+  for _ in $(seq 1 90); do
+    s=$(owner_sql "SELECT j.status FROM backup_jobs j JOIN databases d ON d.id = j.database_id JOIN orgs o ON o.id = j.org_id
+                   WHERE o.slug = '$A' AND d.slug = 'main' ORDER BY j.created_at DESC LIMIT 1")
+    if [ "$s" = done ] || [ "$s" = error ]; then echo "$s"; return; fi
+    sleep 2
+  done
+  echo timeout
+}
+rd_cli() { dx exec "$RD_CID" sh -c "REDISCLI_AUTH=\"\$REDIS_PASSWORD\" redis-cli $1" 2>&1 | tr -d '\r'; }
+my_db() { owner_sql "SELECT d.$2 FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = '$1'"; }
+my_job() { owner_sql "SELECT j.status FROM backup_jobs j JOIN databases d ON d.id = j.database_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND d.slug = '$1' AND j.kind = '$2' ORDER BY j.created_at DESC LIMIT 1"; }
+my_wait_job() { local st=; for _ in $(seq 1 90); do st=$(my_job "$1" "$2"); [ "$st" = done ] || [ "$st" = error ] && break; sleep 2; done; echo "$st"; }
+mongo_js() { dx exec "$MCID" sh -c "mongosh --quiet --host 127.0.0.1 --username=\"\$MONGO_INITDB_ROOT_USERNAME\" --password=\"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin app --eval '$1'" 2>&1 | tr -d '\r'; }
+pmap() { c "$1" -H 'HX-Request: true' "$BASE/o/$2/p/$3/map"; }
+api_code() { local t=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" "$@"; }
+api_get() { local t=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" "$@"; }
+new_api_token() { c "$1" -X POST "$BASE/o/$2/api-tokens" -d "csrf=$3" -d "name=$4" -d "role=$5" | grep -o 'pla_[A-Za-z0-9_-]*' | head -1; }
+pctl() { PLATFORM_URL="$BASE" PLATFORM_TOKEN="$TOK_DEV" "$TMP/platformctl.exe" "$@" 2>&1; }
+storage_poke() { owner_sql "SELECT pg_notify('deployments', 'storage')" >/dev/null; }
+web_get() { curl -sS --resolve "$WEB_HOST:$PORT:127.0.0.1" -o "$TMP/web.out" -w '%{http_code}' "http://$WEB_HOST:$PORT/"; }
+tls_ask() { dx run --rm --network platform-core curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' "http://api:8081/internal/tls-ask?domain=$1"; }
+svc_table() { c ja "$BASE/o/$A/compute" | sed -n '/id="services-table"/,/<\/table>/p'; }
+fn_api() { local m=$1 path=$2; shift 2; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/projects/shop/functions/$path" "$@"; }
+fn_url() { curl -sS --resolve "$FN_HOST:$PORT:127.0.0.1" "$@"; }
+wa_url() { curl -sS --resolve "$WA_HOST:$PORT:127.0.0.1" "$@"; }
+inv_log() { owner_sql "SELECT count(*) FROM function_invocations i JOIN functions f ON f.id = i.function_id WHERE f.org_id = '$ORG_A' AND f.slug = 'ontrigger' AND i.trigger = '$1' AND i.log LIKE '%$2%'"; }
+qapi() { local t=$1 m=$2 path=$3; shift 3; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/queues$path" "$@"; }
+qcode() { local t=$1 m=$2 path=$3; shift 3; qapi "$t" "$m" "$path" -o /dev/null -w '%{http_code}' "$@"; }
+vapi() { local t=$1 m=$2 path=$3; shift 3; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/secrets$path" "$@"; }
+vcode() { local t=$1 m=$2 path=$3; shift 3; vapi "$t" "$m" "$path" -o /dev/null -w '%{http_code}' "$@"; }
+V_CID() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'vaultsvc' AND d.status = 'live' ORDER BY d.revision DESC LIMIT 1"; }
+eapi() { local t=$1 m=$2 path=$3; shift 3; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/email$path" "$@"; }
+ecode() { local t=$1 m=$2 path=$3; shift 3; eapi "$t" "$m" "$path" -o /dev/null -w '%{http_code}' "$@"; }
+dnsset() { curl -sS -X POST -G "http://127.0.0.1:8098/dns/set" --data-urlencode "name=$1" --data-urlencode "txt=$2"; }
+dnsrec() { curl -sS -X POST -G "http://127.0.0.1:8098/dns/set" --data-urlencode "name=$1" --data-urlencode "$2=$3"; }
+ipof() { docker inspect -f '{{(index .NetworkSettings.Networks "platform-core").IPAddress}}' "$1"; }
+ESEND() { printf '{"from": "Shop <hello@%s>", "to": ["%s"], "subject": "%s", "text": "Thanks for your order.", "html": "<p>Thanks!</p>"}' "$ED" "$1" "$2"; }
+smtp_send() { curl -sS --max-time 20 "smtp://127.0.0.1:1465" --mail-from "hello@$ED" "$@" --upload-file "$(cygpath -w "$TMP/smtp.eml")" 2>&1; }
+prom() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $1" -G "$BASE/api/v1/prometheus/api/v1/$2" "${@:3}"; }
+alarm_redir() { c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/monitoring/alarms" -d csrf=$CSRF_A "$@"; }
+vlq() { dx run --rm --network platform-core curlimages/curl:8.11.1 -s "http://victorialogs:9428/select/logsql/query" --data-urlencode "query=$1"; }
+beacon() { curl -sS -o /dev/null -w '%{http_code}' --resolve "console.localhost:$PORT:127.0.0.1" -A "Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36" -H 'Content-Type: text/plain' -d "$1" "$BASE/a/e"; }
+sso_login() {
+  local jar=$1 email=$2 extra=${3:-} auth cb
+  auth=$(c "$jar" -o /dev/null -w '%{redirect_url}' -X POST "$BASE/sso/start" --data-urlencode "who=$email")
+  [ -n "$auth" ] || { echo "no-redirect"; return; }
+  cb=$(curl -s --resolve host.docker.internal:8097:127.0.0.1 -o /dev/null -w '%{redirect_url}' "$auth$extra")
+  echo "$cb" > "$TMP/sso-last-callback"
+  c "$jar" -o /dev/null -w '%{http_code} %{redirect_url}' "$cb"
+}
+pub_code() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' "$BASE$1"; }
+app_code() { curl -s -o /dev/null -w '%{http_code}' --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT$1"; }
+pv_code() { curl -s -o /dev/null -w '%{http_code}' --resolve "$1:$PORT:127.0.0.1" "http://$1:$PORT/"; }
+wait_pv_code() { local got; for _ in $(seq 1 45); do got=$(pv_code "$1"); [ "$got" = "$2" ] && break; sleep 2; done; echo "$got"; }
+WEB_CID() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND p.slug = 'shop' AND s.slug = 'web' AND s.preview_name IS NULL AND d.status = 'live'"; }
+A_ROW() { owner_sql "SELECT md5(v.value_enc::text) || v.updated_at FROM project_variables v JOIN orgs o ON o.id = v.org_id JOIN projects p ON p.id = v.project_id WHERE o.slug = '$A' AND p.slug = 'shop' AND v.name = 'SHARED_TOKEN'"; }
+last_run() { owner_sql "SELECT r.$2 FROM job_runs r JOIN jobs j ON j.id = r.job_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND j.slug = '$1' ORDER BY r.started_at DESC LIMIT 1"; }
+wait_run() { local st; for _ in $(seq 1 45); do st=$(last_run "$1" status); [ -n "$st" ] && [ "$st" != running ] && break; sleep 2; done; echo "$st"; }
+WEB_DEP() { owner_sql "SELECT d.$1 FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND p.slug = 'shop' AND s.slug = 'web' AND s.preview_name IS NULL AND d.status = 'live'"; }
+hook() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' "$@"; }
+zapi() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" -H 'Content-Type: application/zip' --data-binary "@$2" "$BASE/api/v1/projects/shop/services/web/zip"; }
+pr_builds() { owner_sql "SELECT count(*) FROM builds b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.trigger = 'pull_request'"; }
+pr_page() { curl -s --resolve "$PR_HOST:$PORT:127.0.0.1" "http://$PR_HOST:$PORT/"; }
+challenge() { c "$1" "$BASE/signup" | grep -o 'name="challenge" value="[^"]*"' | sed 's/.*value="//;s/"$//'; }
+banner_n() { c jb "$BASE/o/$B" | grep -c "Maintenance $RUN tonight" | sed 's/^[1-9][0-9]*$/yes/'; }
+papi() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $PTOK" "$BASE/api/v1$1"; }
+ask_dns() { MSYS_NO_PATHCONV=1 docker run --rm --network platform-core alpine:3.20 nslookup "-type=$2" "$1" platform-agent 2>&1; }
+zrec() { code_of ja -X POST "$BASE/o/$A/dns/$ZONE" -d csrf=$CSRF_A -d action=add "$@"; }
+zerr() { c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/dns/$ZONE" -d csrf=$CSRF_A -d action=add "$@" | grep -c 'err='; }
+cget() { curl -sS -D - -o "$TMP/cdn.body" --resolve "$CDNH:$PORT:127.0.0.1" "http://$CDNH:$PORT$1" | tr -d '\r'; }
+mapi() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' "$@"; }
+imap_count() { curl -sk --max-time 10 "imaps://127.0.0.1:2993/" -u "$1:$2" -X "STATUS \"$3\" (MESSAGES)" 2>/dev/null | grep -o 'MESSAGES [0-9]*' | grep -o '[0-9]*'; }
+inbox_total() { echo $(( $(imap_count "$1" "$2" INBOX || echo 0) + $(imap_count "$1" "$2" "Junk Mail" || echo 0) )); }
+smtp_in() { printf 'From: someone@sender.test\r\nTo: %s\r\nSubject: hello %s\r\n\r\nhi\r\n' "$1" "$RUN" > "$TMP/mail.eml"; curl -s --max-time 15 "smtp://127.0.0.1:2525" --mail-from someone@sender.test --mail-rcpt "$1" -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}'; }
+stw() { MSYS_NO_PATHCONV=1 docker run --rm --network platform-core curlimages/curl:8.11.0 -s -u admin:dev-stalwart-admin -H 'Content-Type: application/json' -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":$1}" http://stalwart:8080/jmap/; }
+ex_get() { curl -s --max-time 10 --resolve "$1:$PORT:127.0.0.1" "http://$1:$PORT$2"; }
+pgq() { MSYS_NO_PATHCONV=1 docker run --rm postgres:17-alpine psql "host=host.docker.internal port=$PUBPORT dbname=app user=app password=$DBPW $1" -tAc 'SELECT 40 + 2' 2>&1 | tr -d '\r'; }
+capi() { local m=$1 path=$2; shift 2; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_ADMAPI" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1$path" "$@"; }
+pn_cid() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = '$1' AND s.slug = '$2' AND d.status = 'live'"; }
+pn_get() { dx exec "$(pn_cid "$1" "$2")" wget -qO- -T 5 "$3" 2>&1 | grep -q 'Welcome to nginx' && echo 1 || echo 0; }
+sched_err() { c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/shop/s/sched/schedules" -d csrf=$CSRF_A "$@" | grep -c 'err='; }
+if want "Tenant A ($A) and tenant B ($B)"; then
 section "Tenant A ($A) and tenant B ($B)"
 onboard ja "$A" "owner@$A.test"
 onboard jb "$B" "owner@$B.test"
 
+fi
+if want "Unauthenticated access"; then
 section "Unauthenticated access"
 check "console redirects anonymous users to login" "$(curl -sS --resolve console.localhost:$PORT:127.0.0.1 -o /dev/null -w '%{http_code}' $BASE/o/$A)" 303
 
+fi
+if want "Tenant A deploys nginx with a secret"; then
 section "Tenant A deploys nginx with a secret"
 CSRF_A=$(c ja "$BASE/o/$A" | csrf_of)
 check "[A] project created" "$(code_of ja -X POST "$BASE/o/$A/projects" -d csrf=$CSRF_A -d slug=shop -d name=Shop)" 303
@@ -92,6 +217,8 @@ check "[A] container: CPU limit 0.25 core" "$(docker inspect -f '{{.HostConfig.N
 check "[A] container: PID limit" "$(docker inspect -f '{{.HostConfig.PidsLimit}}' "$CID_A")" 256
 check "[A] container: no-new-privileges" "$(docker inspect -f '{{json .HostConfig.SecurityOpt}}' "$CID_A")" '["no-new-privileges:true"]'
 
+fi
+if want "Tenant B deploys its own app"; then
 section "Tenant B deploys its own app"
 CSRF_B=$(c jb "$BASE/o/$B" | csrf_of)
 code_of jb -X POST "$BASE/o/$B/projects" -d csrf=$CSRF_B -d slug=shop -d name=Shop >/dev/null
@@ -102,6 +229,8 @@ code_of jb -X POST "$BASE$SVC_B/settings" -d csrf=$CSRF_B -d image=nginx:1.27-al
 check "[B] deployment reaches live" "$(wait_status jb $SVC_B)" live
 CID_B=$(live_cid "$B")
 
+fi
+if want "Isolation: B tries to reach A"; then
 section "Isolation: B tries to reach A"
 check "[B->A] organization page hidden (404)" "$(code_of jb "$BASE/o/$A")" 404
 check "[B->A] service page hidden (404)" "$(code_of jb "$BASE$SVC_A")" 404
@@ -119,6 +248,8 @@ fi
 check "[DB] API role sees no tenant rows without a tenant context (RLS)" "$(psql_api 'SELECT count(*) FROM services' | tr -d '\r')" 0
 check "[DB] API role cannot read secrets across tenants" "$(psql_api 'SELECT count(*) FROM secrets' | tr -d '\r')" 0
 
+fi
+if want "Failed deploy keeps the old version serving (A)"; then
 section "Failed deploy keeps the old version serving (A)"
 code_of ja -X POST "$BASE$SVC_A/settings" -d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=9999 -d health_path=%2F \
   -d cpu_millis=250 -d memory_mb=128 -d volume_path= -d env= -d deploy=1 >/dev/null
@@ -126,19 +257,21 @@ check "[A] broken deployment marked failed" "$(wait_status ja $SVC_A)" failed
 BODY=$(curl -sS --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/")
 if echo "$BODY" | grep -q "Welcome to nginx"; then ok "[A] previous version still serving"; else bad "[A] app down after failed deploy"; fi
 
+fi
+if want "Logs and audit"; then
 section "Logs and audit"
 for _ in 1 2 3; do curl -sS --resolve "$HOST_A:$PORT:127.0.0.1" -o /dev/null "http://$HOST_A:$PORT/?probe=$RUN"; done
 for _ in $(seq 1 20); do grep -q "probe=$RUN" <<<"$(c ja "$BASE$SVC_A/logs.json?q=probe=$RUN")" && break; sleep 1; done
 if c ja "$BASE$SVC_A/logs.json?q=probe=$RUN" | grep -q "probe=$RUN"; then ok "[A] request logs searchable in the console"; else bad "[A] logs not found"; fi
 if c ja "$BASE/o/$A/audit" | grep -q "deployment.live"; then ok "[A] audit log records deployments"; else bad "[A] audit log missing events"; fi
 
+fi
+if want "Private registry and vulnerability scanning"; then
 section "Private registry and vulnerability scanning"
 REG=localhost:8088
 mkdir -p "$TMP/docker"
 DCFG=$(cygpath -w "$TMP/docker" 2>/dev/null || echo "$TMP/docker")
 dk() { DOCKER_CONFIG="$DCFG" docker "$@" >/dev/null 2>&1 && echo yes || echo no; } # isolated docker login state
-owner_sql() { docker exec -i "$PG_C" psql -qtA -U platform_owner platform -c "$1" | tr -d '\r'; }
-new_token() { c "$1" -X POST "$BASE/o/$2/registry-tokens" -d "csrf=$3" -d name=ci -d push=1 | grep -o 'plr_[A-Za-z0-9_-]*' | head -1; }
 TOK_A=$(new_token ja "$A" "$CSRF_A")
 TOK_B=$(new_token jb "$B" "$CSRF_B")
 if [ -n "$TOK_A" ] && [ -n "$TOK_B" ]; then ok "registry tokens created in the console"; else bad "registry token not shown"; fi
@@ -179,18 +312,9 @@ fi
 admin set-scan-policy --slug "$A" --policy warn >/dev/null
 docker rmi "$REG/$A/web:v1" "$REG/$B/intrude:v1" >/dev/null 2>&1
 
+fi
+if want "Per-client backups"; then
 section "Per-client backups"
-dx() { MSYS_NO_PATHCONV=1 docker "$@"; }
-wait_backup() {
-  local s
-  for _ in $(seq 1 90); do
-    s=$(owner_sql "SELECT j.status FROM backup_jobs j JOIN services s ON s.id = j.service_id JOIN orgs o ON o.id = j.org_id
-                   WHERE o.slug = '$A' AND s.slug = 'files' ORDER BY j.created_at DESC LIMIT 1")
-    if [ "$s" = done ] || [ "$s" = error ]; then echo "$s"; return; fi
-    sleep 2
-  done
-  echo timeout
-}
 code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=files -d image=nginx:1.27-alpine >/dev/null
 SVC_F=/o/$A/p/shop/s/files
 code_of ja -X POST "$BASE$SVC_F/settings" -d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=80 -d health_path=%2F \
@@ -219,18 +343,9 @@ check "[A] data is back to the snapshot" "$(dx exec "$CID_F" cat /data/state.txt
 check "[A] application running again after restore" "$(docker inspect -f '{{.State.Running}}' "$CID_F")" true
 check "[A] safety snapshot kept before the restore" "$(owner_sql "SELECT count(*) > 0 FROM backup_snapshots b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.tags = 'pre-restore'")" t
 
+fi
+if want "Managed PostgreSQL"; then
 section "Managed PostgreSQL"
-db_sql() { dx exec -e PGPASSWORD=x "$DB_CID" psql -U app -d app -h 127.0.0.1 -tA -c "$1" 2>&1 | tr -d '\r'; }
-wait_dbjob() {
-  local s
-  for _ in $(seq 1 90); do
-    s=$(owner_sql "SELECT j.status FROM backup_jobs j JOIN databases d ON d.id = j.database_id JOIN orgs o ON o.id = j.org_id
-                   WHERE o.slug = '$A' AND d.slug = 'main' ORDER BY j.created_at DESC LIMIT 1")
-    if [ "$s" = done ] || [ "$s" = error ]; then echo "$s"; return; fi
-    sleep 2
-  done
-  echo timeout
-}
 check "[A] database created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=main -d version=17)" 303
 DB_ST=""; for _ in $(seq 1 60); do
   DB_ST=$(owner_sql "SELECT d.status FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'main'")
@@ -262,8 +377,9 @@ check "[A] database deleted" "$(code_of ja -X POST "$BASE/o/$A/p/shop/d/main/del
 GONE=no; for _ in $(seq 1 30); do docker inspect "$DB_CID" >/dev/null 2>&1 || { GONE=yes; break; }; sleep 2; done
 check "[A] database container removed" "$GONE" yes
 
+fi
+if want "Managed Redis"; then
 section "Managed Redis"
-rd_cli() { dx exec "$RD_CID" sh -c "REDISCLI_AUTH=\"\$REDIS_PASSWORD\" redis-cli $1" 2>&1 | tr -d '\r'; }
 check "[A] Redis created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=cache -d engine=redis:7)" 303
 RD_ST=""; for _ in $(seq 1 60); do
   RD_ST=$(owner_sql "SELECT d.status FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'cache'")
@@ -286,10 +402,9 @@ check "[A] Redis restore completes" "$RS" done
 check "[A] Redis key is back to the snapshot" "$(rd_cli "GET marker")" "$MARK-r1"
 code_of ja -X POST "$BASE/o/$A/p/shop/d/cache/delete" -d csrf=$CSRF_A -d confirm=cache >/dev/null
 
+fi
+if want "Managed MySQL and MariaDB"; then
 section "Managed MySQL and MariaDB"
-my_db() { owner_sql "SELECT d.$2 FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = '$1'"; }
-my_job() { owner_sql "SELECT j.status FROM backup_jobs j JOIN databases d ON d.id = j.database_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND d.slug = '$1' AND j.kind = '$2' ORDER BY j.created_at DESC LIMIT 1"; }
-my_wait_job() { local st=; for _ in $(seq 1 90); do st=$(my_job "$1" "$2"); [ "$st" = done ] || [ "$st" = error ] && break; sleep 2; done; echo "$st"; }
 mysql_engine() { # mysql_engine <slug> <engine:version> <client> <label>
   local slug=$1 choice=$2 cli=$3 label=$4 st= cid host
   check "[A] $label created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=$slug -d engine=$choice)" 303
@@ -329,13 +444,14 @@ mysql_engine maria mariadb:11.4 "mariadb --skip-ssl" "MariaDB"
 mysql_engine mysql mysql:8.4 mysql "MySQL"
 check "[A] unknown engine falls back to PostgreSQL" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=oracle -d engine=oracle:23 >/dev/null; my_db oracle engine)" postgres
 code_of ja -X POST "$BASE/o/$A/p/shop/d/oracle/delete" -d csrf=$CSRF_A -d confirm=oracle >/dev/null
+fi
+if want "Managed MongoDB"; then
 section "Managed MongoDB"
 check "[A] MongoDB created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=mongo -d engine=mongodb:8.0)" 303
 st=; for _ in $(seq 1 150); do st=$(my_db mongo status); [ "$st" = running ] || [ "$st" = failed ] && break; sleep 2; done
 check "[A] MongoDB running" "$st" running
 MCID=$(my_db mongo container_id)
 MHOST=$(owner_sql "SELECT 'pd-' || left(replace(d.id::text, '-', ''), 12) FROM databases d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND d.slug = 'mongo'")
-mongo_js() { dx exec "$MCID" sh -c "mongosh --quiet --host 127.0.0.1 --username=\"\$MONGO_INITDB_ROOT_USERNAME\" --password=\"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin app --eval '$1'" 2>&1 | tr -d '\r'; }
 check "[A] MongoDB refuses a wrong password" "$(dx exec "$MCID" sh -c "mongosh --quiet --host 127.0.0.1 -u app -p wrong --authenticationDatabase admin --eval 'db.runCommand({ping:1}).ok'" >/dev/null 2>&1 && echo yes || echo no)" no
 if dx exec "$CID_F" sh -c "echo | nc -w 3 $MHOST 27017" >/dev/null 2>&1; then ok "[A] service in the same project reaches MongoDB"; else bad "[A] service cannot reach MongoDB"; fi
 if dx exec "$CID_B" sh -c "echo | nc -w 3 $MHOST 27017" >/dev/null 2>&1; then bad "[B->A] B's service reached A's MongoDB"; else ok "[B->A] B's service cannot reach A's MongoDB"; fi
@@ -353,6 +469,8 @@ check "[A] MongoDB restore completes (mongorestore)" "$(my_wait_job mongo restor
 check "[A] MongoDB documents are back to the snapshot" "$(mongo_js 'db.notes.findOne().t')" "$MARK-g1"
 code_of ja -X POST "$BASE/o/$A/p/shop/d/mongo/delete" -d csrf=$CSRF_A -d confirm=mongo >/dev/null
 
+fi
+if want "Managed Kafka (streaming)"; then
 section "Managed Kafka (streaming)"
 check "[A] Kafka created" "$(code_of ja -X POST "$BASE/o/$A/p/shop/databases" -d csrf=$CSRF_A -d slug=events -d engine=kafka:3.9)" 303
 st=; for _ in $(seq 1 120); do st=$(my_db events status); [ "$st" = running ] || [ "$st" = failed ] && break; sleep 2; done
@@ -376,7 +494,6 @@ check "[A] Kafka has no backups (refused, and not scheduled)" "$(c ja -o /dev/nu
 code_of ja -X POST "$BASE/o/$A/p/shop/d/events/attach" -d csrf=$CSRF_A -d service=files -d name=KAFKA_URL >/dev/null
 check "[A] KAFKA_URL stored as a secret of a service" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name = 'KAFKA_URL'")" 1
 # Project map: the connection secret above draws files -> events
-pmap() { c "$1" -H 'HX-Request: true' "$BASE/o/$2/p/$3/map"; }
 PMAP=$(pmap ja "$A" shop)
 check "project map: services and the Kafka stream are drawn, with the link from the secret" "$(grep -c 'class="pmap-svg"' <<<"$PMAP"):$(grep -c '>files</text>' <<<"$PMAP"):$(grep -c '>events</text>' <<<"$PMAP"):$(grep -cF 'files → events' <<<"$PMAP")" "1:1:1:1"
 check "project map: the project page embeds it, live (htmx polling)" "$(c ja "$BASE/o/$A/p/shop" | grep -c 'id="project-map" hx-get="/o/'"$A"'/p/shop/map" hx-trigger="every')" 1
@@ -388,10 +505,9 @@ check "[A] Kafka deleted with its container" "$(for _ in $(seq 1 30); do docker 
 code_of ja -X POST "$BASE/o/$A/p/shop/s/files/secrets/MONGODB_URI/delete" -d csrf=$CSRF_A >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "API tokens and platformctl"; then
 section "API tokens and platformctl"
-api_code() { local t=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" "$@"; }
-api_get() { local t=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" "$@"; }
-new_api_token() { c "$1" -X POST "$BASE/o/$2/api-tokens" -d "csrf=$3" -d "name=$4" -d "role=$5" | grep -o 'pla_[A-Za-z0-9_-]*' | head -1; }
 TOK_DEV=$(new_api_token ja "$A" "$CSRF_A" ci developer)
 TOK_VIEW=$(new_api_token ja "$A" "$CSRF_A" dashboard viewer)
 TOK_B=$(new_api_token jb "$B" "$CSRF_B" ci developer)
@@ -402,16 +518,16 @@ check "[B->A API] B's token cannot see A's service (404)" "$(api_code "$TOK_B" "
 check "[API] viewer token cannot deploy (403)" "$(api_code "$TOK_VIEW" -X POST "$BASE/api/v1/projects/shop/services/web/deploy")" 403
 check "[API] viewer token can read" "$(api_code "$TOK_VIEW" "$BASE/api/v1/projects/shop/services/web")" 200
 (cd .. && go build -o "$TMP/platformctl.exe" ./cmd/platformctl) || bad "platformctl did not build"
-pctl() { PLATFORM_URL="$BASE" PLATFORM_TOKEN="$TOK_DEV" "$TMP/platformctl.exe" "$@" 2>&1; }
 if pctl deploy shop/web --image nginx:1.27-alpine --wait | grep -q "is live"; then ok "[CLI] platformctl deploy --wait reaches live"; else bad "[CLI] platformctl deploy failed"; fi
 if pctl status shop/web | grep -q "live"; then ok "[CLI] platformctl status shows the live revision"; else bad "[CLI] status missing"; fi
 if echo "cli-secret-$RUN" | pctl secret set shop/web CLI_TEST | grep -q "saved"; then ok "[CLI] platformctl secret set"; else bad "[CLI] secret set failed"; fi
 if c ja "$BASE/o/$A/audit" | grep -q "via_api_token"; then ok "[API] audit log names the token"; else bad "[API] token missing from the audit log"; fi
+fi
+if want "Object storage (S3)"; then
 section "Object storage (S3)"
 S3=http://s3.localhost:$PORT
 s3c() { local k=$1 s=$2; shift 2; curl -sS --resolve "s3.localhost:$PORT:127.0.0.1" --aws-sigv4 "aws:amz:us-east-1:s3" --user "$k:$s" "$@"; }
 s3code() { local k=$1 s=$2; shift 2; s3c "$k" "$s" -o /dev/null -w '%{http_code}' "$@"; }
-storage_poke() { owner_sql "SELECT pg_notify('deployments', 'storage')" >/dev/null; }
 new_s3_key() { # new_s3_key <jar> <org> <csrf> <name> <perm args...>: prints "KEYID SECRET"
   local jar=$1 org=$2 csrf=$3 name=$4; shift 4
   local page; page=$(c "$jar" -X POST "$BASE/o/$org/storage/keys" -d csrf=$csrf -d "name=$name" "$@")
@@ -456,12 +572,10 @@ check "storage usage metered for invoices" "$(owner_sql "SELECT count(*) > 0 FRO
 
 echo "<h1>site-$RUN</h1>" > "$TMP/index.html"
 WEB_HOST=$A-uploads.web.apps.localhost
-web_get() { curl -sS --resolve "$WEB_HOST:$PORT:127.0.0.1" -o "$TMP/web.out" -w '%{http_code}' "http://$WEB_HOST:$PORT/"; }
 s3code "$KW" "$SW" -T "$TMP/index.html" -H "Content-Type: text/html" "$S3/$A-uploads/index.html" >/dev/null
 check "website off: bucket not served (404)" "$(web_get)" 404
 check "[A] website turned on" "$(code_of ja -X POST "$BASE/o/$A/storage/b/uploads/settings" -d csrf=$CSRF_A -d quota_mb=5 -d website=1 -d index_document=index.html)" 303
 check "public website serves index.html" "$(web_get):$(cat "$TMP/web.out")" "200:<h1>site-$RUN</h1>"
-tls_ask() { dx run --rm --network platform-core curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' "http://api:8081/internal/tls-ask?domain=$1"; }
 check "website host approved for a certificate" "$(tls_ask "$WEB_HOST")" 200
 check "unknown website host refused a certificate" "$(tls_ask nope-x.web.apps.localhost)" 404
 code_of ja -X POST "$BASE/o/$A/storage/b/uploads/settings" -d csrf=$CSRF_A -d quota_mb=5 -d index_document=index.html >/dev/null
@@ -502,6 +616,8 @@ check "deleted buckets emptied and removed from Garage" "$(for _ in $(seq 1 45);
 check "objects of the deleted bucket are gone" "$(s3code "$KW" "$SW" "$S3/$A-uploads/docs/hello.txt")" 404
 check "bucket deletion audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'bucket.deleted' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" 2
 
+fi
+if want "Public TCP/UDP ports (non-HTTP services)"; then
 section "Public TCP/UDP ports (non-HTTP services)"
 admin set-plan --slug "$A" --plan pro >/dev/null   # room for two more services
 NET=/o/$A/p/shop/s
@@ -530,6 +646,8 @@ code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete
 check "deleting the services frees their public ports" "$(owner_sql "SELECT count(*) FROM public_ports p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A'")" 0
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Console: services, favorites, project filter, search"; then
 section "Console: services, favorites, project filter, search"
 for page in services projects compute compute/jobs compute/previews databases domains monitoring iam registry; do
   check "[A] console page $page opens" "$(code_of ja "$BASE/o/$A/$page")" 200
@@ -547,7 +665,6 @@ check "unknown product cannot be pinned (404)" "$(code_of ja -X POST "$BASE/o/$A
 COMPUTE=$(c ja "$BASE/o/$A/compute")
 if grep -q "/o/$A/p/shop/s/web\"" <<<"$COMPUTE" && grep -q "/o/$A/p/shop/s/files\"" <<<"$COMPUTE"; then ok "compute lists the services of every project"; else bad "compute list incomplete"; fi
 code_of ja "$BASE/o/$A/scope?project=nope-project&back=/o/$A/compute" >/dev/null
-svc_table() { c ja "$BASE/o/$A/compute" | sed -n '/id="services-table"/,/<\/table>/p'; }
 check "project filter narrows the compute list" "$(svc_table | grep -c "/o/$A/p/shop/s/web\"")" 0
 code_of ja "$BASE/o/$A/scope?project=&back=/o/$A/compute" >/dev/null
 check "clearing the project filter shows everything again" "$(svc_table | grep -c "/o/$A/p/shop/s/web\"")" 1
@@ -577,9 +694,10 @@ check "bulk-deleted services are gone" "$(owner_sql "SELECT count(*) FROM servic
 admin set-plan --slug "$A" --plan starter >/dev/null
 if grep -q 'aria-label="Breadcrumb"' <<<"$(c ja "$BASE/o/$A/p/shop/s/web")"; then ok "resource pages show a breadcrumb"; else bad "breadcrumb missing"; fi
 
+fi
+if want "Functions"; then
 section "Functions"
 FN=$BASE/o/$A/p/shop/f
-fn_api() { local m=$1 path=$2; shift 2; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/projects/shop/functions/$path" "$@"; }
 check "[A] function created in the console" "$(code_of ja -X POST "$BASE/o/$A/functions" -d csrf=$CSRF_A -d project=shop -d slug=hello -d runtime=nodejs22)" 303
 check "invalid function name refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/functions" -d csrf=$CSRF_A -d project=shop -d slug=Bad_Name -d runtime=nodejs22 | grep -c 'err=')" 1
 PAGE=$(c ja -X POST "$FN/hello/test" -d csrf=$CSRF_A --data-urlencode 'event={"rawPath":"/e2e"}')
@@ -615,7 +733,6 @@ if grep -q "deployed" <<<"$(pctl fn deploy shop/pyfn --file "$TMP/handler.py")";
 check "Python function answers" "$(fn_api POST pyfn/invoke -d '{}' | grep -o '"name": "pyfn"\|"name":"pyfn"' | head -1 | tr -d ' ')" '"name":"pyfn"'
 
 FN_HOST=hello-shop-$A.fn.apps.localhost
-fn_url() { curl -sS --resolve "$FN_HOST:$PORT:127.0.0.1" "$@"; }
 check "function URL off by default (404)" "$(fn_url -o /dev/null -w '%{http_code}' "http://$FN_HOST:$PORT/")" 404
 fn_api PUT hello -o /dev/null -d '{"url_enabled": true, "url_auth": "none"}'
 check "function URL answers GET" "$(fn_url "http://$FN_HOST:$PORT/x?y=1" | grep -o '"method":"GET"')" '"method":"GET"'
@@ -642,7 +759,6 @@ pctl fn delete shop/pyfn >/dev/null 2>&1
 check "[A] web app created in the console" "$(code_of ja -X POST "$BASE/o/$A/functions" -d csrf=$CSRF_A -d project=shop -d slug=webapp -d runtime=nodejs22 -d kind=web)" 303
 check "it starts with a server and its start command" "$(owner_sql "SELECT web_command || ':' || web_port FROM functions f JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$A' AND f.slug = 'webapp'")" "node server.mjs:8080"
 WA_HOST=webapp-shop-$A.fn.apps.localhost
-wa_url() { curl -sS --resolve "$WA_HOST:$PORT:127.0.0.1" "$@"; }
 fn_api PUT webapp -o /dev/null -d '{"url_enabled": true, "url_auth": "none"}'
 check "the starter web app answers on its URL (cold start)" "$(wa_url "http://$WA_HOST:$PORT/hello?x=1" | grep -o 'Hello from a web app</h1><p>Path: /hello?x=1')" "Hello from a web app</h1><p>Path: /hello?x=1"
 WA_CODE='import http from "node:http";
@@ -687,7 +803,6 @@ check "[A] bucket trigger added (uploads of *.txt under in/)" "$(code_of ja -X P
 sleep 21   # the agent reloads triggers every 20 seconds
 echo "trigger-$RUN" > "$TMP/trig.txt"
 for k in "in/doc-$RUN.txt" "in/photo-$RUN.jpg" "out/doc-$RUN.txt"; do s3code "$KM" "$SM" -T "$TMP/trig.txt" "$S3/$A-media/$k" >/dev/null; done
-inv_log() { owner_sql "SELECT count(*) FROM function_invocations i JOIN functions f ON f.id = i.function_id WHERE f.org_id = '$ORG_A' AND f.slug = 'ontrigger' AND i.trigger = '$1' AND i.log LIKE '%$2%'"; }
 check "an upload matching the trigger runs the function with an S3 event" "$(for _ in $(seq 1 30); do [ "$(inv_log bucket "ObjectCreated:Put $A-media in/doc-$RUN.txt")" = 1 ] && { echo yes; break; }; sleep 2; done)" yes
 check "uploads outside the prefix or suffix do not run it" "$(inv_log bucket "photo-$RUN"):$(inv_log bucket "out/doc-$RUN")" "0:0"
 s3code "$KM" "$SM" -X DELETE "$S3/$A-media/in/doc-$RUN.txt" >/dev/null; sleep 4
@@ -706,9 +821,9 @@ code_of ja -X POST "$BASE/o/$A/storage/b/media/delete" -d csrf=$CSRF_A -d confir
 ORG_A_ID=$(owner_sql "SELECT id FROM orgs WHERE slug = '$A'")
 check "function containers removed after deletion" "$(for _ in $(seq 1 45); do [ "$(docker ps -aq --filter label=platform.function --filter "label=platform.org=$ORG_A_ID" | wc -l)" = 0 ] && { echo yes; break; }; sleep 2; done)" yes
 
+fi
+if want "Queues"; then
 section "Queues"
-qapi() { local t=$1 m=$2 path=$3; shift 3; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/queues$path" "$@"; }
-qcode() { local t=$1 m=$2 path=$3; shift 3; qapi "$t" "$m" "$path" -o /dev/null -w '%{http_code}' "$@"; }
 check "[A] queue created in the console" "$(code_of ja -X POST "$BASE/o/$A/queues" -d csrf=$CSRF_A -d name=orders)" 303
 check "[API] dead-letter queue created" "$(qcode "$TOK_DEV" POST "" -d '{"name": "orders-dlq"}')" 201
 check "[API] message sent" "$(qcode "$TOK_DEV" POST /orders/messages -d '{"body": "order-1"}')" 201
@@ -756,9 +871,9 @@ code_of ja -X POST "$BASE/o/$A/queues/orders/delete" -d csrf=$CSRF_A -d confirm=
 check "[API] queue deletion needs an admin token (403)" "$(qcode "$TOK_DEV" DELETE /orders-dlq)" 403
 code_of ja -X POST "$BASE/o/$A/queues/orders-dlq/delete" -d csrf=$CSRF_A -d confirm=orders-dlq >/dev/null
 
+fi
+if want "Secrets manager"; then
 section "Secrets manager"
-vapi() { local t=$1 m=$2 path=$3; shift 3; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/secrets$path" "$@"; }
-vcode() { local t=$1 m=$2 path=$3; shift 3; vapi "$t" "$m" "$path" -o /dev/null -w '%{http_code}' "$@"; }
 admin set-plan --slug "$A" --plan pro >/dev/null   # room for one more service
 check "[A] secret created in the console" "$(code_of ja -X POST "$BASE/o/$A/secrets" -d csrf=$CSRF_A -d name=stripe-key -d description=payments -d "value=sk-test-v1-$RUN")" 303
 V_PAGE=$(c ja "$BASE/o/$A/secrets")
@@ -772,7 +887,6 @@ code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=vaultsvc
 V_SET=(-d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=80 -d health_path=%2F -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path=)
 check "[A] service variable references the secret" "$(code_of ja -X POST "$BASE/o/$A/p/shop/s/vaultsvc/settings" "${V_SET[@]}" --data-urlencode 'env=STRIPE_KEY=${secret:stripe-key}' -d deploy=1)" 303
 check "[A] service live" "$(wait_status ja /o/$A/p/shop/s/vaultsvc)" live
-V_CID() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'vaultsvc' AND d.status = 'live' ORDER BY d.revision DESC LIMIT 1"; }
 V1=$(V_CID)
 check "the container receives the secret's value" "$(dx exec "$V1" printenv STRIPE_KEY 2>&1 | tr -d '\r')" "sk-test-v1-$RUN"
 check "the secret's page lists the service using it" "$(c ja "$BASE/o/$A/secrets/stripe-key" | grep -c 'shop/vaultsvc' | sed 's/^[1-9][0-9]*$/yes/')" yes
@@ -792,21 +906,17 @@ check "[A] unused secret deleted in the console" "$(code_of ja -X POST "$BASE/o/
 check "[API] secret deleted" "$(vcode "$TOK_DEV" DELETE /db-pass)" 204
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Outgoing email (verified domains, DKIM)"; then
 section "Outgoing email (verified domains, DKIM)"
-eapi() { local t=$1 m=$2 path=$3; shift 3; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $t" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1/email$path" "$@"; }
-ecode() { local t=$1 m=$2 path=$3; shift 3; eapi "$t" "$m" "$path" -o /dev/null -w '%{http_code}' "$@"; }
 mkdir -p "$TMP/oidc"; (cd .. && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$TMP/oidc/mockoidc" ./scripts/mockoidc) || bad "mock DNS server did not build"
 docker rm -f e2e-dns >/dev/null 2>&1
 MSYS_NO_PATHCONV=1 docker run -d --name e2e-dns --network platform-core -p 8098:8098 -v "$(cygpath -w "$TMP/oidc"):/m:ro" alpine:3.20 /m/mockoidc -addr :8098 -dns :53 -smtp :1025 >/dev/null
-dnsset() { curl -sS -X POST -G "http://127.0.0.1:8098/dns/set" --data-urlencode "name=$1" --data-urlencode "txt=$2"; }
-dnsrec() { curl -sS -X POST -G "http://127.0.0.1:8098/dns/set" --data-urlencode "name=$1" --data-urlencode "$2=$3"; }
 sleep 1
 # Direct delivery: every domain's mail server is Mailpit, except bounce.e2e.test (the mock refuses nobody@)
-ipof() { docker inspect -f '{{(index .NetworkSettings.Networks "platform-core").IPAddress}}' "$1"; }
 dnsrec '*' mx mx.e2e.test; dnsrec mx.e2e.test a "$(ipof platform-dev-mailpit-1)"
 dnsrec bounce.e2e.test mx smtp.bounce.e2e.test; dnsrec smtp.bounce.e2e.test a "$(ipof e2e-dns)"
 ED=$A-mail.example.test
-ESEND() { printf '{"from": "Shop <hello@%s>", "to": ["%s"], "subject": "%s", "text": "Thanks for your order.", "html": "<p>Thanks!</p>"}' "$ED" "$1" "$2"; }
 check "[A] invalid domain refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/email/domains" -d csrf=$CSRF_A -d domain=not_a_domain | grep -c 'err=')" 1
 check "[A] sending domain added in the console" "$(code_of ja -X POST "$BASE/o/$A/email/domains" -d csrf=$CSRF_A -d "domain=$ED")" 303
 check "its page lists the ownership and DKIM records" "$(c ja "$BASE/o/$A/email/d/$ED" | grep -o -e "_platform-verify.$ED" -e "_domainkey.$ED" | sort -u | wc -l | tr -d ' ')" 2
@@ -864,7 +974,6 @@ check "[API] an attachment arrives with the message" "$(grep -o "\"FileName\":\"
 check "[API] executable attachments are refused (422)" "$(ecode "$TOK_DEV" POST /send -d "$(printf '{"from": "hello@%s", "to": ["x@example.org"], "subject": "x", "text": "x", "attachments": [{"filename": "run.exe", "content": "TVo="}]}' "$ED")")" 422
 # SMTP submission (port 465 through the proxy; plain SMTP in development)
 printf 'From: Shop <hello@%s>\r\nTo: smtp-%s@example.org\r\nBcc: hidden-%s@example.org\r\nSubject: SMTP %s\r\n\r\nSent over SMTP.\r\n' "$ED" "$RUN" "$RUN" "$RUN" > "$TMP/smtp.eml"
-smtp_send() { curl -sS --max-time 20 "smtp://127.0.0.1:1465" --mail-from "hello@$ED" "$@" --upload-file "$(cygpath -w "$TMP/smtp.eml")" 2>&1; }
 check "[SMTP] a message is accepted with the email token" "$(smtp_send --user "token:$ESCOPED" --mail-rcpt "smtp-$RUN@example.org" --mail-rcpt "hidden-$RUN@example.org" >/dev/null && echo yes)" yes
 SM=; for _ in $(seq 1 20); do SM_ID=$(curl -s -G "http://localhost:8025/api/v1/search" --data-urlencode "query=to:smtp-$RUN@example.org" | grep -o '"ID":"[^"]*"' | head -1 | cut -d'"' -f4); [ -n "$SM_ID" ] && { SM=$(curl -s "http://localhost:8025/api/v1/message/$SM_ID/raw"); break; }; sleep 1; done
 check "[SMTP] delivered, signed with the domain's DKIM key; the Bcc recipient got it too" "$(grep -c "d=$ED; s=$ESEL" <<<"$SM" | sed 's/^[1-9][0-9]*$/yes/'):$(curl -s -G "http://localhost:8025/api/v1/search" --data-urlencode "query=hidden-$RUN" | grep -c '"ID"' | sed 's/^[1-9][0-9]*$/yes/')" "yes:yes"
@@ -882,9 +991,10 @@ check "[A] domain deleted" "$(code_of ja -X POST "$BASE/o/$A/email/d/$ED/delete"
 owner_sql "DELETE FROM api_tokens WHERE name = 'email-probe'" >/dev/null
 docker rm -f e2e-dns >/dev/null 2>&1
 
+fi
+if want "Observability: Prometheus API, custom metrics, Grafana, analytics"; then
 section "Observability: Prometheus API, custom metrics, Grafana, analytics"
 ORG_A=$(owner_sql "SELECT id FROM orgs WHERE slug = '$A'"); ORG_B=$(owner_sql "SELECT id FROM orgs WHERE slug = '$B'")
-prom() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $1" -G "$BASE/api/v1/prometheus/api/v1/$2" "${@:3}"; }
 P=$(prom "$TOK_DEV" query --data-urlencode 'query=count by (org_id) (platform_container_memory_bytes)')
 check "[Prometheus API] answers with A's series only" "$(grep -o '"org_id":"[^"]*"' <<<"$P" | sort -u | tr -d '\n')" "\"org_id\":\"$ORG_A\""
 P=$(prom "$TOK_DEV" query --data-urlencode 'query=count by (org_id) (platform_container_memory_bytes)' --data-urlencode "extra_label=org_id=$ORG_B")
@@ -893,7 +1003,6 @@ check "[Prometheus API] series and labels endpoints work" "$(prom "$TOK_DEV" lab
 check "[Prometheus API] other paths refused (404)" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/prometheus/api/v1/admin/tsdb/delete_series")" 404
 check "[Prometheus API] needs a token (401)" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "console.localhost:$PORT:127.0.0.1" "$BASE/api/v1/prometheus/api/v1/query?query=up")" 401
 
-alarm_redir() { c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/monitoring/alarms" -d csrf=$CSRF_A "$@"; }
 check "[alarms] invalid PromQL refused" "$(alarm_redir -d name=bad --data-urlencode 'query=max(' -d op=%3E -d threshold=1 -d for_minutes=0 | grep -c 'err=')" 1
 check "[alarms] a range query is refused (needs a number or instant vector)" "$(alarm_redir -d name=range --data-urlencode 'query=platform_container_memory_bytes[5m]' -d op=%3E -d threshold=1 -d for_minutes=0 | grep -c 'instant')" 1
 check "[A] alarm created" "$(code_of ja -X POST "$BASE/o/$A/monitoring/alarms" -d csrf=$CSRF_A -d "name=Memory above 1 byte" --data-urlencode 'query=max(platform_container_memory_bytes)' -d op=%3E -d threshold=1 -d for_minutes=0)" 303
@@ -926,7 +1035,6 @@ curl -sS -o /dev/null --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/
 AN=; for _ in $(seq 1 30); do AN=$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/shop/services/web/analytics?period=1h"); grep -q "/analytics-$RUN" <<<"$AN" && break; sleep 2; done
 check "[analytics] each request is recorded at the proxy" "$(grep -o "\"Key\":\"/analytics-$RUN\",\"Count\":5" <<<"$AN")" "\"Key\":\"/analytics-$RUN\",\"Count\":5"
 check "[analytics] referrer, browser and device are classified" "$(grep -c '"news.example.org"' <<<"$AN"):$(grep -c '"Key":"iOS"' <<<"$AN"):$(grep -c '"Key":"mobile"' <<<"$AN")" "1:1:1"
-vlq() { dx run --rm --network platform-core curlimages/curl:8.11.1 -s "http://victorialogs:9428/select/logsql/query" --data-urlencode "query=$1"; }
 check "[analytics] query strings and IP addresses are not stored" "$(vlq "an_kind:access s3cr3t" | wc -l | tr -d ' '):$(vlq "an_kind:access" | grep -c 'remote_ip\|client_ip')" "0:0"
 check "[analytics] latency percentiles and a 404 counted" "$(grep -o '"P95":[0-9]*' <<<"$AN" | wc -l | tr -d ' '):$(grep -c '"Key":"404"' <<<"$AN")" "1:1"
 check "[B->A] B cannot read A's analytics (404)" "$(code_of jb "$BASE/o/$A/analytics")" 404
@@ -935,7 +1043,6 @@ check "[A] the Analytics page shows the traffic chart and top paths" "$(grep -c 
 check "page-view script served" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}:%{content_type}' "$BASE/a/s.js")" "200:text/javascript; charset=utf-8"
 check "[A] page-view script turned on" "$(code_of ja -X POST "$BASE/o/$A/analytics/script" -d csrf=$CSRF_A -d service=shop/web -d on=1)" 303
 AKEY=$(owner_sql "SELECT analytics_key FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'web' AND s.preview_of IS NULL")
-beacon() { curl -sS -o /dev/null -w '%{http_code}' --resolve "console.localhost:$PORT:127.0.0.1" -A "Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36" -H 'Content-Type: text/plain' -d "$1" "$BASE/a/e"; }
 check "events accepted (204)" "$(beacon "{\"k\":\"$AKEY\",\"n\":\"pageview\",\"u\":\"http://$HOST_A/pricing-$RUN?utm_source=newsletter\",\"r\":\"https://www.example.org/\",\"w\":1400,\"s\":\"sess$RUN\"}"):$(beacon "{\"k\":\"$AKEY\",\"n\":\"signup\",\"u\":\"http://$HOST_A/pricing-$RUN\",\"s\":\"sess$RUN\",\"p\":{\"plan\":\"pro\"}}")" "204:204"
 beacon "{\"k\":\"$AKEY\",\"n\":\"pageview\",\"u\":\"https://evil.example/forged-$RUN\",\"s\":\"evil$RUN\"}" >/dev/null
 AN=; for _ in $(seq 1 20); do AN=$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/shop/services/web/analytics?period=1h"); grep -q "pricing-$RUN" <<<"$AN" && break; sleep 2; done
@@ -961,6 +1068,8 @@ code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete
 owner_sql "DELETE FROM api_tokens WHERE name = 'grafana in shop' AND org_id = '$ORG_A'" >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Single sign-on (OIDC)"; then
 section "Single sign-on (OIDC)"
 mkdir -p "$TMP/oidc"
 (cd .. && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$TMP/oidc/mockoidc" ./scripts/mockoidc) || bad "mock OIDC provider did not build"
@@ -979,14 +1088,6 @@ check "unreachable provider refused when saving" "$(c ja -o /dev/null -w '%{redi
 check "[B] cannot claim A's domain" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/sso" -d csrf=$CSRF_B --data-urlencode "issuer=$IDP" -d client_id=platform-e2e -d "domains=$SSO_DOM" -d default_role=viewer | grep -c 'another+organization')" 1
 check "[B->A] B cannot change A's SSO (404)" "$(code_of jb -X POST "$BASE/o/$A/sso" -d csrf=$CSRF_B --data-urlencode "issuer=$IDP" -d client_id=evil -d default_role=admin -d enabled=1)" 404
 # sso_login <jar> <email> [extra mock params]: follows the whole flow, prints the final redirect
-sso_login() {
-  local jar=$1 email=$2 extra=${3:-} auth cb
-  auth=$(c "$jar" -o /dev/null -w '%{redirect_url}' -X POST "$BASE/sso/start" --data-urlencode "who=$email")
-  [ -n "$auth" ] || { echo "no-redirect"; return; }
-  cb=$(curl -s --resolve host.docker.internal:8097:127.0.0.1 -o /dev/null -w '%{redirect_url}' "$auth$extra")
-  echo "$cb" > "$TMP/sso-last-callback"
-  c "$jar" -o /dev/null -w '%{http_code} %{redirect_url}' "$cb"
-}
 check "SSO sign-in of a new admin-group member lands in the console" "$(sso_login js1 "alice@$SSO_DOM" "&mock_groups=platform-admins&mock_name=Alice")" "303 $BASE/o/$A"
 check "the SSO session opens the console without a two-step prompt" "$(code_of js1 "$BASE/o/$A")" 200
 check "account created on first sign-in, role from the provider's group" "$(owner_sql "SELECT u.sso_only || ':' || m.role FROM users u JOIN memberships m ON m.user_id = u.id JOIN orgs o ON o.id = m.org_id WHERE u.email = 'alice@$SSO_DOM' AND o.slug = '$A'")" "true:admin"
@@ -1012,6 +1113,8 @@ check "the owner keeps password sign-in" "$(code_of jo -X POST "$BASE/login" --d
 check "[A] single sign-on turned off" "$(code_of ja -X POST "$BASE/o/$A/sso" -d csrf=$CSRF_A --data-urlencode "issuer=$IDP" -d client_id=platform-e2e -d "domains=$SSO_DOM" -d default_role=viewer)" 303
 check "SSO no longer starts once off" "$(c js6 -o /dev/null -w '%{http_code}' -X POST "$BASE/sso/start" -d "who=alice@$SSO_DOM")" 404
 
+fi
+if want "Logs: search, download, retention, export"; then
 section "Logs: search, download, retention, export"
 LOGMARK=logexport-$RUN
 for _ in 1 2 3; do curl -sS --resolve "$HOST_A:$PORT:127.0.0.1" -o /dev/null "http://$HOST_A:$PORT/?mark=$LOGMARK"; done
@@ -1047,8 +1150,9 @@ TOK_ID=$(owner_sql "SELECT t.id FROM api_tokens t JOIN orgs o ON o.id = t.org_id
 code_of ja -X POST "$BASE/o/$A/api-tokens/$TOK_ID/delete" -d csrf=$CSRF_A >/dev/null
 check "[API] revoked token refused (401)" "$(api_code "$TOK_DEV" "$BASE/api/v1/me")" 401
 
+fi
+if want "Public status pages"; then
 section "Public status pages"
-pub_code() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' "$BASE$1"; }
 check "status page is off by default (404)" "$(pub_code /status/$A/shop)" 404
 check "[B->A] B cannot turn on A's status page" "$(code_of jb -X POST "$BASE/o/$A/p/shop/status-page" -d csrf=$CSRF_B -d public=1)" 404
 check "[A] status page turned on" "$(code_of ja -X POST "$BASE/o/$A/p/shop/status-page" -d csrf=$CSRF_A -d public=1)" 303
@@ -1060,6 +1164,8 @@ check "uptime is being recorded" "$(psql_api "SELECT count(*) > 0 FROM status_pa
 check "[A] status page turned off" "$(code_of ja -X POST "$BASE/o/$A/p/shop/status-page" -d csrf=$CSRF_A)" 303
 check "status page gone after turning off (404)" "$(pub_code /status/$A/shop)" 404
 
+fi
+if want "Passkeys"; then
 section "Passkeys"
 (cd .. && go build -o "$TMP/softauthn.exe" ./scripts/softauthn) || bad "softauthn did not build"
 SID_A=$(awk -F'\t' '$6 == "sid" {print $7}' "$TMP/ja" | tr -d '\r')
@@ -1080,8 +1186,9 @@ check "[A] passkey removed" "$(code_of ja -X POST "$BASE$PKID" -d csrf=$CSRF_A)"
 OUT=$("$TMP/softauthn.exe" login -url "$BASE" -key "$TMP/pk-a.json" 2>&1)
 if echo "$OUT" | grep -q "HTTP 401"; then ok "removed passkey can no longer sign in"; else bad "removed passkey still works"; fi
 
+fi
+if want "Traffic protection"; then
 section "Traffic protection"
-app_code() { curl -s -o /dev/null -w '%{http_code}' --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT$1"; }
 wait_app_code() { # wait_app_code <path> <expected>: proxy changes apply within seconds
   local got
   for _ in $(seq 1 20); do got=$(app_code "$1"); [ "$got" = "$2" ] && break; sleep 1; done
@@ -1108,6 +1215,8 @@ check "protection saved in the audit log" "$(owner_sql "SELECT count(*) >= 3 FRO
 check "[A] protection turned off" "$(code_of ja -X POST "$BASE$SVC_A/protection" -d csrf=$CSRF_A)" 303
 check "app answers normally again" "$(wait_app_code "$XSS" 200)" 200
 
+fi
+if want "Usage metering and invoices"; then
 section "Usage metering and invoices"
 check "usage is metered every minute" "$(owner_sql "SELECT count(*) > 0 FROM usage_hourly u JOIN orgs o ON o.id = u.org_id WHERE o.slug = '$A' AND u.cpu_milli_minutes > 0")" t
 # Last month for A: existed all month, 1 vCPU-hour, 1 GB-hour, 1 GB out (fictitious usage).
@@ -1135,12 +1244,12 @@ admin invoice-paid --number "$INV" >/dev/null
 if c ja "$BASE/o/$A/invoices/$INV" | grep -q "PAID"; then ok "operator payment shows as paid"; else bad "invoice not marked paid"; fi
 check "invoice issue and payment audited" "$(owner_sql "SELECT count(*) FROM audit_events WHERE target = 'invoice:$INV' AND action IN ('invoice.issued', 'invoice.paid')")" 2
 
+fi
+if want "Preview environments"; then
 section "Preview environments"
 admin set-plan --slug "$A" --plan pro >/dev/null   # room for previews in the CPU/memory quota
 TOK_DEV=$(new_api_token ja "$A" "$CSRF_A" previews developer)   # the first CI token was revoked above
 PV1=pr-1.web-shop-$A.apps.localhost
-pv_code() { curl -s -o /dev/null -w '%{http_code}' --resolve "$1:$PORT:127.0.0.1" "http://$1:$PORT/"; }
-wait_pv_code() { local got; for _ in $(seq 1 45); do got=$(pv_code "$1"); [ "$got" = "$2" ] && break; sleep 2; done; echo "$got"; }
 check "[A] preview created in the console" "$(code_of ja -X POST "$BASE$SVC_A/previews" -d csrf=$CSRF_A -d name=pr-1 -d image=nginx:1.27-alpine -d ttl_hours=24)" 303
 check "preview answers at its own address" "$(wait_pv_code "$PV1" 200)" 200
 PV_CID=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.preview_name = 'pr-1' AND d.status = 'live'")
@@ -1159,9 +1268,10 @@ if pctl preview delete shop/web pr-1 | grep -q deleted; then ok "[CLI] platformc
 check "deleted preview no longer served" "$(wait_pv_code "$PV1" 404)" 404
 check "parent service unaffected" "$(app_code /)" 200
 
+fi
+if want "Shared project variables"; then
 section "Shared project variables"
 VARS=/api/v1/projects/shop/variables
-WEB_CID() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND p.slug = 'shop' AND s.slug = 'web' AND s.preview_name IS NULL AND d.status = 'live'"; }
 check "[API] secret project variable saved" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"value":"shared-secret-xyz"}' "$BASE$VARS/SHARED_TOKEN")" 200
 check "[API] project variable shadowed by the service's own secret" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"value":"from-project","secret":false}' "$BASE$VARS/API_KEY")" 200
 check "[API] reserved name refused (422)" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"value":"1"}' "$BASE$VARS/PORT")" 422
@@ -1176,7 +1286,6 @@ check "the service's own secret wins over the project variable" "$(docker exec "
 check "each name appears once in the environment" "$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$NEW_WEB" | grep -c '^API_KEY=')" 1
 BVARS=$(api_get "$TOK_B" "$BASE$VARS")   # B's own project is also called "shop"
 if ! grep -q "shared.example.test\|SHARED_HOST" <<<"$BVARS"; then ok "[B->A] B's token sees only B's project variables"; else bad "[B->A] B sees A's variables"; fi
-A_ROW() { owner_sql "SELECT md5(v.value_enc::text) || v.updated_at FROM project_variables v JOIN orgs o ON o.id = v.org_id JOIN projects p ON p.id = v.project_id WHERE o.slug = '$A' AND p.slug = 'shop' AND v.name = 'SHARED_TOKEN'"; }
 A_BEFORE=$(A_ROW)   # compared as-is: no clock involved (the VM clock can jump)
 api_code "$TOK_B" -X PUT -H 'Content-Type: application/json' -d '{"value":"evil"}' "$BASE$VARS/SHARED_TOKEN" >/dev/null
 check "[B->A] B's write lands in B's own project only" "$([ "$(A_ROW)" = "$A_BEFORE" ] && echo a-unchanged):$(owner_sql "SELECT count(*) FROM project_variables v JOIN orgs o ON o.id = v.org_id WHERE o.slug = '$B' AND v.name = 'SHARED_TOKEN'")" "a-unchanged:1"
@@ -1196,6 +1305,8 @@ check "[API] deleted variable no longer listed" "$(api_get "$TOK_DEV" "$BASE$VAR
 check "project variable changes audited" "$(owner_sql "SELECT count(*) >= 4 FROM audit_events WHERE action IN ('project_variable.set', 'project_variable.deleted') AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 owner_sql "DELETE FROM project_variables WHERE name = 'API_KEY' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')" >/dev/null
 
+fi
+if want "Workers and scheduled jobs"; then
 section "Workers and scheduled jobs"
 SVC_Q=/o/$A/p/shop/s/queue
 code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=queue -d image=nginx:1.27-alpine >/dev/null
@@ -1211,8 +1322,6 @@ if grep -q "worker · no public address" <<<"$(c ja "$BASE$SVC_Q")"; then ok "se
 check "[A] worker deleted" "$(code_of ja -X POST "$BASE$SVC_Q/delete" -d csrf=$CSRF_A -d confirm=queue)" 303
 
 JOBS=/api/v1/projects/shop/services/web/jobs
-last_run() { owner_sql "SELECT r.$2 FROM job_runs r JOIN jobs j ON j.id = r.job_id JOIN orgs o ON o.id = j.org_id WHERE o.slug = '$A' AND j.slug = '$1' ORDER BY r.started_at DESC LIMIT 1"; }
-wait_run() { local st; for _ in $(seq 1 45); do st=$(last_run "$1" status); [ -n "$st" ] && [ "$st" != running ] && break; sleep 2; done; echo "$st"; }
 check "[A] job created in the console" "$(code_of ja -X POST "$BASE$SVC_A/jobs" -d csrf=$CSRF_A -d slug=hello -d 'schedule=* * * * *' \
   --data-urlencode 'command=echo "job says $SHARED_HOST" && echo "run of $PLATFORM_JOB"' -d timeout_seconds=60)" 303
 check "[API] invalid schedule refused (422)" "$(api_code "$TOK_DEV" -X PUT -H 'Content-Type: application/json' -d '{"schedule":"61 * * * *","command":"true"}' "$BASE$JOBS/bad")" 422
@@ -1242,8 +1351,9 @@ for j in hello fail slow; do api_code "$TOK_DEV" -X DELETE "$BASE$JOBS/$j" >/dev
 check "[API] jobs deleted" "$(api_get "$TOK_DEV" "$BASE$JOBS")" "[]"
 check "job changes audited" "$(owner_sql "SELECT count(*) >= 6 FROM audit_events WHERE action LIKE 'job.%' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 
+fi
+if want "Several instances per service"; then
 section "Several instances per service"
-WEB_DEP() { owner_sql "SELECT d.$1 FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND p.slug = 'shop' AND s.slug = 'web' AND s.preview_name IS NULL AND d.status = 'live'"; }
 if pctl scale shop/web 3 --wait | grep -q "is live"; then ok "[CLI] platformctl scale to 3 instances reaches live"; else bad "[CLI] scale failed"; fi
 check "three instances recorded" "$(WEB_DEP 'instances' | grep -o '"id"' | wc -l | tr -d ' ')" 3
 DEP3=$(WEB_DEP id)
@@ -1265,6 +1375,8 @@ if pctl scale shop/web 1 --wait | grep -q "is live"; then ok "[CLI] scale back t
 check "one container after scaling down" "$(docker ps -q --filter label=platform.deployment=$(WEB_DEP id) | wc -l | tr -d ' ')" 1
 check "app answers after scaling down" "$(app_code /)" 200
 
+fi
+if want "Autoscaling"; then
 section "Autoscaling"
 admin set-plan --slug "$A" --plan pro >/dev/null   # room for three instances
 mkdir -p "$TMP/busy"; printf '%s\n' 'FROM nginx:1.27-alpine' 'CMD ["sh", "-c", "yes > /dev/null & exec nginx -g \"daemon off;\""]' > "$TMP/busy/Dockerfile"
@@ -1283,6 +1395,8 @@ check "scaling audited with the measured CPU" "$(owner_sql "SELECT count(*) > 0 
 code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/busy >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Builds from git"; then
 section "Builds from git"
 # A local git server (static "dumb HTTP" repository) reached from the build sandbox
 # through host.docker.internal; BUILD_ALLOW_INSECURE_REPOS is on in the dev stack only.
@@ -1315,7 +1429,6 @@ check "built image deployed (app serves the repository's page)" "$(for _ in $(se
 check "[B->A] B cannot open A's build page (404)" "$(code_of jb "$BASE/o/$A/p/shop/s/web/builds/1")" 404
 HOOK=$(c ja -L "$BASE$SVC_A/build-hook" -d csrf=$CSRF_A | grep -o "$BASE/hooks/build/bh_[A-Za-z0-9_-]*" | head -1)
 if [ -n "$HOOK" ]; then ok "[A] webhook address created (shown once)"; else bad "webhook address missing"; fi
-hook() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' "$@"; }
 check "webhook: unknown token refused (404)" "$(hook -d '{}' "$BASE/hooks/build/bh_wrong")" 404
 check "webhook: GitHub ping answered without a build" "$(hook -H 'X-GitHub-Event: ping' -d '{"zen":"hi"}' "$HOOK")" 200
 check "webhook: push to another branch ignored (202)" "$(hook -d '{"ref":"refs/heads/feature"}' "$HOOK")" 202
@@ -1347,20 +1460,19 @@ z.writestr("app-main/server.js", "require(\"http\").createServer((q, s) => s.end
 z.close()' "$(cygpath -w "$TMP/app-main.zip")" "$RUN"
 check "[A] zip uploaded in the console (folder archive, no Dockerfile)" "$(code_of ja -X POST "$BASE$SVC_A/zip" -F csrf=$CSRF_A -F deploy=1 -F "archive=@$(cygpath -w "$TMP/app-main.zip");type=application/zip")" 303
 check "the folder archive is built with Railpack and served" "$(for _ in $(seq 1 150); do b=$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/"); grep -q "zip-railpack-$RUN" <<<"$b" && { echo yes; break; }; sleep 2; done)" yes
-zapi() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" -H 'Content-Type: application/zip' --data-binary "@$2" "$BASE/api/v1/projects/shop/services/web/zip"; }
 echo "not a zip" > "$TMP/bad.zip"
 check "[API] an invalid archive is refused (422)" "$(zapi "$TOK_DEV" "$TMP/bad.zip")" 422
 check "[B->A API] B cannot upload to a service only A has (404)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_B" -H 'Content-Type: application/zip' --data-binary "@$(cygpath -w "$TMP/app-main.zip")" "$BASE/api/v1/projects/shop/services/files/zip")" 404
 check "zip builds audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'build.queued' AND detail::text LIKE '%"zip"%' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
+fi
+if want "Preview per pull request"; then
 section "Preview per pull request"
 (cd "$GITD/src" && git checkout -q -b pr-branch main && echo "pr-preview-$RUN" > index.html \
   && git -c user.email=e2e@example.test -c user.name=e2e commit -qam "pull request change" && git checkout -q main) >/dev/null
 (cd "$GITD/srv/app.git" && git fetch -q "$GITD/src" pr-branch:pr-branch && git update-server-info) >/dev/null
 pr_event() { # pr_event <action> <number> <head repo> [header]: GitHub-style pull request webhook
   printf '{"action":"%s","number":%s,"pull_request":{"head":{"ref":"pr-branch","sha":"0","repo":{"full_name":"%s"}},"base":{"repo":{"full_name":"acme/app"}}}}' "$1" "$2" "$3"; }
-pr_builds() { owner_sql "SELECT count(*) FROM builds b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.trigger = 'pull_request'"; }
 PR_HOST=pr-7.web-shop-$A.apps.localhost
-pr_page() { curl -s --resolve "$PR_HOST:$PORT:127.0.0.1" "http://$PR_HOST:$PORT/"; }
 code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$REPO" -d branch=main -d dir= >/dev/null
 check "pull request ignored while previews are off (202, no build)" "$(hook -H 'X-GitHub-Event: pull_request' -d "$(pr_event opened 7 acme/app)" "$HOOK"):$(pr_builds)" 202:0
 check "[A] pull request previews turned on" "$(code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A --data-urlencode "repo=$REPO" -d branch=main -d dir= -d pr_previews=1)" 303
@@ -1379,11 +1491,12 @@ code_of ja -X POST "$BASE$SVC_A/source" -d csrf=$CSRF_A -d repo= -d branch=main 
 check "builds audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'build.done' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 docker rm -f e2e-git >/dev/null 2>&1
 
+fi
+if want "Self-signup and trials"; then
 section "Self-signup and trials"
 T=t$RUN; TEMAIL="owner@$T.test"; TPW=correct-horse-battery-trial
 pow() { # pow <challenge>: nonce for SIGNUP_POW_BITS=8 (sha256 starting with two zero hex digits)
   python -c 'import hashlib,sys,itertools; c=sys.argv[1]; print(next(n for n in itertools.count() if hashlib.sha256(f"{c}:{n}".encode()).hexdigest()[:2] == "00"))' "$1" | tr -d '\r'; }
-challenge() { c "$1" "$BASE/signup" | grep -o 'name="challenge" value="[^"]*"' | sed 's/.*value="//;s/"$//'; }
 mail_body() { # mail_body <to> <subject text>: body of the newest matching message (Mailpit API)
   local id; for _ in $(seq 1 20); do
     id=$(curl -s -G "http://localhost:8025/api/v1/search" --data-urlencode "query=to:$1 subject:\"$2\"" | grep -o '"ID":"[^"]*"' | head -1 | cut -d'"' -f4)
@@ -1454,6 +1567,8 @@ admin set-plan --slug "$T" --plan starter >/dev/null
 check "upgrading lifts the trial suspension" "$(owner_sql "SELECT suspended::text || ':' || suspend_reason || ':' || (trial_ends_at IS NULL) FROM orgs WHERE slug = '$T'")" "false::true"
 code_of jt -X POST "$BASE$SVC_T/delete" -d csrf=$CSRF_T -d confirm=burn >/dev/null
 
+fi
+if want "Alerts"; then
 section "Alerts"
 ntfy_has() { # ntfy_has <topic> <text> [tries]: wait until a message on topic contains text
   for _ in $(seq 1 "${3:-30}"); do
@@ -1505,6 +1620,8 @@ check "[agent recreated] healthy apps not reported down" "$(incident_status file
 check "[agent recreated] app still reachable through the proxy" \
   "$(curl -s -o /dev/null -w '%{http_code}' --resolve "web-shop-$B.apps.localhost:$PORT:127.0.0.1" "http://web-shop-$B.apps.localhost:$PORT/")" 200
 
+fi
+if want "Registry cleanup"; then
 section "Registry cleanup"
 echo "$TOK_A" | dk login $REG -u "$A" --password-stdin >/dev/null
 docker tag nginx:1.27-alpine "$REG/$A/old:1"; docker tag alpine:3.20 "$REG/$A/fresh:1" 2>/dev/null || docker tag nginx:1.27-alpine "$REG/$A/fresh:1"
@@ -1518,6 +1635,8 @@ check "recently pushed tag kept" "$(dk pull "$REG/$A/fresh:1")" yes
 check "tag used by a deployment kept" "$(dk pull "$REG/$A/web:v1")" yes
 check "cleanup audited" "$(owner_sql "SELECT detail->>'tags_deleted' FROM audit_events WHERE action = 'registry.cleaned' AND org_id = (SELECT id FROM orgs WHERE slug = '$A') ORDER BY id DESC LIMIT 1")" 1
 
+fi
+if want "Disk limits"; then
 section "Disk limits"
 owner_sql "INSERT INTO plans (id, name, max_services, max_cpu_millis, max_memory_mb, max_domains, max_databases, max_disk_mb)
            VALUES ('tiny', 'Tiny (test)', 20, 8000, 8192, 5, 5, 1) ON CONFLICT (id) DO NOTHING" >/dev/null
@@ -1537,6 +1656,8 @@ admin set-plan --slug "$A" --plan pro >/dev/null
 check "[API] deploys work again within the limit" "$(api_code "$TOK_DEV" -X POST "$BASE/api/v1/projects/shop/services/web/deploy")" 202
 owner_sql "DELETE FROM node_disk WHERE node_id = 'e2e-fake'" >/dev/null
 
+fi
+if want "Operator console"; then
 section "Operator console"
 check "the console is hidden from non-operators (404)" "$(code_of ja "$BASE/operator")" 404
 admin make-operator --email "owner@$A.test" >/dev/null
@@ -1571,6 +1692,8 @@ if echo "$APAGE" | grep -q "tenant-a-secret\|GREETING=hello\|API_KEY"; then bad 
 check "measured CPU and memory recorded per service" "$(owner_sql "SELECT count(*) > 0 FROM service_stats st JOIN orgs o ON o.id = st.org_id WHERE o.slug = '$A' AND st.mem_mb > 0")" t
 check "operator visits audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'operator.viewed_org'")" t
 
+fi
+if want "Operator: user management"; then
 section "Operator: user management"
 check "[B] the users page is hidden from non-operators (404)" "$(code_of jb "$BASE/operator/users")" 404
 check "the users page finds an account by email" "$(c ja "$BASE/operator/users?q=owner@$B.test" | grep -c "owner@$B.test" | sed 's/^[1-9][0-9]*$/yes/')" yes
@@ -1612,12 +1735,13 @@ CSRF_B=$(c jb "$BASE/o/$B" | csrf_of)
 NEWUID=$(owner_sql "INSERT INTO users (email, name, password_hash) VALUES ('gone-$RUN@example.test', 'Gone', 'x') RETURNING id")
 check "operator deletes an account" "$(code_of ja -X POST "$BASE/operator/users/$NEWUID/delete" -d csrf=$OPCSRF -d "confirm=gone-$RUN@example.test"):$(owner_sql "SELECT count(*) FROM users WHERE id = '$NEWUID'")" "303:0"
 
+fi
+if want "Operator: admin panel (settings, plans, resources, health)"; then
 section "Operator: admin panel (settings, plans, resources, health)"
 for p in settings plans resources health; do check "[B] /operator/$p hidden from non-operators (404)" "$(code_of jb "$BASE/operator/$p")" 404; done
 check "every admin page opens" "$(for p in settings plans resources health; do code_of ja "$BASE/operator/$p"; echo; done | sort -u | tr -d '\n')" 200
 SET_BASE=(-d csrf=$OPCSRF -d banner_level=warning -d signup_enabled= -d signup_daily_limit= -d signup_trial_days= -d signup_allowed_domains_env=1 -d signup_blocked_domains_env=1)
 check "announcement saved" "$(code_of ja -X POST "$BASE/operator/settings" "${SET_BASE[@]}" --data-urlencode "banner_message=Maintenance $RUN tonight")" 303
-banner_n() { c jb "$BASE/o/$B" | grep -c "Maintenance $RUN tonight" | sed 's/^[1-9][0-9]*$/yes/'; }
 check "the announcement shows on tenant pages" "$(until_is yes 15 banner_n)" yes
 check "[A] deployments paused" "$(code_of ja -X POST "$BASE/operator/settings" "${SET_BASE[@]}" -d deploys_paused=1)" 303
 code_of ja -X POST "$BASE/o/$A/p/shop/s/web/deploy" -d csrf=$CSRF_A >/dev/null
@@ -1654,6 +1778,8 @@ if grep -q "tenant-a-secret\|API_KEY" <<<"$RES"; then bad "resources page leaks 
 check "invoice generation requested from the panel" "$(code_of ja -X POST "$BASE/operator/invoices/generate" -d csrf=$OPCSRF -d "month=$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)")" 303
 check "a future month is refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/operator/invoices/generate" -d csrf=$OPCSRF -d "month=$(date -u -d '+1 month' +%Y-%m)" | grep -c 'err=')" 1
 
+fi
+if want "Fine-grained access (project-scoped members and tokens)"; then
 section "Fine-grained access (project-scoped members and tokens)"
 code_of ja -X POST "$BASE/o/$A/projects" -d csrf=$CSRF_A -d slug=hidden -d name=Hidden >/dev/null
 SDEV="scoped-$RUN@$A.test"
@@ -1674,7 +1800,6 @@ code_of ja -X POST "$BASE/o/$A/members/$SUID/access" -d csrf=$CSRF_A -d project_
 check "[scoped viewer] cannot deploy in shop (403)" "$(code_of jsd -X POST "$BASE/o/$A/p/shop/s/web/deploy" -d csrf=$SCSRF)" 403
 check "[A admin] an admin cannot be limited to projects" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/members/$(owner_sql "SELECT id FROM users WHERE email = 'owner@$A.test'")/access" -d csrf=$CSRF_A -d project_shop=viewer | grep -c 'err=')" 1
 PTOK=$(c ja -X POST "$BASE/o/$A/api-tokens" -d csrf=$CSRF_A -d name=shop-only -d role=developer -d project=shop | grep -o 'pla_[A-Za-z0-9_-]*' | head -1)
-papi() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $PTOK" "$BASE/api/v1$1"; }
 check "[project token] reaches its project" "$(papi /projects/shop/services):$(papi /me)" "200:200"
 check "[project token] other projects and organization APIs refused (403)" "$(papi /projects/hidden/services):$(papi /queues):$(papi /projects)" "403:403:403"
 check "[project token] an admin token cannot be limited to a project" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/api-tokens" -d csrf=$CSRF_A -d name=bad -d role=admin -d project=shop | grep -c 'err=')" 1
@@ -1684,14 +1809,13 @@ check "access changes audited" "$(owner_sql "SELECT count(*) >= 3 FROM audit_eve
 code_of ja -X POST "$BASE/o/$A/members/$SUID/remove" -d csrf=$CSRF_A >/dev/null
 code_of ja -X POST "$BASE/o/$A/p/hidden/delete" -d csrf=$CSRF_A -d confirm=hidden >/dev/null
 
+fi
+if want "DNS hosting and edge cache"; then
 section "DNS hosting and edge cache"
 ZONE=z$RUN.example
-ask_dns() { MSYS_NO_PATHCONV=1 docker run --rm --network platform-core alpine:3.20 nslookup "-type=$2" "$1" platform-agent 2>&1; }
 check "[A] zone added (pending until delegated)" "$(code_of ja -X POST "$BASE/o/$A/dns" -d csrf=$CSRF_A -d "domain=$ZONE")" 303
 check "[B] the same domain cannot be taken by another organization" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/dns" -d csrf=$CSRF_B -d "domain=$ZONE" | grep -c 'already')" 1
 check "the platform's own domain cannot be hosted" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/dns" -d csrf=$CSRF_A -d "domain=apps.localhost" | grep -c 'err=')" 1
-zrec() { code_of ja -X POST "$BASE/o/$A/dns/$ZONE" -d csrf=$CSRF_A -d action=add "$@"; }
-zerr() { c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/dns/$ZONE" -d csrf=$CSRF_A -d action=add "$@" | grep -c 'err='; }
 check "records added (A, TXT, MX)" "$(zrec -d name=@ -d type=A -d value=203.0.113.5):$(zrec -d name=@ -d type=TXT --data-urlencode "value=v=spf1 -all $RUN"):$(zrec -d name=@ -d type=MX -d value=mail.$ZONE -d priority=10)" "303:303:303"
 check "a name pointed at a service (CNAME)" "$(code_of ja -X POST "$BASE/o/$A/dns/$ZONE" -d csrf=$CSRF_A -d action=service -d name=www -d "host=web-shop-$A.apps.localhost")" 303
 check "invalid records refused (bad address, CNAME at the apex, CNAME next to another record)" "$(zerr -d name=@ -d type=A -d value=999.1.1.1):$(zerr -d name=@ -d type=CNAME -d value=x.example.org):$(zerr -d name=www -d type=TXT -d value=x)" "1:1:1"
@@ -1736,7 +1860,6 @@ echo "$TOK_MX" | dk login $REG -u "$A" --password-stdin >/dev/null; dk push "$RE
 code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=cdn -d image=nginx:1.27-alpine >/dev/null
 check "[A] service with the edge cache on" "$(code_of ja -X POST "$BASE/o/$A/p/shop/s/cdn/settings" -d csrf=$CSRF_A -d "image=$REG/$A/cdnapp:1" -d port=80 -d health_path=%2F -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d edge_cache=1 -d deploy=1):$(wait_status ja /o/$A/p/shop/s/cdn)" "303:live"
 CDNH=cdn-shop-$A.apps.localhost
-cget() { curl -sS -D - -o "$TMP/cdn.body" --resolve "$CDNH:$PORT:127.0.0.1" "http://$CDNH:$PORT$1" | tr -d '\r'; }
 C1=; for _ in $(seq 1 20); do C1=$(cget /cached); grep -qi '^cache-status:' <<<"$C1" && break; sleep 2; done
 B1=$(cat "$TMP/cdn.body"); C2=$(cget /cached); B2=$(cat "$TMP/cdn.body")
 check "a cacheable response is served from the edge cache (same body, hit)" "$(grep -ci '^cache-status:.*hit' <<<"$C2"):$([ "$B1" = "$B2" ] && echo same)" "1:same"
@@ -1745,16 +1868,13 @@ check "a response without Cache-Control is never kept" "$(grep -ci '^cache-statu
 code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/cdn >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Hosted mailboxes (Stalwart)"; then
 section "Hosted mailboxes (Stalwart)"
 MZ=m$RUN.test
 MP="Mailbox-pass-$RUN"
 admin set-plan --slug "$A" --plan pro >/dev/null   # earlier sections used the starter plan's sending domains
-mapi() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' "$@"; }
-imap_count() { curl -sk --max-time 10 "imaps://127.0.0.1:2993/" -u "$1:$2" -X "STATUS \"$3\" (MESSAGES)" 2>/dev/null | grep -o 'MESSAGES [0-9]*' | grep -o '[0-9]*'; }
-inbox_total() { echo $(( $(imap_count "$1" "$2" INBOX || echo 0) + $(imap_count "$1" "$2" "Junk Mail" || echo 0) )); }
-smtp_in() { printf 'From: someone@sender.test\r\nTo: %s\r\nSubject: hello %s\r\n\r\nhi\r\n' "$1" "$RUN" > "$TMP/mail.eml"; curl -s --max-time 15 "smtp://127.0.0.1:2525" --mail-from someone@sender.test --mail-rcpt "$1" -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}'; }
 # every test connection comes from the Docker gateway: lift bans earlier failed sign-ins (from earlier runs) caused
-stw() { MSYS_NO_PATHCONV=1 docker run --rm --network platform-core curlimages/curl:8.11.0 -s -u admin:dev-stalwart-admin -H 'Content-Type: application/json' -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":$1}" http://stalwart:8080/jmap/; }
 stw '[["x:BlockedIp/query",{},"q"],["x:BlockedIp/set",{"#destroy":{"resultOf":"q","name":"x:BlockedIp/query","path":"/ids"}},"d"],["x:Action/set",{"create":{"r":{"@type":"ReloadBlockedIps"}}},"a"]]' >/dev/null
 check "the mail server is set up by the agent (submission port 587 answers)" "$(until_is yes 90 sh -c 'curl -s --max-time 3 smtp://127.0.0.1:2588 -o /dev/null && echo yes')" yes
 code_of ja -X POST "$BASE/o/$A/dns" -d csrf=$CSRF_A -d "domain=$MZ" >/dev/null
@@ -1787,6 +1907,8 @@ code_of ja -X POST "$BASE/o/$A/email/d/$MZ/delete" -d csrf=$CSRF_A -d "confirm=$
 code_of ja -X POST "$BASE/o/$A/dns/$MZ" -d csrf=$CSRF_A -d action=remove -d "confirm=$MZ" >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Bulk actions and create forms on the lists"; then
 section "Bulk actions and create forms on the lists"
 admin set-plan --slug "$A" --plan pro >/dev/null
 BK_CODE='export const handler = async () => ({ ok: true });'
@@ -1804,6 +1926,8 @@ check "[A] domain added from the Domains page" "$(code_of ja -X POST "$BASE/o/$A
 check "[bulk] domain removed from the list" "$(code_of ja -X POST "$BASE/o/$A/domains/actions" -d csrf=$CSRF_A -d action=remove -d confirm=delete -d sel=bulk-$RUN.example.test):$(owner_sql "SELECT count(*) FROM domains WHERE org_id = '$ORG_A' AND hostname = 'bulk-$RUN.example.test'")" "303:0"
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Exposure: private services, extra ports, path routing, public databases"; then
 section "Exposure: private services, extra ports, path routing, public databases"
 admin set-plan --slug "$A" --plan pro >/dev/null
 code_of ja -X POST "$BASE/o/$A/projects" -d csrf=$CSRF_A -d slug=expo -d name=Expo >/dev/null
@@ -1819,7 +1943,6 @@ ex_svc() { # ex_svc <slug> <image> [extra settings]
     -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d deploy=1 "${@:3}" >/dev/null; }
 ex_svc front nginx:1.27-alpine; ex_svc api "$REG/$A/multiport:1" -d private=1
 check "[A] two services live, api set to private" "$(wait_status ja /o/$A/p/expo/s/front):$(wait_status ja /o/$A/p/expo/s/api):$(owner_sql "SELECT public FROM services s JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'expo' AND s.slug = 'api'")" "live:live:f"
-ex_get() { curl -s --max-time 10 --resolve "$1:$PORT:127.0.0.1" "http://$1:$PORT$2"; }
 API_HOST=api-expo-$A.apps.localhost
 check "a private service has no public address" "$(sleep 3; ex_get "$API_HOST" / | grep -c 'No application is published')" 1
 EX_FRONT=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'expo' AND s.slug = 'front' AND d.status = 'live'")
@@ -1854,7 +1977,6 @@ DBPAGE=$(c ja "$BASE/o/$A/p/expo/d/pubdb")
 DBPW=$(grep -o '<summary>show</summary><code class="select">[^<]*' <<<"$DBPAGE" | head -1 | sed 's/.*">//')
 check "the page shows the endpoint and its certificate" "$(grep -c "<code class=\"select\">$PUBPORT</code>" <<<"$DBPAGE"):$(grep -c 'BEGIN CERTIFICATE' <<<"$DBPAGE")" "1:1"
 check "the endpoint's key is stored encrypted" "$(owner_sql "SELECT count(*) FROM databases WHERE slug = 'pubdb' AND org_id = '$ORG_A' AND position(convert_to('PRIVATE KEY', 'UTF8') in proxy_key_enc) > 0")" 0
-pgq() { MSYS_NO_PATHCONV=1 docker run --rm postgres:17-alpine psql "host=host.docker.internal port=$PUBPORT dbname=app user=app password=$DBPW $1" -tAc 'SELECT 40 + 2' 2>&1 | tr -d '\r'; }
 check "psql connects from outside with TLS (sslmode=require)" "$(until_is 42 60 pgq 'sslmode=require connect_timeout=5')" 42
 check "a plain-text connection is refused" "$(pgq 'sslmode=disable connect_timeout=5' | grep -c '^42$')" 0
 code_of ja -X POST "$BASE/o/$A/p/expo/d/pubdb/public" -d csrf=$CSRF_A -d 'allow=203.0.113.7' >/dev/null
@@ -1866,10 +1988,11 @@ check "MySQL offers no public endpoint" "$(code_of ja -X POST "$BASE/o/$A/p/expo
 code_of ja -X POST "$BASE/o/$A/p/expo/delete" -d csrf=$CSRF_A -d confirm=expo >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Console actions on the API"; then
 section "Console actions on the API"
 admin set-plan --slug "$A" --plan pro >/dev/null
 TOK_ADMAPI=$(new_api_token ja "$A" "$CSRF_A" automation admin)
-capi() { local m=$1 path=$2; shift 2; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_ADMAPI" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1$path" "$@"; }
 check "[API] project created" "$(capi POST /projects -d '{"slug": "apiproj", "name": "From the API"}' | grep -c '"message"')" 1
 check "[API] a developer token cannot create a project (403)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' -d '{"slug": "nope"}' "$BASE/api/v1/projects")" 403
 check "[API] service created and its settings saved (private, worker refused port)" "$(capi POST /projects/apiproj/services -d '{"slug": "svc", "image": "nginx:1.27-alpine"}' | grep -c '"message"'):$(capi PUT /projects/apiproj/services/svc/settings -d '{"image": "nginx:1.27-alpine", "port": 80, "health_path": "/", "cpu_millis": 100, "memory_mb": 64, "instances": 1, "env": "A=1", "private": true, "deploy": true}' | grep -c '"message"'):$(owner_sql "SELECT public FROM services s JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'apiproj' AND s.slug = 'svc'")" "1:1:f"
@@ -1881,6 +2004,8 @@ check "[API] console actions audited with the token" "$(owner_sql "SELECT count(
 code_of ja -X POST "$BASE/o/$A/p/apiproj/delete" -d csrf=$CSRF_A -d confirm=apiproj >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Cost reports and budgets"; then
 section "Cost reports and budgets"
 # 1000 vCPU-hours this hour in project shop: 10.00 at the starter plan's 1 cent per vCPU-hour
 owner_sql "INSERT INTO usage_hourly (org_id, resource_id, kind, name, hour, cpu_milli_minutes) VALUES ('$ORG_A', gen_random_uuid(), 'service', 'shop/e2e-cost-$RUN', date_trunc('hour', now()), 60000000)" >/dev/null
@@ -1906,6 +2031,8 @@ check "[API] budget deleted" "$(curl -sS --resolve "console.localhost:$PORT:127.
 check "budget changes audited" "$(owner_sql "SELECT count(*) >= 3 FROM audit_events WHERE org_id = '$ORG_A' AND action IN ('budget.saved', 'budget.deleted')")" t
 owner_sql "DELETE FROM budgets WHERE org_id = '$ORG_A'; DELETE FROM usage_hourly WHERE name = 'shop/e2e-cost-$RUN'" >/dev/null
 
+fi
+if want "Private network between projects"; then
 section "Private network between projects"
 admin set-plan --slug "$A" --plan pro >/dev/null
 for pj in front back lone; do code_of ja -X POST "$BASE/o/$A/projects" -d csrf=$CSRF_A -d slug=$pj -d name=$pj >/dev/null; done
@@ -1915,8 +2042,6 @@ pn_svc() { # pn_svc <project> <service>: an nginx service, deployed
     -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d deploy=1 >/dev/null; }
 pn_svc back api; pn_svc front caller; pn_svc lone solo
 check "[A] three projects with a service each are live" "$(wait_status ja /o/$A/p/back/s/api):$(wait_status ja /o/$A/p/front/s/caller):$(wait_status ja /o/$A/p/lone/s/solo)" "live:live:live"
-pn_cid() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = '$1' AND s.slug = '$2' AND d.status = 'live'"; }
-pn_get() { dx exec "$(pn_cid "$1" "$2")" wget -qO- -T 5 "$3" 2>&1 | grep -q 'Welcome to nginx' && echo 1 || echo 0; }
 check "a service reaches another of its own project by its private name" "$(until_is 1 30 pn_get back api http://api.back.internal/)" 1
 check "before connecting, front does not know back's names" "$(dx exec "$(pn_cid front caller)" grep -c 'api.back.internal' /etc/hosts)" 0
 check "[A admin] front connected to back" "$(code_of ja -X POST "$BASE/o/$A/p/front/connections" -d csrf=$CSRF_A -d project=back)" 303
@@ -1939,13 +2064,14 @@ check "connections audited" "$(owner_sql "SELECT count(*) FROM audit_events WHER
 for pj in front back lone; do code_of ja -X POST "$BASE/o/$A/p/$pj/delete" -d csrf=$CSRF_A -d confirm=$pj >/dev/null; done
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Scheduled scaling"; then
 section "Scheduled scaling"
 admin set-plan --slug "$A" --plan pro >/dev/null
 code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=sched -d image=nginx:1.27-alpine >/dev/null
 code_of ja -X POST "$BASE/o/$A/p/shop/s/sched/settings" -d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=80 -d health_path=%2F \
   -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d deploy=1 >/dev/null
 check "[A] service to schedule is live" "$(wait_status ja /o/$A/p/shop/s/sched)" live
-sched_err() { c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/p/shop/s/sched/schedules" -d csrf=$CSRF_A "$@" | grep -c 'err='; }
 check "invalid schedules refused (bad cron, more often than every 15 minutes, 11 instances)" "$(sched_err -d 'cron=99 * * * *' -d instances=2):$(sched_err -d 'cron=*/5 * * * *' -d instances=2):$(sched_err -d 'cron=0 8 * * *' -d instances=11)" "1:1:1"
 check "[A] schedule added (2 instances on 1 January)" "$(code_of ja -X POST "$BASE/o/$A/p/shop/s/sched/schedules" -d csrf=$CSRF_A -d 'cron=0 0 1 1 *' -d instances=2 -d label=e2e)" 303
 check "[API] schedules listed" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" "$BASE/api/v1/projects/shop/services/sched/schedules" | grep -c '"cron":"0 0 1 1 \*"')" 1
@@ -1959,6 +2085,8 @@ check "[API] schedule deleted" "$(curl -sS --resolve "console.localhost:$PORT:12
 code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/sched >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+fi
+if want "Several servers (a second node on the same machine)"; then
 section "Several servers (a second node on the same machine)"
 docker compose -f compose.dev.yml --profile multinode up -d agent2 >/dev/null 2>&1
 for _ in $(seq 1 40); do [ "$(owner_sql "SELECT count(*) FROM nodes WHERE id = 'node-2' AND last_seen > now() - interval '1 minute'")" = 1 ] && break; sleep 2; done
@@ -2024,6 +2152,8 @@ admin set-plan --slug "$A" --plan starter >/dev/null
 docker compose -f compose.dev.yml --profile multinode rm -sf agent2 >/dev/null 2>&1
 owner_sql "DELETE FROM nodes WHERE id = 'node-2'" >/dev/null
 
+fi
+if want "Email alerts, trial reminder, build minutes"; then
 section "Email alerts, trial reminder, build minutes"
 check "[A] email alert channel added" "$(code_of ja -X POST "$BASE/o/$A/alerts/channels" -d csrf=$CSRF_A -d name=Email -d kind=email --data-urlencode "email=ops@$A.test" -d events=service_down -d events=deploy_failed)" 303
 EMAIL_CH=$(owner_sql "SELECT c.id FROM alert_channels c JOIN orgs o ON o.id = c.org_id WHERE o.slug = '$A' AND c.kind = 'email'")
@@ -2036,6 +2166,8 @@ check "reminder sent only once" "$(owner_sql "SELECT count(*) FROM audit_events 
 admin set-plan --slug "$T" --plan starter >/dev/null
 if c ja "$BASE/o/$A/billing" | grep -q "Builds from git"; then ok "build minutes appear on the bill"; else bad "build minutes missing from the bill"; fi
 
+fi
+if want "Account recovery"; then
 section "Account recovery"
 check "[A] 10 recovery codes issued at setup" "$(wc -l < "$TMP/rc-$A" | tr -d ' ')" 10
 RC=$(head -1 "$TMP/rc-$A")
@@ -2071,14 +2203,8 @@ admin reset-totp --email "owner@$B.test" >/dev/null
 login jr5 "owner@$B.test" b-new-correct-horse-battery >/dev/null
 check "after operator two-step reset, the user sets it up again" "$(c jr5 -o /dev/null -w '%{redirect_url}' "$BASE/totp/verify")" "$BASE/totp/setup"
 
-echo
-# Remove this run's test organizations (their apps, databases and networks follow), so
-# repeated runs do not pile up containers. KEEP=1 keeps them for debugging.
-if [ "${KEEP:-0}" != 1 ]; then
-  owner_sql "DELETE FROM orgs WHERE slug IN ('$A', '$B', 't$RUN')" >/dev/null
-  owner_sql "SELECT pg_notify('deployments', '')" >/dev/null
 fi
+echo
 section done; echo "Total: $(( $(date +%s) - T0 )) s"
 echo "Result: $PASS passed, $FAIL failed"
-rm -rf "$TMP"
 [ "$FAIL" -eq 0 ]
