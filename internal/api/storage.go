@@ -807,10 +807,12 @@ func (s *Server) attachBucket(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// S3_* for your own code; the conventional names many S3 libraries read by themselves too
 		vars := map[string]string{
+			"S3_ENDPOINT": s.cfg.S3Endpoint(), "S3_REGION": s.cfg.S3Region, "S3_ACCESS_KEY_ID": k.AccessKeyID,
+			"S3_SECRET_ACCESS_KEY": k.SecretAccessKey, "S3_BUCKET": b.FullName,
 			"AWS_ACCESS_KEY_ID": k.AccessKeyID, "AWS_SECRET_ACCESS_KEY": k.SecretAccessKey, "AWS_REGION": s.cfg.S3Region,
 			"AWS_DEFAULT_REGION": s.cfg.S3Region, "AWS_ENDPOINT_URL": s.cfg.S3Endpoint(), "AWS_ENDPOINT_URL_S3": s.cfg.S3Endpoint(),
-			"S3_BUCKET": b.FullName,
 		}
 		for name, value := range vars {
 			enc, err := s.box.Seal([]byte(value), "secret:"+serviceID+":"+name)
@@ -838,7 +840,7 @@ func (s *Server) attachBucket(w http.ResponseWriter, r *http.Request) {
 		back(w, r, bucketPath(o, b)+"#connect", "", formErr)
 		return
 	}
-	back(w, r, bucketPath(o, b)+"#connect", "Secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL, AWS_REGION and S3_BUCKET added to "+svcSlug+". Redeploy it to apply them.", "")
+	back(w, r, bucketPath(o, b)+"#connect", "Secrets S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY and S3_BUCKET added to "+svcSlug+". Redeploy it to apply them.", "")
 }
 
 func ternary(c bool, a, b string) string {

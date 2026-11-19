@@ -64,7 +64,7 @@ func TestReadZipRefusesUnsafePaths(t *testing.T) {
 }
 
 func TestValidHandler(t *testing.T) {
-	for _, h := range []string{"index.handler", "lambda_function.lambda_handler", "src/app.main"} {
+	for _, h := range []string{"index.handler", "main.handler", "src/app.main"} {
 		if !ValidHandler(h) {
 			t.Errorf("%s refused", h)
 		}

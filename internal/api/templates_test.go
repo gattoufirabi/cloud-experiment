@@ -47,6 +47,17 @@ func TestServicePageRendersJobsAndInstances(t *testing.T) {
 			t.Errorf("page lacks %q", want)
 		}
 	}
+	// A service with a persistent folder shows its backups and snapshots (main page and settings page).
+	d["Service"] = &serviceInfo{Slug: "files", Image: "nginx:1.27-alpine", Port: 80, VolumePath: "/data", Instances: 1, Env: map[string]string{}}
+	d["Backups"] = &backupView{Enabled: true, Hour: 3, Snaps: []snapshotView{{ID: "abcdef0123456789", TakenAt: now}}}
+	var bk strings.Builder
+	if err := pages["service"].ExecuteTemplate(&bk, "content", d); err != nil {
+		t.Fatal("service with backups:", err)
+	}
+	if !strings.Contains(bk.String(), "abcdef01") {
+		t.Error("the snapshot is not listed on the service page")
+	}
+	_ = settingsPane(t, pages["service"], d)
 	// A worker page renders too.
 	d["Service"] = &serviceInfo{Slug: "queue", Image: "nginx:1.27-alpine", Worker: true, Instances: 1, Env: map[string]string{}}
 	if err := pages["service"].ExecuteTemplate(io.Discard, "content", d); err != nil {

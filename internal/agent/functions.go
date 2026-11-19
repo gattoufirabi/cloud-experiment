@@ -263,7 +263,7 @@ func (a *Agent) runInvocation(ctx context.Context, c claimed) {
 	input, _ := json.Marshal(map[string]any{
 		"event": json.RawMessage(event),
 		"context": map[string]any{
-			"functionName": f.Slug, "functionVersion": "$LATEST", "memoryLimitInMB": f.MemoryMB, "awsRequestId": c.ID,
+			"functionName": f.Slug, "functionVersion": "$LATEST", "memoryLimitInMB": f.MemoryMB, "requestId": c.ID, "awsRequestId": c.ID, // the second: former name, for existing code
 			"invokedFunctionArn": "plat:function:" + f.OrgSlug + ":" + f.ProjectSlug + ":" + f.Slug,
 			"logGroupName":       "/platform/functions/" + f.ProjectSlug + "/" + f.Slug, "logStreamName": c.ID, "deadlineMs": deadline.UnixMilli(),
 		},
@@ -506,7 +506,8 @@ func (a *Agent) functionEnv(ctx context.Context, f fnConfig) ([]string, error) {
 		env = append(env, k+"="+f.Env[k])
 	}
 	env = append(env, "_HANDLER="+f.Handler, "LAMBDA_TASK_ROOT=/var/task", "HOME=/tmp", "TZ=UTC",
-		"AWS_LAMBDA_FUNCTION_NAME="+f.Slug, "AWS_LAMBDA_FUNCTION_VERSION=$LATEST",
+		"PLATFORM_FUNCTION_NAME="+f.Slug, fmt.Sprintf("PLATFORM_FUNCTION_MEMORY_MB=%d", f.MemoryMB),
+		"AWS_LAMBDA_FUNCTION_NAME="+f.Slug, "AWS_LAMBDA_FUNCTION_VERSION=$LATEST", // former names, for existing code
 		fmt.Sprintf("AWS_LAMBDA_FUNCTION_MEMORY_SIZE=%d", f.MemoryMB), "PLATFORM_FUNCTION="+f.ProjectSlug+"/"+f.Slug)
 	return a.resolveSecretRefs(ctx, f.OrgID, dedupEnv(env))
 }

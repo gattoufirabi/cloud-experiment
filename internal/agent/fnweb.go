@@ -125,7 +125,7 @@ func webInvoke(ctx context.Context, addr string, event []byte, requestID string)
 		}
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("X-Amzn-Request-Id", requestID)
+	req.Header.Set("X-Request-Id", requestID)
 	req.Header.Set("X-Platform-Request-Id", requestID)
 
 	resp, err := webClient.Do(req)

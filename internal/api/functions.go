@@ -789,7 +789,7 @@ func (s *Server) functionSettings(w http.ResponseWriter, r *http.Request) {
 		case conc < 1 || conc > 50:
 			formErr = "Concurrency: 1 to 50."
 		case webCmd == "" && !functions.ValidHandler(handler):
-			formErr = "Handler: file and function, such as index.handler or lambda_function.lambda_handler."
+			formErr = "Handler: file and function, such as index.handler or main.handler."
 		case !validWebCommand(webCmd) || webPort < 1024 || webPort > 65535:
 			formErr = "Web app: a start command on one line (300 characters at most) and a port from 1024 to 65535."
 		case auth != "none" && auth != "token":

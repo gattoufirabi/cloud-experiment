@@ -106,7 +106,7 @@
   <div class="section">
     <h2>Function URL</h2>
     <p class="small">{{if .Function.URLEnabled}}<a href="{{.URL}}" target="_blank" rel="noopener"><code>{{.URL}}</code></a>{{else}}<code class="muted">{{.URL}}</code> <span class="muted">(off)</span>{{end}}</p>
-    <p class="small muted">An HTTPS endpoint for browsers, webhooks and apps. Requests and responses use the AWS Lambda function URL format (payload 2.0): your handler gets <code>rawPath</code>, <code>headers</code>, <code>queryStringParameters</code> and <code>body</code>, and returns <code>{statusCode, headers, body}</code>.</p>
+    <p class="small muted">An HTTPS endpoint for browsers, webhooks and apps. Your handler gets an event with <code>rawPath</code>, <code>headers</code>, <code>queryStringParameters</code> and <code>body</code>, and returns <code>{statusCode, headers, body}</code>.</p>
     {{if and .CanEdit (eq .Function.URLAuth "token")}}
     <form method="post" action="{{.Path}}/token" class="inline" data-confirm="Create a new token? The current one stops working.">
       <input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary small">{{if .Function.HasToken}}Replace the token{{else}}Create a token{{end}}</button>

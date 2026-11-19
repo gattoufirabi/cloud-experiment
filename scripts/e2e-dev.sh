@@ -587,7 +587,7 @@ code_of ja -X POST "$BASE/o/$A/storage/b/uploads/settings" -d csrf=$CSRF_A -d qu
 check "website off again (404)" "$(web_get)" 404
 
 check "[A] bucket connected to service files" "$(code_of ja -X POST "$BASE/o/$A/storage/b/uploads/attach" -d csrf=$CSRF_A -d service=shop/files)" 303
-check "service got the AWS secrets" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name IN ('AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_ENDPOINT_URL','AWS_REGION','S3_BUCKET')")" 5
+check "service got the S3 secrets" "$(owner_sql "SELECT count(*) FROM secrets s JOIN services v ON v.id = s.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND v.slug = 'files' AND s.name IN ('S3_ENDPOINT','S3_REGION','S3_ACCESS_KEY_ID','S3_SECRET_ACCESS_KEY','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','AWS_ENDPOINT_URL','AWS_REGION','S3_BUCKET')")" 9
 check "service key recorded with its service" "$(owner_sql "SELECT count(*) FROM storage_keys k JOIN services v ON v.id = k.service_id WHERE v.slug = 'files' AND k.org_id = (SELECT id FROM orgs WHERE slug = '$A')")" 1
 code_of ja -X POST "$BASE/o/$A/p/shop/s/files/deploy" -d csrf=$CSRF_A >/dev/null
 CID_S3=""; for _ in $(seq 1 60); do CID_S3=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'files' AND d.status = 'live' ORDER BY d.revision DESC LIMIT 1"); [ -n "$CID_S3" ] && [ "$CID_S3" != "$CID_F" ] && break; sleep 2; done
@@ -716,7 +716,7 @@ check "[B->A API] B's token cannot invoke A's function (404)" "$(curl -sS --reso
 CODE='export const handler = async (event, context) => {
   if (event.boom || event.queryStringParameters?.boom) throw new RangeError("e2e boom");
   if (event.sleep) await new Promise((r) => setTimeout(r, event.sleep));
-  console.log("e2e log line", context.awsRequestId);
+  console.log("e2e log line", context.requestId);
   return { echo: event.value ?? null, env: process.env.E2E_VAR ?? null, shared: process.env.SHARED_TOKEN ? "set" : null, uid: process.getuid(), method: event.requestContext?.http?.method ?? null, body: event.body ?? null };
 };'
 PUT_BODY=$(printf '%s' "$CODE" | python -c 'import json,sys; print(json.dumps({"code": sys.stdin.read(), "env": {"E2E_VAR": "from-env"}, "timeout_seconds": 3}))')

@@ -6,7 +6,7 @@
 {{with .NewKey}}
 <div class="panel strong" id="new-key">
   <h2>Access key "{{.Name}}"</h2>
-  <p class="small">Copy the secret now: it will not be shown again. Use it with any S3 client (AWS CLI, SDKs, rclone).</p>
+  <p class="small">Copy the secret now: it will not be shown again. Use it with any S3 client (rclone, s3cmd, Cyberduck, SDKs).</p>
   <dl class="kv">
     <dt>access key ID</dt><dd><code class="select">{{.AccessKeyID}}</code></dd>
     <dt>secret access key</dt><dd><code class="select wrap">{{.SecretAccessKey}}</code></dd>
@@ -117,14 +117,13 @@
     </div>
   </div>
   <div class="section">
-    <h2>AWS CLI</h2>
-    <div class="panel"><pre class="cmd">export AWS_ACCESS_KEY_ID=GK…  AWS_SECRET_ACCESS_KEY=…
-export AWS_ENDPOINT_URL={{.S3URL}}  AWS_REGION={{.Region}}
-aws s3 ls
-aws s3 cp ./photo.jpg s3://{{.Org.Slug}}-uploads/photos/photo.jpg
-aws s3 sync ./site s3://{{.Org.Slug}}-site
-aws s3 presign s3://{{.Org.Slug}}-uploads/photos/photo.jpg --expires-in 3600</pre></div>
-    <p class="small muted">SDKs (boto3, the AWS SDK for JavaScript, Go, Java…) read the same variables; set path-style addressing if your SDK asks (<code>forcePathStyle: true</code>). From a service of this organization, use <strong>Connect to a service</strong> on the bucket page instead of copying keys.</p>
+    <h2>Command line (rclone)</h2>
+    <div class="panel"><pre class="cmd">rclone config create store s3 provider Other endpoint {{.S3URL}} region {{.Region}} access_key_id GK… secret_access_key SECRET force_path_style true
+rclone lsf store:
+rclone copy ./photo.jpg store:{{.Org.Slug}}-uploads/photos/
+rclone sync ./site store:{{.Org.Slug}}-site
+rclone link --expire 1h store:{{.Org.Slug}}-uploads/photos/photo.jpg</pre></div>
+    <p class="small muted">s3cmd, Cyberduck and every S3 SDK work too: give them the endpoint, region and key above, with path-style addressing and Signature V4. From a service of this organization, use <strong>Connect to a service</strong> on the bucket page instead of copying keys. <a href="/docs/user#object-storage">Guide and code examples</a></p>
   </div>
 </section>
 {{end}}

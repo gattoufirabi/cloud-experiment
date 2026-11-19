@@ -31,7 +31,8 @@ class Context:
         self.function_version = d.get("functionVersion", "$LATEST")
         self.invoked_function_arn = d.get("invokedFunctionArn", "")
         self.memory_limit_in_mb = d.get("memoryLimitInMB", 128)
-        self.aws_request_id = d.get("awsRequestId", "")
+        self.request_id = d.get("requestId", "")
+        self.aws_request_id = self.request_id  # former name, kept for existing code
         self.log_group_name = d.get("logGroupName", "")
         self.log_stream_name = d.get("logStreamName", "")
         self._deadline_ms = d.get("deadlineMs", int(time.time() * 1000))
@@ -41,7 +42,7 @@ class Context:
 
 
 data = json.loads(sys.stdin.buffer.read() or b"{}")
-spec = os.environ.get("_HANDLER", "lambda_function.lambda_handler")
+spec = os.environ.get("_HANDLER", "main.handler")
 module_name, _, func_name = spec.rpartition(".")
 sys.path.insert(0, "/var/task")
 try:

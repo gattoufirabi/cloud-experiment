@@ -67,9 +67,11 @@ func splitRow(line string) []string {
 	line = strings.TrimSpace(line)
 	line = strings.TrimPrefix(line, "|")
 	line = strings.TrimSuffix(line, "|")
-	cells := strings.Split(line, "|")
+	// "\|" is a literal bar inside a cell
+	bar := string(rune(0))
+	cells := strings.Split(strings.ReplaceAll(line, `\|`, bar), "|")
 	for i := range cells {
-		cells[i] = strings.TrimSpace(cells[i])
+		cells[i] = strings.TrimSpace(strings.ReplaceAll(cells[i], bar, "|"))
 	}
 	return cells
 }

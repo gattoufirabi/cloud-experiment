@@ -69,11 +69,11 @@ const server = http.createServer((req, res) => {
 server.listen(process.env.PORT || 8080, () => console.log("listening on", process.env.PORT || 8080));
 `},
 	{ID: "python3.13", Name: "Python 3.13", Image: "python:3.13-alpine", Ext: ".py", Bootstrap: "invoke.py",
-		DefaultHandler: "lambda_function.lambda_handler", StarterFile: "lambda_function.py", Command: []string{"python3", "-u", "/var/runtime/invoke.py"},
+		DefaultHandler: "main.handler", StarterFile: "main.py", Command: []string{"python3", "-u", "/var/runtime/invoke.py"},
 		Starter: `import json
 
 
-def lambda_handler(event, context):
+def handler(event, context):
     print("event", json.dumps(event))
     return {
         "statusCode": 200,

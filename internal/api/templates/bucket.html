@@ -46,7 +46,7 @@
       <input type="file" name="file" required aria-label="File">
       <button type="submit">Upload{{if .Prefix}} to {{.Prefix}}{{end}}</button>
     </form>
-    <p class="small muted">Up to {{.MaxUploadMB}} MB from the console; use the S3 API or <code>aws s3 cp</code> for larger files and folders.</p>
+    <p class="small muted">Up to {{.MaxUploadMB}} MB from the console; use an S3 client (<code>rclone copy</code>) for larger files and folders.</p>
   </div>
   {{end}}
 </section>{{end}}
@@ -67,7 +67,7 @@
   <div class="section">
     <h2>Connect to a service</h2>
     {{if .Services}}
-    <p class="small muted">Creates an access key for that service only, with read and write access to this bucket, and stores AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL, AWS_REGION and S3_BUCKET as its secrets. Redeploy the service to apply them.</p>
+    <p class="small muted">Creates an access key for that service only, with read and write access to this bucket, and stores S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY and S3_BUCKET as its secrets (with the conventional names S3 libraries read by themselves). Redeploy the service to apply them.</p>
     <form method="post" action="{{.Path}}/attach" class="inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <select name="service" aria-label="Service">{{range .Services}}<option value="{{.}}">{{.}}</option>{{end}}</select>

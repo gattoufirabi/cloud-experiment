@@ -377,7 +377,7 @@
 
 <!-- ============ backups ============ -->
 {{if .Service.VolumePath}}{{with .Backups}}
-{{if ne .View "settings"}}<section class="pane" id="backups" role="tabpanel" aria-label="Backups">
+{{if ne $.View "settings"}}<section class="pane" id="backups" role="tabpanel" aria-label="Backups">
   <p class="help"><a href="/docs/user#backups-and-restore" target="_blank" rel="noopener">Guide: backups and restore ↗</a></p>
 
   <div class="section">

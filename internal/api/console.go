@@ -43,7 +43,7 @@ var products = []product{
 		Description: "Run code on demand without servers: function URLs, schedules and API calls",
 		Nav:         []navItem{{"Functions", "/functions", false}}},
 	{ID: "databases", Name: "Databases", Short: "Databases", Group: "Data", Path: "/databases",
-		Description: "Managed PostgreSQL, MySQL, MariaDB and Redis with nightly backups",
+		Description: "Managed PostgreSQL, MySQL, MariaDB, Redis, MongoDB and Kafka with nightly backups",
 		Nav:         []navItem{{"Databases", "/databases", false}}},
 	{ID: "storage", Name: "Object storage", Short: "Storage", Group: "Data", Path: "/storage",
 		Description: "S3-compatible buckets for files, uploads, backups and static websites",

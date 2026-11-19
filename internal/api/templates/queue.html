@@ -75,7 +75,7 @@ curl -X DELETE -H "Authorization: Bearer $QUEUE_TOKEN" {{.APIURL}}/messages/&lt;
       <div class="wide"><button type="submit">Save settings</button></div>
       </fieldset>
     </form>
-    <p class="small muted">The function receives an event in the AWS SQS format (<code>Records[]</code> with <code>messageId</code>, <code>receiptHandle</code>, <code>body</code>). Messages are deleted when it succeeds; return <code>{"batchItemFailures": [{"itemIdentifier": "&lt;messageId&gt;"}]}</code> to retry only some of them.</p>
+    <p class="small muted">The function receives an event with <code>Records[]</code>, each with <code>messageId</code>, <code>receiptHandle</code>, <code>body</code> and <code>attributes</code>. Messages are deleted when it succeeds; return <code>{"batchItemFailures": [{"itemIdentifier": "&lt;messageId&gt;"}]}</code> to retry only some of them.</p>
   </div>
   {{if .CanDelete}}
   <div class="section">

@@ -265,7 +265,8 @@ func (s *Server) apiDeleteServicePort(w http.ResponseWriter, r *http.Request, o 
 // domains answer) or back on. It can be turned off only while a custom domain is verified;
 // with none left, the address answers again on its own.
 func (s *Server) setDefaultAddress(w http.ResponseWriter, r *http.Request) {
-	on := r.PostFormValue("on") != "0"
+	v := strings.ToLower(r.PostFormValue("on")) // "1"/"0" from the console, true/false from the API
+	on := v == "1" || v == "true" || v == "on"
 	var formErr string
 	o, p, sv, err, ok := s.withService(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
 		if sv.isPreview() || sv.Worker {

@@ -135,7 +135,7 @@ func (a *Agent) deliverBatch(ctx context.Context, t queueTrigger) (int, error) {
 				"messageId": id, "receiptHandle": receipt, "body": body, "md5OfBody": "",
 				"attributes": map[string]string{"ApproximateReceiveCount": strconv.Itoa(count), "SentTimestamp": strconv.FormatInt(sent.UnixMilli(), 10),
 					"ApproximateFirstReceiveTimestamp": strconv.FormatInt(firstMS, 10)},
-				"messageAttributes": ma, "eventSource": "aws:sqs", "eventSourceARN": "plat:queue:" + t.OrgSlug + ":" + t.Name, "awsRegion": a.cfg.S3Region,
+				"messageAttributes": ma, "eventSource": "platform:queue", "eventSourceARN": "plat:queue:" + t.OrgSlug + ":" + t.Name, "queue": t.Name,
 			})
 		}
 		rows.Close()
