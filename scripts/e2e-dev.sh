@@ -665,7 +665,7 @@ check "unknown product cannot be pinned (404)" "$(code_of ja -X POST "$BASE/o/$A
 COMPUTE=$(c ja "$BASE/o/$A/compute")
 if grep -q "/o/$A/p/shop/s/web\"" <<<"$COMPUTE" && grep -q "/o/$A/p/shop/s/files\"" <<<"$COMPUTE"; then ok "compute lists the services of every project"; else bad "compute list incomplete"; fi
 code_of ja "$BASE/o/$A/scope?project=nope-project&back=/o/$A/compute" >/dev/null
-check "appearance: light chosen, remembered, back to the device's setting" "$(code_of ja "$BASE/theme?set=light&back=/o/$A"):$(c ja "$BASE/o/$A" | grep -c 'data-bs-theme="light"'):$(code_of ja "$BASE/theme?set=system&back=/o/$A" >/dev/null; c ja "$BASE/o/$A" | grep -c 'data-bs-theme="light"')" "303:1:0"
+check "appearance: light chosen, remembered, back to the device's setting" "$(code_of ja "$BASE/theme?set=light&back=/o/$A"):$(c ja "$BASE/o/$A" | grep -c 'data-theme="light"'):$(code_of ja "$BASE/theme?set=system&back=/o/$A" >/dev/null; c ja "$BASE/o/$A" | grep -c 'data-theme="light"')" "303:1:0"
 check "the theme switch only goes back inside the console" "$(c ja -o /dev/null -w '%{redirect_url}' "$BASE/theme?set=dark&back=//evil.example")" "$BASE/"
 check "settings open on their own page (service, database list unaffected)" "$(code_of ja "$BASE/o/$A/p/shop/s/web/settings"):$(c ja "$BASE/o/$A/p/shop/s/web/settings" | grep -c 'id="settings"'):$(c ja "$BASE/o/$A/p/shop/s/web" | grep -c 'id="settings"')" "200:1:0"
 check "project filter narrows the compute list" "$(svc_table | grep -c "/o/$A/p/shop/s/web\"")" 0
