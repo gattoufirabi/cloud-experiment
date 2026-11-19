@@ -145,6 +145,16 @@
       <button type="submit" class="secondary">Save</button>
     </form>
   </div>
+  <div class="section" id="server-name">
+    <h2>Your own server name</h2>
+    <p class="small muted">Give the webmail and mail apps a name of your domain, such as <code>mail.{{.Domain.Domain}}</code>, instead of <code>{{.MailHost}}</code>. Its HTTPS certificate is issued automatically once its DNS record points to the platform{{with .PublicIP}} (A record to <code>{{.}}</code>){{end}}{{if .Zone}}; in your hosted zone the record is written for you{{end}}.</p>
+    <form method="post" action="{{.Org.Path}}/mail/{{.Domain.Domain}}" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="servername">
+      <span class="inline flush"><input name="label" value="{{with .Domain.ServerName}}{{trimSuffix . (printf ".%s" $.Domain.Domain)}}{{else}}mail{{end}}" size="10" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" aria-label="Server name (first part)" required><span class="muted">.{{.Domain.Domain}}</span></span>
+      <button type="submit" class="secondary">{{if .Domain.ServerName}}Change{{else}}Use this name{{end}}</button>
+    </form>
+    {{if .Domain.ServerName}}<form method="post" action="{{.Org.Path}}/mail/{{.Domain.Domain}}" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="servername"><input type="hidden" name="label" value=""><button type="submit" class="link">Back to the platform's name</button></form>{{end}}
+  </div>
   {{end}}
   <div class="section">
     <h2>Remove the domain</h2>

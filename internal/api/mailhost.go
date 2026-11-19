@@ -35,6 +35,7 @@ const minMailboxPassword = 12
 
 type mailDomain struct {
 	ID, EmailDomainID, Domain, StalwartID, CatchAll, DKIM string
+	ServerName                                            string // own name for webmail and mail apps ("" = the platform's)
 	Status                                                string // the domain's verification (email_domains.status)
 	Mailboxes                                             int
 	Created                                               time.Time
@@ -54,6 +55,22 @@ type mailbox struct {
 type mailAlias struct{ ID, LocalPart string }
 
 func (s *Server) mailHostingEnabled() bool { return s.cfg.MailHostingEnabled() }
+
+// domainWebmailURL is where this domain's mailboxes open the webmail.
+func (s *Server) domainWebmailURL(md *mailDomain) string {
+	if md.ServerName == "" {
+		return s.webmailURL()
+	}
+	u, err := url.Parse(s.cfg.BaseURL)
+	if err != nil || u.Scheme == "https" {
+		return "https://" + md.ServerName
+	}
+	host := md.ServerName
+	if p := u.Port(); p != "" {
+		host += ":" + p
+	}
+	return u.Scheme + "://" + host
+}
 
 // webmailURL is the webmail's address ("" when there is none), with the console's scheme
 // and port.
@@ -76,12 +93,12 @@ func (s *Server) mailServer() *stalwart.Client {
 	return stalwart.New(s.cfg.StalwartURL, s.cfg.StalwartAdmin)
 }
 
-const mailDomainCols = `md.id, md.email_domain_id, md.domain, coalesce(md.stalwart_id, ''), md.catch_all, md.dkim, ed.status,
+const mailDomainCols = `md.id, md.email_domain_id, md.domain, coalesce(md.stalwart_id, ''), md.catch_all, md.dkim, md.server_name, ed.status,
 	(SELECT count(*) FROM mailboxes b WHERE b.mail_domain_id = md.id)::int, md.created_at`
 
 func scanMailDomain(row pgx.Row) (*mailDomain, error) {
 	var d mailDomain
-	if err := row.Scan(&d.ID, &d.EmailDomainID, &d.Domain, &d.StalwartID, &d.CatchAll, &d.DKIM, &d.Status, &d.Mailboxes, &d.Created); err != nil {
+	if err := row.Scan(&d.ID, &d.EmailDomainID, &d.Domain, &d.StalwartID, &d.CatchAll, &d.DKIM, &d.ServerName, &d.Status, &d.Mailboxes, &d.Created); err != nil {
 		return nil, err
 	}
 	return &d, nil
@@ -278,9 +295,18 @@ func zoneDKIM(zone string) string {
 	return b.String()
 }
 
+// ClientHost is the name mail apps and the webmail use for this domain.
+func (s *Server) clientHost(md *mailDomain) string {
+	if md.ServerName != "" {
+		return md.ServerName
+	}
+	return s.cfg.MailHost()
+}
+
 // mailRecords are the DNS records a hosted mail domain needs (names relative to the domain).
 func (s *Server) mailRecords(md *mailDomain) []mailRecord {
 	host := s.cfg.MailHost()
+	client := s.clientHost(md)
 	out := []mailRecord{{dnsRecordInput{Name: "@", Type: "MX", Value: host, Priority: 10}, "delivers the domain's mail to the platform", true}}
 	if recs, _, err := parseZoneFile(md.Domain, md.DKIM); err == nil {
 		for _, in := range recs {
@@ -296,10 +322,14 @@ func (s *Server) mailRecords(md *mailDomain) []mailRecord {
 	out = append(out,
 		mailRecord{dnsRecordInput{Name: "@", Type: "TXT", Value: spf + " ~all"}, "SPF: allows the platform to send for the domain (merge it into an SPF record you already have)", true},
 		mailRecord{dnsRecordInput{Name: "_dmarc", Type: "TXT", Value: "v=DMARC1; p=none"}, "DMARC policy (keep yours if you have one)", false},
-		mailRecord{dnsRecordInput{Name: "_imaps._tcp", Type: "SRV", Value: "1 993 " + host}, "lets mail apps find the IMAP server", false},
-		mailRecord{dnsRecordInput{Name: "_submission._tcp", Type: "SRV", Value: "1 587 " + host}, "lets mail apps find the sending server", false},
-		mailRecord{dnsRecordInput{Name: "_pop3s._tcp", Type: "SRV", Value: "1 995 " + host}, "lets mail apps find the POP3 server", false},
+		mailRecord{dnsRecordInput{Name: "_imaps._tcp", Type: "SRV", Value: "1 993 " + client}, "lets mail apps find the IMAP server", false},
+		mailRecord{dnsRecordInput{Name: "_submission._tcp", Type: "SRV", Value: "1 587 " + client}, "lets mail apps find the sending server", false},
+		mailRecord{dnsRecordInput{Name: "_pop3s._tcp", Type: "SRV", Value: "1 995 " + client}, "lets mail apps find the POP3 server", false},
 	)
+	if md.ServerName != "" && s.cfg.PublicIP != "" {
+		out = append(out, mailRecord{dnsRecordInput{Name: strings.TrimSuffix(md.ServerName, "."+md.Domain), Type: "A", Value: s.cfg.PublicIP},
+			"your own server name: the webmail and mail apps use " + md.ServerName, true})
+	}
 	return out
 }
 
@@ -352,6 +382,37 @@ func (s *Server) deleteMailDomainTx(r *http.Request, tx pgx.Tx, o *orgInfo, md *
 	}
 	s.audit(r, tx, o.ID, "mail.domain_deleted", "mail-domain:"+md.Domain, nil)
 	return nil
+}
+
+var serverLabelRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
+
+// setServerNameTx gives the domain its own server name (label.domain, such as
+// mail.example.com) or removes it (label ""); its records are written again.
+func (s *Server) setServerNameTx(r *http.Request, tx pgx.Tx, o *orgInfo, md *mailDomain, label string) error {
+	label = strings.ToLower(strings.TrimSpace(label))
+	name := ""
+	if label != "" {
+		if !serverLabelRe.MatchString(label) {
+			return apiErr{http.StatusUnprocessableEntity, "server name: one word such as mail or webmail (letters, digits, dashes)"}
+		}
+		if !md.Active() {
+			return apiErr{http.StatusUnprocessableEntity, "the domain is not receiving mail yet"}
+		}
+		name = label + "." + md.Domain
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE mail_domains SET server_name = $2 WHERE id = $1`, md.ID, name); err != nil {
+		if isUniqueViolation(err) {
+			return apiErr{http.StatusConflict, name + " is already used"}
+		}
+		return err
+	}
+	md.ServerName = name
+	if _, err := s.autoMailDomainTx(r.Context(), r, tx, o, md); err != nil {
+		return err
+	}
+	s.audit(r, tx, o.ID, "mail.server_name", "mail-domain:"+md.Domain, map[string]string{"name": name})
+	_, err := tx.Exec(r.Context(), `SELECT pg_notify('deployments', '')`) // the proxy serves the name
+	return err
 }
 
 func (s *Server) setCatchAllTx(r *http.Request, tx pgx.Tx, o *orgInfo, md *mailDomain, local string) error {
@@ -706,7 +767,8 @@ func (s *Server) renderMailDomain(w http.ResponseWriter, r *http.Request, extra 
 		s.fillUsage(r.Context(), boxes)
 	}
 	d := data{"Org": o, "Domain": md, "Mailboxes": boxes, "Records": s.mailRecords(md), "Zone": zone, "ForeignMX": foreignMX,
-		"MailHost": s.cfg.MailHost(), "CanEdit": model.RoleAtLeast(o.Role, "developer"), "MinPassword": minMailboxPassword, "Webmail": s.webmailURL()}
+		"MailHost": s.clientHost(md), "CanEdit": model.RoleAtLeast(o.Role, "developer"), "MinPassword": minMailboxPassword, "Webmail": s.domainWebmailURL(md),
+		"PublicIP": s.cfg.PublicIP}
 	for k, v := range extra {
 		d[k] = v
 	}
@@ -808,6 +870,15 @@ func (s *Server) mailAction(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			msg = "Catch-all saved."
+		case "servername":
+			if err := s.setServerNameTx(r, tx, o, md, r.PostFormValue("label")); err != nil {
+				return err
+			}
+			if md.ServerName == "" {
+				msg = "Back to the platform's server name."
+			} else {
+				msg = md.ServerName + " saved. Once its DNS record points here, its certificate is issued within minutes; then the webmail and mail apps use it."
+			}
 		case "remove":
 			if r.PostFormValue("confirm") != md.Domain {
 				return apiErr{http.StatusUnprocessableEntity, "type the domain to remove it"}
@@ -844,12 +915,13 @@ func (s *Server) mailAction(w http.ResponseWriter, r *http.Request) {
 // ---------- API ----------
 
 type apiMailDomain struct {
-	Domain    string        `json:"domain"`
-	Status    string        `json:"status"` // pending (verify the sending domain), active
-	Mailboxes int           `json:"mailboxes"`
-	CatchAll  string        `json:"catch_all,omitempty"`
-	Records   []apiMailDNS  `json:"dns_records"`
-	Settings  apiMailClient `json:"client_settings"`
+	Domain     string        `json:"domain"`
+	Status     string        `json:"status"` // pending (verify the sending domain), active
+	Mailboxes  int           `json:"mailboxes"`
+	CatchAll   string        `json:"catch_all,omitempty"`
+	ServerName string        `json:"server_name,omitempty"`
+	Records    []apiMailDNS  `json:"dns_records"`
+	Settings   apiMailClient `json:"client_settings"`
 }
 
 type apiMailDNS struct {
@@ -877,7 +949,8 @@ func (s *Server) toAPIMailDomain(md *mailDomain) apiMailDomain {
 	for _, m := range s.mailRecords(md) {
 		out.Records = append(out.Records, apiMailDNS{m.FQDN(md.Domain), m.Type, m.Value, m.Priority, m.Purpose})
 	}
-	h := s.cfg.MailHost()
+	h := s.clientHost(md)
+	out.ServerName = md.ServerName
 	out.Settings = apiMailClient{IMAP: h + ":993 (TLS)", POP3: h + ":995 (TLS)", SMTP: h + ":587 (STARTTLS)"}
 	return out
 }
@@ -1134,4 +1207,23 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+func (s *Server) apiSetServerName(w http.ResponseWriter, r *http.Request, o *orgInfo) {
+	var in struct {
+		Name string `json:"name"` // the label, such as "mail"; empty: the platform's name
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	var out apiMailDomain
+	if s.apiMailDomainTx(w, r, o, func(tx pgx.Tx, md *mailDomain) error {
+		if err := s.setServerNameTx(r, tx, o, md, strings.TrimSuffix(strings.ToLower(in.Name), "."+md.Domain)); err != nil {
+			return err
+		}
+		out = s.toAPIMailDomain(md)
+		return nil
+	}) {
+		writeJSON(w, out)
+	}
 }

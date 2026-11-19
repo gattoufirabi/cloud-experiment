@@ -2,13 +2,13 @@
 <div class="login">
   <div class="glow" aria-hidden="true"></div>
   <a class="brand big" href="/"><img class="brand-logo" src="/static/brand/logo-mark-96.png" alt="" width="40" height="40">{{.Product}}<span class="brand-tag">mail</span></a>
-  <h1>Sign in to your mailbox</h1>
+  <h1>{{with .Domain}}{{.}} mail{{else}}Sign in to your mailbox{{end}}</h1>
   <p class="sub">Use your full email address and the password of your mailbox.</p>
   {{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}
   {{with .Err}}<p class="flash err" role="alert">{{.}}</p>{{end}}
   <form method="post" action="/login" class="stack">
     <input type="hidden" name="next" value="{{.Next}}">
-    <label>Email address<input name="email" type="email" value="{{.Email}}" autocomplete="username" required autofocus placeholder="you@example.com"></label>
+    <label>Email address<input name="email" type="email" value="{{.Email}}" autocomplete="username" required autofocus placeholder="you@{{with .Domain}}{{.}}{{else}}example.com{{end}}"></label>
     <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
     <button type="submit" class="cta">Sign in <span aria-hidden="true">→</span></button>
   </form>

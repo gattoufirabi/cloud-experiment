@@ -251,6 +251,7 @@ services:
     command: ["webmail"]
     environment:
       STALWART_URL: http://stalwart:8080
+      WEBMAIL_HOST: webmail.localhost
       BASE_URL: http://console.localhost:8088
 
   # Hosted mailboxes. Dev ports: SMTP 2525, submission 2588, IMAP 2993, POP3 2995

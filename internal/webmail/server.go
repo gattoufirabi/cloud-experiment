@@ -40,6 +40,7 @@ type Config struct {
 	CookieSecure bool
 	ConsoleURL   string // shown on the sign-in page ("" hides it)
 	ProductName  string // the name people see ("Staysa Cloud")
+	PlatformHost string // the platform's webmail name; any other name is a domain's own (mail.example.com)
 }
 
 const (
@@ -383,6 +384,13 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, sta
 	d["Here"] = r.URL.RequestURI()
 	d["Console"] = s.cfg.ConsoleURL
 	d["Product"] = s.cfg.ProductName
+	host := strings.ToLower(r.Host)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if s.cfg.PlatformHost != "" && host != strings.ToLower(s.cfg.PlatformHost) && strings.Count(host, ".") >= 2 {
+		d["Domain"] = host[strings.Index(host, ".")+1:] // mail.example.com: the webmail of example.com
+	}
 	if d["Product"] == "" {
 		d["Product"] = "Mail"
 	}

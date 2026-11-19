@@ -419,13 +419,24 @@ func (c *Client) Setup(ctx context.Context, hostname string) (restart bool, err 
 	return err == nil, err
 }
 
-// SetCertificate installs a PEM certificate and key as the server's default (replacing
-// the previous one) and reloads TLS.
-func (c *Client) SetCertificate(ctx context.Context, certPEM, keyPEM string) error {
-	var old []struct {
-		ID string `json:"id"`
-	}
-	if err := c.get(ctx, "Certificate", nil, []string{"id"}, &old); err != nil {
+// Cert is a certificate installed on the server.
+type Cert struct {
+	ID    string          `json:"id"`
+	Names map[string]bool `json:"subjectAlternativeNames"`
+}
+
+// Certificates lists the installed certificates with their names.
+func (c *Client) Certificates(ctx context.Context) ([]Cert, error) {
+	var out []Cert
+	err := c.get(ctx, "Certificate", nil, []string{"id", "subjectAlternativeNames"}, &out)
+	return out, err
+}
+
+// SetCertificate installs a PEM certificate and key for host, replacing the previous
+// certificate for that name; the default one also serves clients that send no name.
+func (c *Client) SetCertificate(ctx context.Context, host, certPEM, keyPEM string, makeDefault bool) error {
+	old, err := c.Certificates(ctx)
+	if err != nil {
 		return err
 	}
 	id, err := c.set(ctx, "Certificate", map[string]any{"create": map[string]any{"new": map[string]any{
@@ -435,15 +446,45 @@ func (c *Client) SetCertificate(ctx context.Context, certPEM, keyPEM string) err
 	if err != nil {
 		return err
 	}
-	if _, err := c.set(ctx, "SystemSettings", map[string]any{"update": map[string]any{"singleton": map[string]any{"defaultCertificateId": id}}}); err != nil {
+	if makeDefault {
+		if _, err := c.set(ctx, "SystemSettings", map[string]any{"update": map[string]any{"singleton": map[string]any{"defaultCertificateId": id}}}); err != nil {
+			return err
+		}
+	}
+	var stale []string
+	for _, o := range old {
+		if o.Names[host] {
+			stale = append(stale, o.ID)
+		}
+	}
+	if len(stale) > 0 {
+		_, _ = c.set(ctx, "Certificate", map[string]any{"destroy": stale})
+	}
+	return c.action(ctx, "ReloadTlsCertificates")
+}
+
+// DropCertificates removes the certificates of names no longer used (keep lists the
+// names that stay); the default certificate is never removed.
+func (c *Client) DropCertificates(ctx context.Context, keep map[string]bool, defaultHost string) error {
+	certs, err := c.Certificates(ctx)
+	if err != nil {
 		return err
 	}
-	if len(old) > 0 {
-		ids := make([]string, len(old))
-		for i, o := range old {
-			ids[i] = o.ID
+	var stale []string
+	for _, cert := range certs {
+		used := cert.Names[defaultHost] || len(cert.Names) == 0
+		for n := range cert.Names {
+			used = used || keep[n]
 		}
-		_, _ = c.set(ctx, "Certificate", map[string]any{"destroy": ids})
+		if !used {
+			stale = append(stale, cert.ID)
+		}
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+	if _, err := c.set(ctx, "Certificate", map[string]any{"destroy": stale}); err != nil {
+		return err
 	}
 	return c.action(ctx, "ReloadTlsCertificates")
 }

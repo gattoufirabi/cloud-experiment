@@ -64,7 +64,7 @@ func main() {
 		}
 		if cfg.StalwartURL == "" {
 			err = fmt.Errorf("STALWART_URL is not set")
-		} else if ws, err = webmail.New(webmail.Config{Listen: listen, MailURL: cfg.StalwartURL, CookieSecure: cfg.CookieSecure, ConsoleURL: cfg.BaseURL, ProductName: cfg.ProductName}, slog.Default()); err == nil {
+		} else if ws, err = webmail.New(webmail.Config{Listen: listen, MailURL: cfg.StalwartURL, CookieSecure: cfg.CookieSecure, ConsoleURL: cfg.BaseURL, ProductName: cfg.ProductName, PlatformHost: cfg.WebmailHost}, slog.Default()); err == nil {
 			err = ws.Run(ctx)
 		}
 	case "healthcheck":

@@ -167,7 +167,9 @@ func (a *Agent) syncCaddy(ctx context.Context, force bool) {
 	a.mu.Lock()
 	a.hostIndex = idx
 	a.mu.Unlock()
-	body, err := json.Marshal(BuildCaddyConfig(a.cfg, routes)["apps"])
+	conf := BuildCaddyConfig(a.cfg, routes)
+	addMailServerNames(conf, a.cfg, a.loadMailServerNames(ctx))
+	body, err := json.Marshal(conf["apps"])
 	if err != nil {
 		a.log.Error("marshal caddy config", "err", err)
 		return
@@ -437,4 +439,48 @@ func s3ServiceHost(cfg config.Config) string {
 		u = u[i+3:]
 	}
 	return strings.TrimRight(u, "/")
+}
+
+// loadMailServerNames returns the own server names of active mail domains.
+func (a *Agent) loadMailServerNames(ctx context.Context) []string {
+	if a.cfg.WebmailHost == "" && a.cfg.StalwartURL == "" {
+		return nil
+	}
+	rows, err := a.pool.Query(ctx, `SELECT server_name FROM mail_server_names() ORDER BY 1`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if rows.Scan(&n) == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// addMailServerNames serves mail domains' own names: the webmail answers there, and the
+// proxy keeps a certificate for each (the agent also installs it on the mail server, for
+// IMAP, POP3 and SMTP under the same name).
+func addMailServerNames(conf obj, cfg config.Config, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	apps := conf["apps"].(obj)
+	server := apps["http"].(obj)["servers"].(obj)["main"].(obj)
+	rs, _ := server["routes"].([]any)
+	route := obj{
+		"match":    []any{obj{"host": names}},
+		"handle":   []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.WebmailUpstream}}}},
+		"terminal": true,
+	}
+	server["routes"] = append([]any{route}, rs...)
+	if tlsApp, ok := apps["tls"].(obj); ok {
+		auto := tlsApp["automation"].(obj)
+		pols := auto["policies"].([]any)
+		issuer := pols[0].(obj)["issuers"]
+		auto["policies"] = append([]any{obj{"subjects": names, "issuers": issuer}}, pols...)
+	}
 }

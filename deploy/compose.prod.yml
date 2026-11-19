@@ -223,6 +223,7 @@ services:
     command: ["webmail"]
     environment:
       STALWART_URL: ${STALWART_URL:-http://stalwart:8080}
+      WEBMAIL_HOST: ${WEBMAIL_HOST:-}
       COOKIE_SECURE: "true"
       BASE_URL: https://${CONSOLE_HOST}
     deploy: { resources: { limits: { memory: 256M } } }

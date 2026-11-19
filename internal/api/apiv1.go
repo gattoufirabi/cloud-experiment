@@ -186,6 +186,7 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("POST "+md+"/activate", s.apiAuth("developer", s.apiActivateMailDomain))
 	m.HandleFunc("DELETE "+md, s.apiAuth("developer", s.apiDeleteMailDomain))
 	m.HandleFunc("PUT "+md+"/catch-all", s.apiAuth("developer", s.apiSetCatchAll))
+	m.HandleFunc("PUT "+md+"/server-name", s.apiAuth("developer", s.apiSetServerName))
 	m.HandleFunc("GET "+md+"/mailboxes", s.apiAuth("viewer", s.apiMailboxes))
 	m.HandleFunc("POST "+md+"/mailboxes", s.apiAuth("developer", s.apiAddMailbox))
 	m.HandleFunc("PATCH "+md+"/mailboxes/{mailbox}", s.apiAuth("developer", s.apiUpdateMailbox))

@@ -625,6 +625,7 @@ func parseTemplates() (map[string]*template.Template, error) {
 		"engineName": engineName,
 		"bytes":      humanBytes,
 		"icon":       icon,
+		"trimSuffix": strings.TrimSuffix,
 		"runtime":    runtimeLabel,
 		"list":       func(xs ...int) []int { return xs },
 		"contains":   strings.Contains,

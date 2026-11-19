@@ -25,6 +25,7 @@ func (a *Agent) mailHostLoop(ctx context.Context) {
 	}
 	ms := stalwart.New(a.cfg.StalwartURL, a.cfg.StalwartAdmin)
 	var certMod time.Time
+	nameMods := map[string]time.Time{} // own server names of mail domains -> installed certificate's date
 	setup := false
 	tick := time.NewTicker(5 * time.Minute)
 	defer tick.Stop()
@@ -39,13 +40,15 @@ func (a *Agent) mailHostLoop(ctx context.Context) {
 				if err := a.dk.ContainerStop(ctx, stalwartContainer, 20); err == nil {
 					_ = a.dk.ContainerStart(ctx, stalwartContainer)
 				}
-				certMod = time.Time{} // and install the certificate again once it is back
+				certMod = time.Time{} // and install the certificates again once it is back
+				clear(nameMods)
 			default:
 				setup = true
 			}
 		}
 		if setup {
 			certMod = a.mailCertificate(ctx, ms, certMod)
+			a.serverNameCertificates(ctx, ms, nameMods)
 			a.reconcileMailDomains(ctx, ms)
 			a.allowWebmail(ctx, ms)
 		}
@@ -88,7 +91,7 @@ func (a *Agent) mailCertificate(ctx context.Context, ms *stalwart.Client, last t
 		a.log.Warn("mail certificate: cannot read it", "path", crt)
 		return last
 	}
-	if err := ms.SetCertificate(ctx, string(cert), string(key)); err != nil {
+	if err := ms.SetCertificate(ctx, host, string(cert), string(key), true); err != nil {
 		a.log.Warn("mail certificate: install", "err", err)
 		return last
 	}
@@ -172,5 +175,62 @@ func (a *Agent) allowWebmail(ctx context.Context, ms *stalwart.Client) {
 		a.log.Warn("mail server: allow the webmail", "err", err)
 	} else if changed {
 		a.log.Info("mail server: webmail address allowed", "addresses", ips)
+	}
+}
+
+// certFile finds the proxy's certificate for host (its .crt; the .key is beside it).
+func (a *Agent) certFile(host string) (string, time.Time) {
+	var crt string
+	_ = filepath.WalkDir(a.cfg.MailCertDir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == host+".crt" {
+			crt = p
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if crt == "" {
+		return "", time.Time{}
+	}
+	st, err := os.Stat(crt)
+	if err != nil {
+		return "", time.Time{}
+	}
+	return crt, st.ModTime()
+}
+
+// serverNameCertificates installs on the mail server the certificate the proxy obtained
+// for each mail domain's own server name (IMAP, POP3 and SMTP answer under that name),
+// again when it is renewed, and removes those of names no longer used.
+func (a *Agent) serverNameCertificates(ctx context.Context, ms *stalwart.Client, mods map[string]time.Time) {
+	if a.cfg.MailCertDir == "" {
+		return
+	}
+	names := a.loadMailServerNames(ctx)
+	keep := map[string]bool{}
+	for _, n := range names {
+		keep[n] = true
+		crt, mod := a.certFile(n)
+		if crt == "" || !mod.After(mods[n]) {
+			continue // not issued yet (the DNS may not point here yet), or unchanged
+		}
+		cert, err1 := os.ReadFile(crt)
+		key, err2 := os.ReadFile(strings.TrimSuffix(crt, ".crt") + ".key")
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if err := ms.SetCertificate(ctx, n, string(cert), string(key), false); err != nil {
+			a.log.Warn("mail certificate: install", "host", n, "err", err)
+			continue
+		}
+		mods[n] = mod
+		a.log.Info("mail certificate installed", "host", n)
+	}
+	for n := range mods {
+		if !keep[n] {
+			delete(mods, n)
+		}
+	}
+	if err := ms.DropCertificates(ctx, keep, a.cfg.MailHost()); err != nil {
+		a.log.Warn("mail certificates: clean up", "err", err)
 	}
 }
