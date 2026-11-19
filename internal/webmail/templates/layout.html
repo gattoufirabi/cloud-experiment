@@ -17,14 +17,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{with .Title}}{{.}} · {{end}}{{.Product}} Mail</title>
-  <link rel="stylesheet" href="/static/webmail.css?v=1">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
+  <link rel="stylesheet" href="/static/webmail.css?v=2">
   <script src="/static/webmail.js?v=1" defer></script>
 </head>
 <body>
 {{if .Me}}
 <div class="app">
   <header class="bar">
-    <a class="brand" href="/f/inbox" aria-label="Inbox"><span class="mark" aria-hidden="true"></span>{{.Product}}<span class="brand-tag">mail</span></a>
+    <a class="brand" href="/f/inbox" aria-label="Inbox"><img class="brand-logo" src="/static/brand/logo-mark-96.png" alt="" width="28" height="28">{{.Product}}<span class="brand-tag">mail</span></a>
     <form class="search" method="get" action="/search" role="search">{{template "i-search"}}<input name="q" type="search" value="{{.Q}}" placeholder="Search mail" aria-label="Search mail"></form>
     <div class="bar-right">
       <details class="menu">

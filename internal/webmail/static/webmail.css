@@ -53,7 +53,7 @@ code, pre, kbd, textarea { font-family: var(--mono); }
 .brand.big { font-size: 20px; margin-bottom: 28px; }
 .brand-tag { font: 400 11px/1 var(--mono); padding: 3px 6px; border-radius: 2px; color: var(--text-3); box-shadow: 0 0 0 1px var(--border-strong) inset; }
 .bar .brand { white-space: nowrap; }
-.brand.big .mark { width: 34px; height: 34px; border-radius: 9px; }
+.brand-logo { flex: none; filter: drop-shadow(0 0 10px rgba(240, 106, 64, .18)); }
 
 /* controls */
 button, .btn, .cta { font: 500 14px/1 var(--font); letter-spacing: -0.008em; border: 0; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none; }

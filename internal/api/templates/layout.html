@@ -56,7 +56,7 @@
 <aside class="navbar navbar-vertical navbar-expand-lg side-nav side-admin" aria-label="Admin panel">
   <div class="container-fluid">
     <button class="navbar-toggler" type="button" data-nav-toggle aria-controls="sidebar-menu" aria-expanded="false" aria-label="Show the menu"><span class="navbar-toggler-icon"></span></button>
-    <a class="navbar-brand brand" href="/operator" aria-label="Admin panel home"><span class="brand-name">{{.Product}}</span><span class="admin-tag">admin</span></a>
+    <a class="navbar-brand brand" href="/operator" aria-label="Admin panel home"><img class="brand-logo" src="/static/brand/logo-mark-96.png" alt="" width="28" height="28"><span class="brand-name">{{.Product}}</span><span class="admin-tag">admin</span></a>
     <div class="collapse navbar-collapse" id="sidebar-menu">
       <nav aria-label="Admin panel sections">
         <div class="nav-section">Platform</div>
@@ -122,7 +122,7 @@
 <aside class="navbar navbar-vertical navbar-expand-lg side-nav" aria-label="Main menu">
   <div class="container-fluid">
     <button class="navbar-toggler" type="button" data-nav-toggle aria-controls="sidebar-menu" aria-expanded="false" aria-label="Show the menu"><span class="navbar-toggler-icon"></span></button>
-    <a class="navbar-brand brand" href="{{.Org.Path}}" aria-label="Console home"><span class="brand-name">{{.Product}}</span></a>
+    <a class="navbar-brand brand" href="{{.Org.Path}}" aria-label="Console home"><img class="brand-logo" src="/static/brand/logo-mark-96.png" alt="" width="28" height="28"><span class="brand-name">{{.Product}}</span></a>
     <div class="collapse navbar-collapse" id="sidebar-menu">
       <ul class="navbar-nav">
         <li class="nav-item"><a class="nav-link{{if not .Area}} active{{end}}" href="{{.Org.Path}}"><span class="nav-link-icon">{{icon "home"}}</span><span class="nav-link-title">Console home</span></a></li>
@@ -207,6 +207,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   {{if .Refresh}}<meta http-equiv="refresh" content="3">{{end}}
   <title>{{block "title" .}}{{.Product}}{{end}} · {{.Product}}</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+  <link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
   <link rel="stylesheet" href="/static/app.css?v={{.V}}">
   <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true,"historyCacheSize":0}'>
   <script src="/static/htmx.min.js?v={{.V}}" defer></script>
@@ -277,7 +279,7 @@
 <div class="page page-single">
   <header class="navbar d-print-none topbar topbar-single">
     <div class="container-xl topbar-in">
-      <a class="brand" href="/" aria-label="Home"><span class="brand-name">{{.Product}}</span></a>
+      <a class="brand" href="/" aria-label="Home"><img class="brand-logo" src="/static/brand/logo-mark-96.png" alt="" width="28" height="28"><span class="brand-name">{{.Product}}</span></a>
       <div class="top-right">
         <a class="navlink" href="/docs/user">Docs</a>
         {{template "usermenu" .}}
