@@ -130,8 +130,11 @@ type Config struct {
 	WebmailHost, WebmailUpstream string
 	// ProductName is the name people see (console, webmail, emails): PRODUCT_NAME.
 	ProductName string
-	GarageAdminURL               string
-	GarageAdminToken             string
+	// OrphanVolumeDays: how long the volumes of a deleted service or database are kept
+	// (ORPHAN_VOLUME_DAYS, default 7) before the agent removes them.
+	OrphanVolumeDays int
+	GarageAdminURL   string
+	GarageAdminToken string
 
 	// OIDCAllowInsecure lets single sign-on use http:// and private addresses (development
 	// only, for a local test provider).
@@ -298,6 +301,7 @@ func Load() Config {
 		MailCertDir:      env("MAIL_CERT_DIR", ""),
 		WebmailHost:      env("WEBMAIL_HOST", ""),
 		ProductName:      env("PRODUCT_NAME", "Staysa Cloud"),
+		OrphanVolumeDays: envInt("ORPHAN_VOLUME_DAYS", 7),
 		WebmailUpstream:  env("WEBMAIL_UPSTREAM", "webmail:8090"),
 		GarageAdminURL:   strings.TrimRight(env("GARAGE_ADMIN_URL", "http://garage:3903"), "/"),
 		GarageAdminToken: env("GARAGE_ADMIN_TOKEN", ""),

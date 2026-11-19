@@ -154,3 +154,50 @@ func (c *Client) Info(ctx context.Context) (*Info, error) {
 	err := c.call(ctx, http.MethodGet, "/info", nil, nil, &i)
 	return &i, err
 }
+
+// VolumeUsage is a volume's size and how many containers use it.
+type VolumeUsage struct {
+	Size     int64
+	RefCount int
+}
+
+// VolumeUsages lists every volume with its size and use count.
+func (c *Client) VolumeUsages(ctx context.Context) (map[string]VolumeUsage, error) {
+	var out struct {
+		Volumes []struct {
+			Name      string `json:"Name"`
+			UsageData struct {
+				Size     int64 `json:"Size"`
+				RefCount int   `json:"RefCount"`
+			} `json:"UsageData"`
+		} `json:"Volumes"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/system/df", url.Values{"type": {"volume"}}, nil, &out); err != nil {
+		return nil, err
+	}
+	m := make(map[string]VolumeUsage, len(out.Volumes))
+	for _, v := range out.Volumes {
+		m[v.Name] = VolumeUsage{Size: v.UsageData.Size, RefCount: v.UsageData.RefCount}
+	}
+	return m, nil
+}
+
+// BuildCachePrune removes the least recently used build cache entries beyond keepBytes; it
+// returns the bytes freed.
+func (c *Client) BuildCachePrune(ctx context.Context, keepBytes int64) (int64, error) {
+	var out struct {
+		SpaceReclaimed int64 `json:"SpaceReclaimed"`
+	}
+	err := c.call(ctx, http.MethodPost, "/build/prune", url.Values{"keep-storage": {fmt.Sprint(keepBytes)}}, nil, &out)
+	return out.SpaceReclaimed, err
+}
+
+// ImagePruneDangling removes untagged images no container uses; it returns the bytes freed.
+func (c *Client) ImagePruneDangling(ctx context.Context) (int64, error) {
+	f, _ := json.Marshal(map[string][]string{"dangling": {"true"}})
+	var out struct {
+		SpaceReclaimed int64 `json:"SpaceReclaimed"`
+	}
+	err := c.call(ctx, http.MethodPost, "/images/prune", url.Values{"filters": {string(f)}}, nil, &out)
+	return out.SpaceReclaimed, err
+}

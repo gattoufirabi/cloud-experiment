@@ -175,6 +175,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.buildLoop(ctx)
 	go a.registryCleanLoop(ctx)
 	go a.diskLoop(ctx)
+	go a.janitorLoop(ctx)
 	go a.nodeLoop(ctx)
 	go a.jobLoop(ctx)
 	go a.storageLoop(ctx)

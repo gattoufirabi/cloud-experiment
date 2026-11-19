@@ -17,7 +17,7 @@ All platform services run as containers on one server. Only the agent can change
 | stalwart | Mail server of hosted mailboxes: SMTP 25 (incoming), 587 (submission), IMAP 993, POP3 995, spam filter, DKIM signing. Its admin API (8080) is reached only by the API and the agent on the compose network. | Unprivileged (uid 2000), may bind ports below 1024; data in `/srv/platform/stalwart`. |
 | agent | Re-checks every spec, deploys, updates Caddy, runs scans and backups in short-lived containers, health probes, alerts. | Root and Docker socket; no open port. |
 
-Client applications run under gVisor, each project on its own network (a /24 from `10.208.0.0/12`), with no route to other clients, private ranges or the host. Managed PostgreSQL and Redis databases are containers on the same project networks (`pd-<id>`), with their data in `pvdb-<id>` volumes and their dumps in `pbdb-<id>` volumes; a deleted database's volumes are kept until you remove them.
+Client applications run under gVisor, each project on its own network (a /24 from `10.208.0.0/12`), with no route to other clients, private ranges or the host. Managed PostgreSQL and Redis databases are containers on the same project networks (`pd-<id>`), with their data in `pvdb-<id>` volumes and their dumps in `pbdb-<id>` volumes; a deleted database's volumes are kept for `ORPHAN_VOLUME_DAYS` (7 by default), then the agent removes them.
 
 ## Install a server
 
@@ -192,6 +192,8 @@ Usage is metered by the agent every minute (allocated CPU and memory of live ser
 
 ## Upgrades and maintenance
 
+**Disk space** is reclaimed by the agent once a day on each server: build caches of deleted services at once, data volumes of deleted services and databases after `ORPHAN_VOLUME_DAYS`, Docker's build cache beyond the 4 GB used most recently, and untagged images. A volume a container uses is never touched. `docker system df` shows what is left.
+
 Client containers keep running while the platform services restart. Only an update of Caddy pauses client traffic, for up to a minute until the agent reconnects it.
 
 1. Back up the database.
@@ -232,6 +234,7 @@ Clients' alerts cover their applications; watch the server and the platform serv
 | COOKIE_SECURE | false | true in production. |
 | STALWART_ADMIN_PASSWORD | — | Admin password of the mail server (hosted mailboxes); the API and the agent use it on the internal network. Required by the production compose file. |
 | STALWART_URL | http://stalwart:8080 | The mail server's admin API. Empty turns hosted mailboxes off. |
+| ORPHAN_VOLUME_DAYS | 7 | Days the data volumes of a deleted service or database are kept before the agent removes them (a deletion can be undone by an operator until then). |
 | WEBMAIL_HOST | — | Public name of the webmail (for example webmail.example.com). Empty turns it off. |
 
 ## Admin troubleshooting
