@@ -12,14 +12,14 @@
 {{end}}
 
 <nav class="tabs" role="tablist" aria-label="Function sections" data-default="{{.Tab}}">
-  <a role="tab" href="#code">Code</a>
-  <a role="tab" href="#test">Test</a>
-  <a role="tab" href="#configuration">Configuration</a>
-  <a role="tab" href="#triggers">Triggers</a>
-  <a role="tab" href="#monitor">Monitor</a>
+  <a role="tab" href="{{.PagePath}}#code">Code</a>
+  <a role="tab" href="{{.PagePath}}#test">Test</a>
+  <a role="tab" href="{{.PagePath}}/settings#configuration">Configuration</a>
+  <a role="tab" href="{{.PagePath}}#triggers">Triggers</a>
+  <a role="tab" href="{{.PagePath}}#monitor">Monitor</a>
 </nav>
 
-<section class="pane" id="code" role="tabpanel" aria-label="Code">
+{{if ne .View "settings"}}<section class="pane" id="code" role="tabpanel" aria-label="Code">
   <p class="help"><a href="/docs/user#functions" target="_blank" rel="noopener">Guide: functions ↗</a></p>
   <div class="section">
     <div class="table-tools"><h2><code>{{.MainFile}}</code></h2><span class="muted small">{{len .Files}} file{{if ne (len .Files) 1}}s{{end}} · {{bytes (int64 .CodeSize)}} zipped</span></div>
@@ -43,9 +43,9 @@
     </form>
   </div>
   {{end}}
-</section>
+</section>{{end}}
 
-<section class="pane" id="test" role="tabpanel" aria-label="Test">
+{{if ne .View "settings"}}<section class="pane" id="test" role="tabpanel" aria-label="Test">
   <div class="section">
     <h2>Test event</h2>
     {{with .TestError}}<p class="flash err">{{.}}</p>{{end}}
@@ -65,9 +65,9 @@
     {{if .Log}}<pre class="log">{{.Log}}</pre>{{else}}<p class="small muted">The function printed nothing.</p>{{end}}
   </div>
   {{end}}
-</section>
+</section>{{end}}
 
-<section class="pane" id="triggers" role="tabpanel" aria-label="Triggers">
+{{if ne .View "settings"}}<section class="pane" id="triggers" role="tabpanel" aria-label="Triggers">
   <div class="section">
     <h2>Bucket events</h2>
     <p class="small muted">Runs the function, in the background, when an object is uploaded to or deleted from a bucket (S3 event format: <code>event.Records[0].s3.object.key</code>). Batch deletes are not reported.</p>
@@ -100,9 +100,9 @@
     {{if $.Triggers.HasWebhook}}<form method="post" action="{{$.Path}}/webhook" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="remove" value="1"><button class="link" type="submit">remove the webhook</button></form>{{end}}
     {{end}}
   </div>
-</section>
+</section>{{end}}
 
-<section class="pane" id="configuration" role="tabpanel" aria-label="Configuration">
+{{if eq .View "settings"}}<section class="pane" id="configuration" role="tabpanel" aria-label="Configuration">
   <div class="section">
     <h2>Function URL</h2>
     <p class="small">{{if .Function.URLEnabled}}<a href="{{.URL}}" target="_blank" rel="noopener"><code>{{.URL}}</code></a>{{else}}<code class="muted">{{.URL}}</code> <span class="muted">(off)</span>{{end}}</p>
@@ -147,9 +147,9 @@
     </form>
   </div>
   {{end}}
-</section>
+</section>{{end}}
 
-<section class="pane" id="monitor" role="tabpanel" aria-label="Monitor">
+{{if ne .View "settings"}}<section class="pane" id="monitor" role="tabpanel" aria-label="Monitor">
   {{with .Stats}}
   <div class="stats">
     <div class="stat"><span>Invocations (24 h)</span><b>{{.Count}}</b></div>
@@ -176,5 +176,5 @@
     </div>
     {{else}}<p class="small muted">No invocations yet. Use the Test tab, the function URL or the API.</p>{{end}}
   </div>
-</section>
+</section>{{end}}
 {{end}}

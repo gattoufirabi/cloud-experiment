@@ -3,13 +3,13 @@
 <div class="head"><h1>{{.Bucket.Name}}</h1></div>
 <p class="lede"><code>{{.Bucket.FullName}}</code> · {{.Bucket.Objects}} objects · {{printf "%.1f" .Bucket.UsedMB}} of {{.Bucket.QuotaMB}} MB · {{if .Bucket.Website}}public website{{else}}private{{end}}</p>
 
-<nav class="tabs" role="tablist" aria-label="Bucket sections">
-  <a role="tab" href="#objects">Objects</a>
-  <a role="tab" href="#connect">Connect</a>
-  <a role="tab" href="#settings">Settings</a>
+<nav class="tabs"{{if eq .View "settings"}} data-default="settings"{{end}} role="tablist" aria-label="Bucket sections">
+  <a role="tab" href="{{.PagePath}}#objects">Objects</a>
+  <a role="tab" href="{{.PagePath}}#connect">Connect</a>
+  <a role="tab" href="{{.PagePath}}/settings#settings">Settings</a>
 </nav>
 
-<section class="pane" id="objects" role="tabpanel" aria-label="Objects">
+{{if ne .View "settings"}}<section class="pane" id="objects" role="tabpanel" aria-label="Objects">
   <p class="help"><a href="/docs/user#object-storage" target="_blank" rel="noopener">Guide: object storage ↗</a></p>
   <div class="section">
     <h2>{{if .Prefix}}<a href="{{.Path}}#objects">{{.Bucket.Name}}</a> / {{.Prefix}}{{else}}Objects{{end}}</h2>
@@ -49,9 +49,9 @@
     <p class="small muted">Up to {{.MaxUploadMB}} MB from the console; use the S3 API or <code>aws s3 cp</code> for larger files and folders.</p>
   </div>
   {{end}}
-</section>
+</section>{{end}}
 
-<section class="pane" id="connect" role="tabpanel" aria-label="Connect">
+{{if ne .View "settings"}}<section class="pane" id="connect" role="tabpanel" aria-label="Connect">
   <div class="section">
     <h2>Connection details</h2>
     <div class="panel">
@@ -87,9 +87,9 @@
     </table>
     {{else}}<p class="small muted">No access key reaches this bucket yet. Create one on the <a href="{{.Org.Path}}/storage#keys">Access keys</a> tab.</p>{{end}}
   </div>
-</section>
+</section>{{end}}
 
-<section class="pane" id="settings" role="tabpanel" aria-label="Settings">
+{{if eq .View "settings"}}<section class="pane" id="settings" role="tabpanel" aria-label="Settings">
   <div class="section">
     <h2>Quota and website</h2>
     <form method="post" action="{{.Path}}/settings" class="form-grid">
@@ -115,5 +115,5 @@
     </form>
   </div>
   {{end}}
-</section>
+</section>{{end}}
 {{end}}

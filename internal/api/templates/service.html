@@ -7,21 +7,21 @@
 {{if .Service.PreviewName}}<p class="notice">Preview <strong>{{.Service.PreviewName}}</strong> of <a href="{{.Org.Path}}/p/{{.Project.Slug}}/s/{{.Service.ParentSlug}}#previews">{{.Service.ParentSlug}}</a>{{with .Service.Expires}}, deleted automatically {{datetime .}}{{end}}.</p>{{end}}
 <p class="lede"><code>{{if .Service.Image}}{{.Service.Image}}{{else}}no image set{{end}}</code> · {{if .Service.Worker}}worker{{else}}port {{.Service.Port}}{{end}}{{if gt .Service.Instances 1}} · {{.Service.Instances}} instances{{end}} · {{.Service.CPUMillis}} millicores · {{.Service.MemoryMB}} MB{{if .Service.VolumePath}} · folder {{.Service.VolumePath}}{{end}}</p>
 
-<nav class="tabs" role="tablist" aria-label="Service sections">
-  <a role="tab" href="#overview">Overview</a>
-  <a role="tab" href="#logs-pane">Logs</a>
-  <a role="tab" href="#settings">Settings</a>
-  {{if not .Service.Worker}}<a role="tab" href="#domains">Domains{{with .Domains}} <span class="count">{{len .}}</span>{{end}}</a>{{end}}
-  {{if not .Service.PreviewName}}<a role="tab" href="#jobs">Jobs{{with .Jobs}} <span class="count">{{len .}}</span>{{end}}</a>{{end}}
-  <a role="tab" href="#security">Security</a>
-  {{if .Service.VolumePath}}<a role="tab" href="#backups">Backups</a>{{end}}
-  <a role="tab" href="#alerts">Alerts</a>
-  {{if and .BuildsEnabled (not .Service.PreviewName)}}<a role="tab" href="#builds">Builds</a>{{end}}
-  {{if not .Service.PreviewName}}<a role="tab" href="#previews">Previews{{with .Previews}} <span class="count">{{len .}}</span>{{end}}</a>{{end}}
+<nav class="tabs"{{if eq .View "settings"}} data-default="settings"{{end}} role="tablist" aria-label="Service sections">
+  <a role="tab" href="{{.PagePath}}#overview">Overview</a>
+  <a role="tab" href="{{.PagePath}}#logs-pane">Logs</a>
+  <a role="tab" href="{{.PagePath}}/settings#settings">Settings</a>
+  {{if not .Service.Worker}}<a role="tab" href="{{.PagePath}}#domains">Domains{{with .Domains}} <span class="count">{{len .}}</span>{{end}}</a>{{end}}
+  {{if not .Service.PreviewName}}<a role="tab" href="{{.PagePath}}#jobs">Jobs{{with .Jobs}} <span class="count">{{len .}}</span>{{end}}</a>{{end}}
+  <a role="tab" href="{{.PagePath}}#security">Security</a>
+  {{if .Service.VolumePath}}<a role="tab" href="{{.PagePath}}#backups">Backups</a>{{end}}
+  <a role="tab" href="{{.PagePath}}#alerts">Alerts</a>
+  {{if and .BuildsEnabled (not .Service.PreviewName)}}<a role="tab" href="{{.PagePath}}#builds">Builds</a>{{end}}
+  {{if not .Service.PreviewName}}<a role="tab" href="{{.PagePath}}#previews">Previews{{with .Previews}} <span class="count">{{len .}}</span>{{end}}</a>{{end}}
 </nav>
 
 <!-- ============ overview ============ -->
-<section class="pane" id="overview" role="tabpanel" aria-label="Overview">
+{{if ne .View "settings"}}<section class="pane" id="overview" role="tabpanel" aria-label="Overview">
   <p class="help"><a href="/docs/user#updates-and-rollbacks" target="_blank" rel="noopener">Guide: updates and rollbacks ↗</a></p>
   {{with .Service.Ports}}
   <div class="section">
@@ -87,10 +87,10 @@
       </ul>
     </div>
   </div>
-</section>
+</section>{{end}}
 
 <!-- ============ logs ============ -->
-<section class="pane" id="logs-pane" role="tabpanel" aria-label="Logs">
+{{if ne .View "settings"}}<section class="pane" id="logs-pane" role="tabpanel" aria-label="Logs">
   <p class="help"><a href="/docs/user#logs-and-metrics" target="_blank" rel="noopener">Guide: logs and metrics ↗</a></p>
 
   <div class="section">
@@ -102,10 +102,10 @@
     </div>
     <pre id="logs" class="logs" data-url="{{.Path}}/logs.json" aria-live="polite">Loading…</pre>
   </div>
-</section>
+</section>{{end}}
 
 <!-- ============ settings ============ -->
-<section class="pane" id="settings" role="tabpanel" aria-label="Settings">
+{{if eq .View "settings"}}<section class="pane" id="settings" role="tabpanel" aria-label="Settings">
   <p class="help"><a href="/docs/user#service-settings" target="_blank" rel="noopener">Guide: service settings ↗</a></p>
 
   <div class="section">
@@ -219,10 +219,10 @@
     </form>
   </div>
   {{end}}
-</section>
+</section>{{end}}
 
 <!-- ============ domains ============ -->
-<section class="pane" id="domains" role="tabpanel" aria-label="Domains">
+{{if ne .View "settings"}}<section class="pane" id="domains" role="tabpanel" aria-label="Domains">
   <p class="help"><a href="/docs/user#custom-domains-and-https" target="_blank" rel="noopener">Guide: custom domains ↗</a></p>
 
   <div class="section">
@@ -318,10 +318,10 @@
     </form>
     {{end}}
   </div>
-</section>
+</section>{{end}}
 
 <!-- ============ security ============ -->
-<section class="pane" id="security" role="tabpanel" aria-label="Security">
+{{if ne .View "settings"}}<section class="pane" id="security" role="tabpanel" aria-label="Security">
   <p class="help"><a href="/docs/user#traffic-protection" target="_blank" rel="noopener">Guide: traffic protection ↗</a> · <a href="/docs/user#security-scanning" target="_blank" rel="noopener">security scanning ↗</a></p>
 
   <div class="section">
@@ -373,11 +373,11 @@
     <p class="small muted">The image is scanned at each deployment, on push to the registry, and every night while it runs.</p>
     {{end}}
   </div>
-</section>
+</section>{{end}}
 
 <!-- ============ backups ============ -->
 {{if .Service.VolumePath}}{{with .Backups}}
-<section class="pane" id="backups" role="tabpanel" aria-label="Backups">
+{{if ne .View "settings"}}<section class="pane" id="backups" role="tabpanel" aria-label="Backups">
   <p class="help"><a href="/docs/user#backups-and-restore" target="_blank" rel="noopener">Guide: backups and restore ↗</a></p>
 
   <div class="section">
@@ -436,11 +436,11 @@
     </table>
   </div>
   {{end}}
-</section>
+</section>{{end}}
 {{end}}{{end}}
 
 <!-- ============ alerts ============ -->
-<section class="pane" id="alerts" role="tabpanel" aria-label="Alerts">
+{{if ne .View "settings"}}<section class="pane" id="alerts" role="tabpanel" aria-label="Alerts">
   <p class="help"><a href="/docs/user#alerts" target="_blank" rel="noopener">Guide: alerts ↗</a></p>
 
   <div class="section">
@@ -469,11 +469,11 @@
     </table>
     {{else}}<p class="small muted">No incidents.</p>{{end}}
   </div>
-</section>
+</section>{{end}}
 
 <!-- ============ builds ============ -->
 {{if and .BuildsEnabled (not .Service.PreviewName)}}
-<section class="pane" id="builds" role="tabpanel" aria-label="Builds">
+{{if ne .View "settings"}}<section class="pane" id="builds" role="tabpanel" aria-label="Builds">
   <p class="help"><a href="/docs/user#builds-from-git" target="_blank" rel="noopener">Guide: builds from git ↗</a></p>
   <div class="section">
     <h2>Build from git</h2>
@@ -541,12 +541,12 @@
   </div>
   {{end}}
   {{end}}
-</section>
+</section>{{end}}
 {{end}}
 
 <!-- ============ jobs ============ -->
 {{if not .Service.PreviewName}}
-<section class="pane" id="jobs" role="tabpanel" aria-label="Jobs">
+{{if ne .View "settings"}}<section class="pane" id="jobs" role="tabpanel" aria-label="Jobs">
   <p class="help"><a href="/docs/user#scheduled-jobs" target="_blank" rel="noopener">Guide: scheduled jobs ↗</a></p>
   <div class="section">
     <p class="small muted">A job runs a command on a schedule in a fresh container made from this service's current deployment: same image, variables, secrets and private network. Times are UTC. A job never overlaps itself.</p>
@@ -607,12 +607,12 @@
     </table>
   </div>
   {{end}}
-</section>
+</section>{{end}}
 {{end}}
 
 <!-- ============ previews ============ -->
 {{if not .Service.PreviewName}}
-<section class="pane" id="previews" role="tabpanel" aria-label="Previews">
+{{if ne .View "settings"}}<section class="pane" id="previews" role="tabpanel" aria-label="Previews">
   <p class="help"><a href="/docs/user#preview-environments" target="_blank" rel="noopener">Guide: preview environments ↗</a></p>
   <div class="section">
     <h2>Preview environments</h2>
@@ -643,6 +643,6 @@
     </form>
   </div>
   {{end}}
-</section>
+</section>{{end}}
 {{end}}
 {{end}}

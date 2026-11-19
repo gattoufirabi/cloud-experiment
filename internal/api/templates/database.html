@@ -3,14 +3,14 @@
 <div class="head"><h1>{{.Database.Slug}}</h1></div>
 <p class="lede">{{.Database.Label}} · {{.Database.CPUMillis}} millicores · {{.Database.MemoryMB}} MB · {{template "status" (dbStatus .Database.Status)}}</p>
 
-<nav class="tabs" role="tablist" aria-label="Database sections">
-  <a role="tab" href="#db-overview">Overview</a>
-  <a role="tab" href="#connect">Connect</a>
-  <a role="tab" href="#db-backups">Backups</a>
-  <a role="tab" href="#db-settings">Settings</a>
+<nav class="tabs"{{if eq .View "settings"}} data-default="db-settings"{{end}} role="tablist" aria-label="Database sections">
+  <a role="tab" href="{{.PagePath}}#db-overview">Overview</a>
+  <a role="tab" href="{{.PagePath}}#connect">Connect</a>
+  <a role="tab" href="{{.PagePath}}#db-backups">Backups</a>
+  <a role="tab" href="{{.PagePath}}/settings#db-settings">Settings</a>
 </nav>
 
-<section class="pane" id="db-overview" role="tabpanel" aria-label="Overview">
+{{if ne .View "settings"}}<section class="pane" id="db-overview" role="tabpanel" aria-label="Overview">
   <p class="help"><a href="/docs/user#managed-databases" target="_blank" rel="noopener">Guide: managed databases ↗</a></p>
   <div class="section">
     <h2>Status</h2>
@@ -23,9 +23,9 @@
       <li><strong>Created</strong> {{ago .Database.CreatedAt}}</li>
     </ul>
   </div>
-</section>
+</section>{{end}}
 
-<section class="pane" id="connect" role="tabpanel" aria-label="Connect">
+{{if ne .View "settings"}}<section class="pane" id="connect" role="tabpanel" aria-label="Connect">
   <p class="help"><a href="/docs/user#managed-databases" target="_blank" rel="noopener">Guide: managed databases ↗</a></p>
   <div class="section">
     <h2>Connection details</h2>
@@ -93,9 +93,9 @@
     {{else}}<p class="small muted">Add a service to this project first.</p>{{end}}
   </div>
   {{end}}
-</section>
+</section>{{end}}
 
-<section class="pane" id="db-backups" role="tabpanel" aria-label="Backups">
+{{if ne .View "settings"}}<section class="pane" id="db-backups" role="tabpanel" aria-label="Backups">
   <p class="help"><a href="/docs/user#managed-databases" target="_blank" rel="noopener">Guide: managed databases ↗</a></p>
   {{with .Backups}}
   <div class="section">
@@ -144,9 +144,9 @@
   </div>
   {{end}}
   {{end}}
-</section>
+</section>{{end}}
 
-<section class="pane" id="db-settings" role="tabpanel" aria-label="Settings">
+{{if eq .View "settings"}}<section class="pane" id="db-settings" role="tabpanel" aria-label="Settings">
   <div class="section">
     <h2>Resources and schedule</h2>
     <p class="small muted">Changing CPU or memory restarts the database (a few seconds of downtime). Data is kept.</p>
@@ -173,5 +173,5 @@
     </form>
   </div>
   {{end}}
-</section>
+</section>{{end}}
 {{end}}

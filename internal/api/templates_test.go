@@ -41,7 +41,7 @@ func TestServicePageRendersJobsAndInstances(t *testing.T) {
 	if err := pages["service"].ExecuteTemplate(&b, "content", d); err != nil {
 		t.Fatal(err)
 	}
-	out := b.String()
+	out := b.String() + settingsPane(t, pages["service"], d) // the settings tab is a page of its own
 	for _, want := range []string{"<strong>hello</strong>", "exit 3", "3 instances", "<code>SHARED_TOKEN</code>"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("page lacks %q", want)
@@ -146,6 +146,7 @@ func TestStoragePagesRender(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	out.WriteString(settingsPane(t, pages["bucket"], data{"Org": org, "Bucket": b, "Path": "/o/acme/storage/b/uploads", "CanEdit": true, "CanDelete": true}))
 	for _, want := range []string{"key=docs%2fa%20b.txt", "prefix=docs%2fsub%2f", "2.0 KB", "https://acme-uploads.web.apps.test/", "shop/web", "Delete bucket"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("bucket page lacks %q", want)
@@ -186,9 +187,28 @@ func TestFunctionPagesRender(t *testing.T) {
 		}{3, 1, 1, nil}}); err != nil {
 		t.Fatal(err)
 	}
+	fd := data{"Org": org, "Project": proj, "Function": f, "Path": "/o/acme/p/shop/f/resize", "URL": "https://resize-shop-acme.fn.apps.test/", "CanEdit": true}
+	b.WriteString(settingsPane(t, pages["function"], fd))
 	for _, want := range []string{"export const handler = 1", "TypeError", "cold start", "fnt_x", "A=1", "resize-shop-acme.fn.apps.test", `value="256" selected`, "lib.mjs"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("function page lacks %q", want)
 		}
 	}
+}
+
+// settingsPane renders a page's settings view (its settings tab, on a page of its own).
+func settingsPane(t *testing.T, page interface {
+	ExecuteTemplate(io.Writer, string, any) error
+}, d data) string {
+	t.Helper()
+	sd := data{}
+	for k, v := range d {
+		sd[k] = v
+	}
+	sd["View"] = "settings"
+	var b strings.Builder
+	if err := page.ExecuteTemplate(&b, "content", sd); err != nil {
+		t.Fatal("settings view:", err)
+	}
+	return b.String()
 }

@@ -234,6 +234,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /o/{org}/queues", s.auth(authFull, s.queuesPage))
 	m.HandleFunc("POST /o/{org}/queues", s.auth(authFull, s.createQueue))
 	m.HandleFunc("GET /o/{org}/queues/{queue}", s.auth(authFull, s.queuePage))
+	m.HandleFunc("GET /o/{org}/queues/{queue}/settings", s.auth(authFull, settingsView(s.queuePage)))
 	m.HandleFunc("POST /o/{org}/queues/{queue}/send", s.auth(authFull, s.queueSendConsole))
 	m.HandleFunc("POST /o/{org}/queues/{queue}/settings", s.auth(authFull, s.queueSettingsConsole))
 	m.HandleFunc("POST /o/{org}/queues/{queue}/purge", s.auth(authFull, s.queuePurgeConsole))
@@ -243,6 +244,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /o/{org}/functions", s.auth(authFull, s.createFunction))
 	const fnp = "/o/{org}/p/{project}/f/{fn}"
 	m.HandleFunc("GET "+fnp, s.auth(authFull, s.functionPage))
+	m.HandleFunc("GET "+fnp+"/settings", s.auth(authFull, settingsView(s.functionPage)))
 	m.HandleFunc("POST "+fnp+"/code", s.auth(authFull, s.saveFunctionCode))
 	m.HandleFunc("POST "+fnp+"/test", s.auth(authFull, s.testFunction))
 	m.HandleFunc("POST "+fnp+"/settings", s.auth(authFull, s.functionSettings))
@@ -261,6 +263,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /operator/nodes/{id}/drain", s.operatorOnly(s.operatorDrainNode))
 	m.HandleFunc("POST /operator/orgs/{slug}/cluster", s.operatorOnly(s.operatorOrgCluster))
 	m.HandleFunc("GET /operator/orgs/{slug}", s.operatorOnly(s.operatorOrgPage))
+	m.HandleFunc("GET /theme", s.setTheme)
 	m.HandleFunc("GET /operator/settings", s.operatorOnly(s.operatorSettingsPage))
 	m.HandleFunc("GET /operator/servers", s.operatorOnly(s.operatorServersPage))
 	m.HandleFunc("GET /operator/mail", s.operatorOnly(s.operatorMailPage))
@@ -312,6 +315,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /token", s.registryToken)
 
 	m.HandleFunc("GET /o/{org}/p/{project}", s.auth(authFull, s.projectPage))
+	m.HandleFunc("GET /o/{org}/p/{project}/settings", s.auth(authFull, settingsView(s.projectPage)))
 	m.HandleFunc("POST /o/{org}/p/{project}/services", s.auth(authFull, s.createService))
 	m.HandleFunc("POST /o/{org}/p/{project}/delete", s.auth(authFull, s.deleteProject))
 	m.HandleFunc("POST /o/{org}/p/{project}/status-page", s.auth(authFull, s.toggleStatusPage))
@@ -324,6 +328,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /o/{org}/p/{project}/databases", s.auth(authFull, s.createDatabase))
 	const dbp = "/o/{org}/p/{project}/d/{db}"
 	m.HandleFunc("GET "+dbp, s.auth(authFull, s.databasePage))
+	m.HandleFunc("GET "+dbp+"/settings", s.auth(authFull, settingsView(s.databasePage)))
 	m.HandleFunc("POST "+dbp+"/settings", s.auth(authFull, s.databaseSettings))
 	m.HandleFunc("POST "+dbp+"/attach", s.auth(authFull, s.attachDatabase))
 	m.HandleFunc("POST "+dbp+"/public", s.auth(authFull, s.databasePublic))
@@ -337,6 +342,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST "+st+"/keys", s.auth(authFull, s.createStorageKey))
 	m.HandleFunc("POST "+st+"/keys/{id}/delete", s.auth(authFull, s.deleteStorageKey))
 	m.HandleFunc("GET "+st+"/b/{bucket}", s.auth(authFull, s.bucketPage))
+	m.HandleFunc("GET "+st+"/b/{bucket}/settings", s.auth(authFull, settingsView(s.bucketPage)))
 	m.HandleFunc("POST "+st+"/b/{bucket}/settings", s.auth(authFull, s.bucketSettings))
 	m.HandleFunc("POST "+st+"/b/{bucket}/attach", s.auth(authFull, s.attachBucket))
 	m.HandleFunc("POST "+st+"/b/{bucket}/delete", s.auth(authFull, s.deleteBucket))
@@ -346,6 +352,7 @@ func (s *Server) routes() http.Handler {
 
 	const svc = "/o/{org}/p/{project}/s/{service}"
 	m.HandleFunc("GET "+svc, s.auth(authFull, s.servicePage))
+	m.HandleFunc("GET "+svc+"/settings", s.auth(authFull, settingsView(s.servicePage)))
 	m.HandleFunc("POST "+svc+"/settings", s.auth(authFull, s.saveSettings))
 	m.HandleFunc("POST "+svc+"/deploy", s.auth(authFull, s.deployService))
 	m.HandleFunc("POST "+svc+"/rollback/{rev}", s.auth(authFull, s.rollback))
@@ -676,6 +683,33 @@ func pluralize(n int, word string) string {
 
 type data map[string]any
 
+// viewKey marks a request for the settings page of a resource (its settings tab, on a page of its own).
+type viewKey struct{}
+
+// settingsPanes are the tabs that open on their own page.
+var settingsPanes = map[string]bool{"#settings": true, "#db-settings": true, "#project-settings": true, "#configuration": true}
+
+// setTheme remembers light, dark or "system" (follow the device) in a cookie and goes back.
+func (s *Server) setTheme(w http.ResponseWriter, r *http.Request) {
+	v := r.URL.Query().Get("set")
+	c := &http.Cookie{Name: "theme", Value: v, Path: "/", MaxAge: 365 * 24 * 3600, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.cfg.CookieSecure}
+	if v != "light" && v != "dark" {
+		c.Value, c.MaxAge = "", -1
+	}
+	http.SetCookie(w, c)
+	to := r.URL.Query().Get("back")
+	if !strings.HasPrefix(to, "/") || strings.HasPrefix(to, "//") || strings.Contains(to, "\\") {
+		to = "/"
+	}
+	http.Redirect(w, r, to, http.StatusSeeOther)
+}
+
+func settingsView(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		h(w, r.WithContext(context.WithValue(r.Context(), viewKey{}, "settings")))
+	}
+}
+
 func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, status int, d data) {
 	t, ok := s.pages[page]
 	if !ok {
@@ -686,6 +720,15 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, sta
 		d = data{}
 	}
 	d["V"] = s.assetV
+	// pages whose settings open on their own page (…/settings)
+	d["PagePath"] = strings.TrimSuffix(r.URL.Path, "/settings")
+	if v, _ := r.Context().Value(viewKey{}).(string); v != "" {
+		d["View"] = v
+	}
+	if c, err := r.Cookie("theme"); err == nil && (c.Value == "light" || c.Value == "dark") {
+		d["Theme"] = c.Value
+	}
+	d["Here"] = r.URL.RequestURI()
 	ps := s.settings(r.Context())
 	d["SignupEnabled"] = ps.SignupEnabled
 	if ps.BannerMessage != "" {
@@ -736,6 +779,9 @@ func back(w http.ResponseWriter, r *http.Request, path, msg, errMsg string) {
 	frag := ""
 	if i := strings.Index(path, "#"); i >= 0 {
 		path, frag = path[:i], path[i:]
+	}
+	if settingsPanes[frag] && strings.HasPrefix(path, "/o/") && !strings.HasSuffix(path, "/settings") {
+		path += "/settings" // these tabs are pages of their own
 	}
 	q := url.Values{}
 	if msg != "" {

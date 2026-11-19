@@ -14,14 +14,13 @@
   {{if .Queues}}
   <div class="scroll-x">
   <table id="queues-table" class="resources">
-    <thead><tr><th>Name</th><th class="num">Available</th><th class="num">In flight</th><th>Consumer</th><th>Dead-letter queue</th><th>Created</th></tr></thead>
+    <thead><tr><th>Name</th><th class="num">Available</th><th class="num">In flight</th><th>Consumer</th></tr></thead>
     <tbody>
     {{range .Queues}}
       <tr><td><a href="{{$.Org.Path}}/queues/{{.Name}}"><strong>{{.Name}}</strong></a></td>
         <td class="num">{{.Available}}</td><td class="num">{{.InFlight}}</td>
         <td>{{with .Function}}function <code>{{.}}</code>{{else}}<span class="muted">your code (API)</span>{{end}}</td>
-        <td>{{with .DLQ}}<a href="{{$.Org.Path}}/queues/{{.}}">{{.}}</a>{{else}}<span class="muted">none</span>{{end}}</td>
-        <td class="nowrap">{{ago .Created}}</td></tr>
+        </tr>
     {{end}}
     </tbody>
   </table>

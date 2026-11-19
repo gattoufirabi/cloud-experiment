@@ -27,15 +27,13 @@
   {{end}}
   <div class="scroll-x">
   <table id="services-table" class="resources">
-    <thead><tr>{{if .CanEdit}}<th class="sel"><input type="checkbox" data-select-all="services-table" aria-label="Select all services"></th>{{end}}<th>Name</th><th>Project</th><th>Type</th><th>Status</th><th>Image</th><th class="num">Instances</th><th>Last deployment</th></tr></thead>
+    <thead><tr>{{if .CanEdit}}<th class="sel"><input type="checkbox" data-select-all="services-table" aria-label="Select all services"></th>{{end}}<th>Name</th><th>Project</th><th>Status</th><th class="num">Instances</th><th>Last deployment</th></tr></thead>
     <tbody>
     {{range .Services}}
       <tr>{{if $.CanEdit}}<td class="sel"><input type="checkbox" name="sel" value="{{.Project}}/{{.Slug}}" form="bulk" aria-label="Select {{.Project}}/{{.Slug}}"></td>{{end}}
-        <td><a href="{{$.Org.Path}}/p/{{.Project}}/s/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
+        <td><a href="{{$.Org.Path}}/p/{{.Project}}/s/{{.Slug}}"><strong>{{.Slug}}</strong></a>{{if .Worker}} <span class="badge">worker</span>{{end}}</td>
         <td><a href="{{$.Org.Path}}/p/{{.Project}}">{{.ProjectName}}</a></td>
-        <td>{{if .Worker}}worker{{else}}web{{end}}</td>
         <td>{{template "status" .Status}}</td>
-        <td><code class="trunc" title="{{.Image}}">{{if .Image}}{{.Image}}{{else}}not set{{end}}</code></td>
         <td class="num">{{.Instances}}</td>
         <td class="nowrap">{{with .Updated}}{{ago .}}{{else}}<span class="muted">never</span>{{end}}</td></tr>
     {{end}}

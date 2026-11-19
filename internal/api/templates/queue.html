@@ -3,13 +3,13 @@
 <div class="head"><h1>{{.Queue.Name}}</h1></div>
 <p class="lede">{{.Queue.Available}} available · {{.Queue.InFlight}} in flight{{if .Queue.Delayed}} · {{.Queue.Delayed}} delayed{{end}} · visibility timeout {{.Queue.Visibility}} s · kept {{.Queue.RetentionText}}</p>
 
-<nav class="tabs" role="tablist" aria-label="Queue sections">
-  <a role="tab" href="#messages">Messages</a>
-  <a role="tab" href="#connect">Connect</a>
-  <a role="tab" href="#settings">Settings</a>
+<nav class="tabs"{{if eq .View "settings"}} data-default="settings"{{end}} role="tablist" aria-label="Queue sections">
+  <a role="tab" href="{{.PagePath}}#messages">Messages</a>
+  <a role="tab" href="{{.PagePath}}#connect">Connect</a>
+  <a role="tab" href="{{.PagePath}}/settings#settings">Settings</a>
 </nav>
 
-<section class="pane" id="messages" role="tabpanel" aria-label="Messages">
+{{if ne .View "settings"}}<section class="pane" id="messages" role="tabpanel" aria-label="Messages">
   {{if .CanEdit}}
   <div class="section">
     <h2>Send a message</h2>
@@ -31,9 +31,9 @@
     <p class="small muted">Viewing does not receive them.</p>
     {{else}}<p class="small muted">The queue is empty.</p>{{end}}
   </div>
-</section>
+</section>{{end}}
 
-<section class="pane" id="connect" role="tabpanel" aria-label="Connect">
+{{if ne .View "settings"}}<section class="pane" id="connect" role="tabpanel" aria-label="Connect">
   <div class="section">
     <h2>From your code</h2>
     <div class="panel"><pre class="cmd"># send
@@ -57,9 +57,9 @@ curl -X DELETE -H "Authorization: Bearer $QUEUE_TOKEN" {{.APIURL}}/messages/&lt;
     {{else}}<p class="small muted">Create a service first.</p>{{end}}
   </div>
   {{end}}
-</section>
+</section>{{end}}
 
-<section class="pane" id="settings" role="tabpanel" aria-label="Settings">
+{{if eq .View "settings"}}<section class="pane" id="settings" role="tabpanel" aria-label="Settings">
   <div class="section">
     <h2>Settings</h2>
     <form method="post" action="{{.Path}}/settings" class="form-grid">
@@ -87,5 +87,5 @@ curl -X DELETE -H "Authorization: Bearer $QUEUE_TOKEN" {{.APIURL}}/messages/&lt;
     </form>
   </div>
   {{end}}
-</section>
+</section>{{end}}
 {{end}}

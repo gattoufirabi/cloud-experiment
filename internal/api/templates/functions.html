@@ -28,15 +28,13 @@
   {{end}}
   <div class="scroll-x">
   <table id="functions-table" class="resources">
-    <thead><tr>{{if $.CanEdit}}<th class="sel"><input type="checkbox" data-select-all="functions-table" aria-label="Select all functions"></th>{{end}}<th>Name</th><th>Project</th><th>Runtime</th><th>Memory</th><th>Triggers</th><th class="num">Invocations (24 h)</th><th class="num">Errors</th><th>Last change</th></tr></thead>
+    <thead><tr>{{if $.CanEdit}}<th class="sel"><input type="checkbox" data-select-all="functions-table" aria-label="Select all functions"></th>{{end}}<th>Name</th><th>Project</th><th class="num">Invocations (24 h)</th><th class="num">Errors</th></tr></thead>
     <tbody>
     {{range .Functions}}
-      <tr>{{if $.CanEdit}}<td class="sel"><input type="checkbox" name="sel" value="{{.Project}}/{{.Slug}}" form="bulk" aria-label="Select {{.Project}}/{{.Slug}}"></td>{{end}}<td><a href="{{$.Org.Path}}/p/{{.Project}}/f/{{.Slug}}"><strong>{{.Slug}}</strong></a></td>
+      <tr>{{if $.CanEdit}}<td class="sel"><input type="checkbox" name="sel" value="{{.Project}}/{{.Slug}}" form="bulk" aria-label="Select {{.Project}}/{{.Slug}}"></td>{{end}}<td><a href="{{$.Org.Path}}/p/{{.Project}}/f/{{.Slug}}"><strong>{{.Slug}}</strong></a><br><span class="small muted">{{runtime .Runtime}}{{if .URLEnabled}} · URL{{end}}{{if .ScheduleEnabled}} · schedule{{end}}</span></td>
         <td><a href="{{$.Org.Path}}/p/{{.Project}}">{{.ProjectName}}</a></td>
-        <td>{{runtime .Runtime}}</td><td>{{.MemoryMB}} MB</td>
-        <td>{{if .URLEnabled}}<span class="badge">URL</span>{{end}} {{if .ScheduleEnabled}}<span class="badge">schedule</span>{{end}}{{if not (or .URLEnabled .ScheduleEnabled)}}<span class="muted">API only</span>{{end}}</td>
         <td class="num">{{.Invocations}}</td><td class="num">{{if .Errors}}<span class="st st-failed">{{.Errors}}</span>{{else}}0{{end}}</td>
-        <td class="nowrap">{{ago .Updated}}</td></tr>
+        </tr>
     {{end}}
     </tbody>
   </table>

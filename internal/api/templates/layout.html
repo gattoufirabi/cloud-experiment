@@ -176,6 +176,12 @@
 </div>
 {{end}}
 
+{{define "themeswitch"}}<div class="theme-switch" role="group" aria-label="Appearance">
+  <a href="/theme?set=light&amp;back={{.Here}}"{{if eq .Theme "light"}} aria-current="true"{{end}} title="Light">{{icon "sun"}}<span>Light</span></a>
+  <a href="/theme?set=dark&amp;back={{.Here}}"{{if eq .Theme "dark"}} aria-current="true"{{end}} title="Dark">{{icon "moon"}}<span>Dark</span></a>
+  <a href="/theme?set=system&amp;back={{.Here}}"{{if not .Theme}} aria-current="true"{{end}} title="Same as the device">{{icon "monitor"}}<span>Auto</span></a>
+</div>{{end}}
+
 {{define "usermenu"}}
 {{with .User}}
 <details class="menu user-menu">
@@ -183,17 +189,19 @@
   <div class="menu-panel right">
     <span class="menu-meta">{{.Email}}</span>
     <a href="/account">Account and security</a>
+    <div class="menu-label">Appearance</div>
+    {{template "themeswitch" $}}
     {{if .IsOperator}}<a href="/operator">Admin panel</a>{{end}}
     <div class="menu-sep"></div>
     <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="link" type="submit">Log out</button></form>
   </div>
 </details>
-{{else}}<a class="pill-link" href="/login">Log in</a>
+{{else}}{{template "themeswitch" $}}<a class="pill-link" href="/login">Log in</a>
 {{end}}
 {{end}}
 
 {{define "layout"}}<!doctype html>
-<html lang="en"{{if or .HasNav .OpSection}} data-bs-navbar-position="vertical"{{end}}>
+<html lang="en"{{if or .HasNav .OpSection}} data-bs-navbar-position="vertical"{{end}}{{with .Theme}} data-bs-theme="{{.}}"{{end}}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">

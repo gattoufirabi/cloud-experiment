@@ -40,11 +40,11 @@
   {{end}}
     <div class="scroll-x">
     <table id="buckets-table">
-      <thead><tr>{{if $.CanEdit}}<th class="sel"><input type="checkbox" data-select-all="buckets-table" aria-label="Select all buckets"></th>{{end}}<th>Bucket</th><th>S3 name</th><th class="num">Objects</th><th>Used</th><th>Access</th></tr></thead>
+      <thead><tr>{{if $.CanEdit}}<th class="sel"><input type="checkbox" data-select-all="buckets-table" aria-label="Select all buckets"></th>{{end}}<th>Bucket</th><th class="num">Objects</th><th>Used</th><th>Access</th></tr></thead>
       <tbody>
       {{range .Buckets}}
-        <tr>{{if $.CanEdit}}<td class="sel"><input type="checkbox" name="sel" value="{{.Name}}" form="bulk" aria-label="Select {{.Name}}"></td>{{end}}<td><a href="{{$.Org.Path}}/storage/b/{{.Name}}"><strong>{{.Name}}</strong></a></td>
-          <td><code>{{.FullName}}</code></td><td class="num">{{.Objects}}</td>
+        <tr>{{if $.CanEdit}}<td class="sel"><input type="checkbox" name="sel" value="{{.Name}}" form="bulk" aria-label="Select {{.Name}}"></td>{{end}}<td><a href="{{$.Org.Path}}/storage/b/{{.Name}}"><strong>{{.Name}}</strong></a><br><span class="small muted">S3: {{.FullName}}</span></td>
+          <td class="num">{{.Objects}}</td>
           <td class="nowrap"><progress class="meter" max="100" value="{{.UsedPercent}}" aria-label="{{.UsedPercent}}% of the quota"></progress> {{printf "%.1f" .UsedMB}} / {{.QuotaMB}} MB</td>
           <td>{{if .Website}}<span class="badge">public website</span>{{else}}private{{end}}</td></tr>
       {{end}}
