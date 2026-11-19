@@ -380,6 +380,17 @@ Good to know:
 - The platform rechecks verified domains daily; if the records disappear, sending from the domain pauses until they are back.
 - Emails are billed per delivered recipient, per thousand.
 
+## Mailboxes
+
+Host real mailboxes on your own domains and use them from any mail app (Outlook, Apple Mail, Thunderbird, Gmail's app, phones): IMAP, POP3 and SMTP, with aliases, a catch-all and spam filtering.
+
+1. Open **Mailboxes** and add your domain. It is verified like a sending domain: if its DNS is hosted on the platform (**DNS**), it is verified at once and every record is written for you; otherwise create the verification record shown, then click **Turn on mail** once the domain is verified.
+2. **DNS records:** the domain page lists the records mail needs: MX (where mail is delivered), DKIM (signatures), SPF, DMARC and the SRV records that let mail apps find the servers. In a hosted zone they are written automatically; your own SPF or DMARC record is kept. Mail goes to one place: remove MX records that point elsewhere (for example your previous provider), the page warns you while they are there.
+3. **Create mailboxes:** an address, a name, a storage size, and a password (leave it empty to get a strong one, shown once). Give each mailbox **aliases** (more addresses delivered to it) and, if you need one, choose a **catch-all** that receives mail sent to addresses that do not exist.
+4. **Mail app settings:** incoming IMAP on port 993 (SSL/TLS) or POP3 on port 995, outgoing SMTP on port 587 (STARTTLS) with sign-in, all on the server shown on the page. The user name is the full address.
+
+Your plan sets the number of mailboxes and their total storage. Removing a mailbox deletes its mail. The API manages the same things: `GET/POST /api/v1/mail/domains`, `/api/v1/mail/domains/DOMAIN/mailboxes` (create with `{"name": "anna", "display_name": "Anna", "quota_mb": 1024}`; the response carries the generated password once), `PATCH` or `DELETE .../mailboxes/NAME`, `POST .../mailboxes/NAME/password`, `POST .../mailboxes/NAME/aliases` with `{"alias": "sales"}`, `PUT .../catch-all` with `{"mailbox": "anna"}`.
+
 ## Object storage
 
 S3-compatible buckets for files, uploads, backups and static websites, on the organization's **Storage** page. Any S3 tool works: the AWS CLI and SDKs, rclone, Cyberduck, restic.

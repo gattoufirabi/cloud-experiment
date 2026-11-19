@@ -1,0 +1,159 @@
+{{define "title"}}{{.Domain.Domain}} · Mailboxes · {{.Org.Name}}{{end}}
+{{define "content"}}
+<p class="small"><a href="{{.Org.Path}}/mail">← Mailboxes</a></p>
+<div class="head">
+  <h1>{{.Domain.Domain}}</h1>
+  {{if .Domain.Active}}<span class="badge">receiving mail</span>{{end}}
+</div>
+{{with .NewPassword}}
+<div class="panel strong" id="new-password">
+  <p><strong>Password for {{$.PasswordFor}}</strong>, shown this once: give it to the mailbox's owner (they can sign in to any mail app with it).</p>
+  <pre class="cmd select">{{.}}</pre>
+</div>
+{{end}}
+
+{{if not .Domain.Active}}
+<div class="panel strong">
+  {{if eq .Domain.Status "verified"}}
+  <p><strong>The domain is verified.</strong> Turn on mail to create its mailboxes; its mail is then delivered here.</p>
+  {{if .CanEdit}}<form method="post" action="{{.Org.Path}}/mail/{{.Domain.Domain}}" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="activate"><button type="submit">Turn on mail</button></form>{{end}}
+  {{else}}
+  <p><strong>Waiting for verification.</strong> Create the verification record shown on the <a href="{{.Org.Path}}/email/d/{{.Domain.Domain}}">sending domain page</a>, then come back: the domain is checked every few minutes.</p>
+  {{end}}
+</div>
+{{end}}
+
+<nav class="tabs" role="tablist" aria-label="Mail domain sections">
+  <a role="tab" href="#mailboxes">Mailboxes <span class="count">{{len .Mailboxes}}</span></a>
+  <a role="tab" href="#dns">DNS records</a>
+  <a role="tab" href="#apps">Mail app settings</a>
+  {{if .CanEdit}}<a role="tab" href="#settings">Settings</a>{{end}}
+</nav>
+
+<section class="pane" id="mailboxes" role="tabpanel" aria-label="Mailboxes">
+  <div class="section">
+    <div class="table-tools">
+      <h2>Mailboxes <span class="count">{{len .Mailboxes}}</span></h2>
+      {{if .Mailboxes}}<input type="search" data-filter="mailboxes-table" placeholder="Find a mailbox" aria-label="Find a mailbox">{{end}}
+    </div>
+    {{if .Mailboxes}}
+    <div class="scroll-x">
+    <table id="mailboxes-table" class="resources">
+      <thead><tr><th>Address</th><th>Name</th><th>Aliases</th><th class="num">Storage</th><th></th></tr></thead>
+      <tbody>
+      {{range .Mailboxes}}
+      <tr>
+        <td><strong>{{.LocalPart}}@{{$.Domain.Domain}}</strong>{{if eq $.Domain.CatchAll .LocalPart}} <span class="badge">catch-all</span>{{end}}</td>
+        <td>{{.Name}}</td>
+        <td class="small">{{range .Aliases}}<span class="nowrap">{{.LocalPart}}@{{$.Domain.Domain}}{{if $.CanEdit}} <form method="post" action="{{$.Org.Path}}/mail/{{$.Domain.Domain}}" class="inline flush"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="action" value="unalias"><input type="hidden" name="alias" value="{{.LocalPart}}"><button type="submit" class="link" aria-label="Remove alias {{.LocalPart}}">×</button></form>{{end}}</span><br>{{else}}<span class="muted">none</span>{{end}}</td>
+        <td class="num nowrap">{{printf "%.0f" .UsedMB}} / {{.QuotaMB}} MB</td>
+        <td>{{if $.CanEdit}}<details class="row-menu"><summary class="link">manage</summary>
+          <div class="stack">
+            <form method="post" action="{{$.Org.Path}}/mail/{{$.Domain.Domain}}" class="stack">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="action" value="update"><input type="hidden" name="mailbox" value="{{.LocalPart}}">
+              <label>Name<input name="display_name" value="{{.Name}}" maxlength="100"></label>
+              <label>Storage (MB)<input type="number" name="quota_mb" value="{{.QuotaMB}}" min="50" required></label>
+              <div class="inline"><button type="submit" class="secondary">Save</button></div>
+            </form>
+            <form method="post" action="{{$.Org.Path}}/mail/{{$.Domain.Domain}}" class="inline">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="action" value="alias"><input type="hidden" name="mailbox" value="{{.LocalPart}}">
+              <input name="alias" placeholder="sales" required size="12" aria-label="New alias (part before @)"><span class="muted">@{{$.Domain.Domain}}</span>
+              <button type="submit" class="secondary">Add alias</button>
+            </form>
+            <form method="post" action="{{$.Org.Path}}/mail/{{$.Domain.Domain}}" class="inline" data-confirm="Set a new password for {{.LocalPart}}@{{$.Domain.Domain}}? Mail apps must sign in again.">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="action" value="password"><input type="hidden" name="mailbox" value="{{.LocalPart}}">
+              <input type="password" name="password" placeholder="empty: generate one" minlength="{{$.MinPassword}}" autocomplete="new-password" aria-label="New password">
+              <button type="submit" class="secondary">Set new password</button>
+            </form>
+            <form method="post" action="{{$.Org.Path}}/mail/{{$.Domain.Domain}}" class="inline">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="action" value="delete"><input type="hidden" name="mailbox" value="{{.LocalPart}}">
+              <input name="confirm" placeholder="type {{.LocalPart}}@{{$.Domain.Domain}}" required aria-label="Confirm the address to delete">
+              <button type="submit" class="danger">Delete with its mail</button>
+            </form>
+          </div>
+        </details>{{end}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    {{else}}<p class="small muted">No mailbox yet.</p>{{end}}
+  </div>
+  {{if and .CanEdit .Domain.Active}}
+  <div class="section" id="add">
+    <h2>Create a mailbox</h2>
+    <form method="post" action="{{.Org.Path}}/mail/{{.Domain.Domain}}" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="add">
+      <label>Address <span class="hint">the part before @{{.Domain.Domain}}</span>
+        <span class="inline"><input name="local_part" placeholder="anna" required pattern="[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?" maxlength="64"><span class="muted">@{{.Domain.Domain}}</span></span></label>
+      <label>Name <span class="hint">shown to recipients, optional</span><input name="display_name" placeholder="Anna Martin" maxlength="100"></label>
+      <label>Storage (MB)<input type="number" name="quota_mb" value="1024" min="50" required></label>
+      <label>Password <span class="hint">leave empty to generate a strong one (shown once); at least {{.MinPassword}} characters</span><input type="password" name="password" minlength="{{.MinPassword}}" autocomplete="new-password"></label>
+      <div class="inline"><button type="submit">Create mailbox</button></div>
+    </form>
+  </div>
+  {{end}}
+</section>
+
+<section class="pane" id="dns" role="tabpanel" aria-label="DNS records">
+  <div class="section">
+    <div class="table-tools"><h2>DNS records</h2>
+      {{if and .CanEdit .Zone .Domain.Active}}<form method="post" action="{{.Org.Path}}/mail/{{.Domain.Domain}}" class="inline flush"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="records"><button type="submit" class="secondary">Write them again</button></form>{{end}}</div>
+    {{if .Zone}}
+      {{if .Domain.Active}}<p class="small"><span class="badge">automatic</span> Written in your hosted zone <a href="{{.Org.Path}}/dns/{{.Zone}}">{{.Zone}}</a>: nothing to do. Records of yours at the same names (SPF, DMARC) are kept.</p>
+      {{else}}<p class="small"><span class="badge">automatic</span> Written in your hosted zone <a href="{{.Org.Path}}/dns/{{.Zone}}">{{.Zone}}</a> as soon as mail is turned on.</p>{{end}}
+      {{if .ForeignMX}}<p class="small error-text">Your zone still has MX records pointing elsewhere, so mail does not come here. Remove them in <a href="{{.Org.Path}}/dns/{{.Zone}}">{{.Zone}}</a>, then click <strong>Write them again</strong>.</p>{{end}}
+    {{else}}<p class="small muted">Create these records at your DNS provider. Replace the domain's existing MX records (mail goes to one place), and merge the SPF value into the SPF record you may already have.</p>{{end}}
+    {{if not .Domain.Active}}<p class="small muted">The DKIM keys appear here once mail is turned on.</p>{{end}}
+    <div class="scroll-x">
+    <table class="resources">
+      <thead><tr><th>Name</th><th>Type</th><th>Value</th><th>Why</th></tr></thead>
+      <tbody>
+      {{range .Records}}<tr><td><code class="wrap">{{.FQDN $.Domain.Domain}}</code></td><td>{{.Type}}</td><td><code class="wrap">{{if or (eq .Type "MX") (eq .Type "SRV")}}{{.Priority}} {{end}}{{.Value}}</code></td><td class="small">{{.Purpose}}{{if not .Required}} <span class="muted">(recommended)</span>{{end}}</td></tr>{{end}}
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+
+<section class="pane" id="apps" role="tabpanel" aria-label="Mail app settings">
+  <div class="section">
+    <h2>Mail app settings</h2>
+    <p class="small muted">Most apps find these on their own from the address; if yours asks, enter:</p>
+    <table class="resources">
+      <thead><tr><th></th><th>Server</th><th class="num">Port</th><th>Security</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Incoming (IMAP)</strong></td><td><code>{{.MailHost}}</code></td><td class="num">993</td><td>SSL/TLS</td></tr>
+        <tr><td><strong>Incoming (POP3)</strong></td><td><code>{{.MailHost}}</code></td><td class="num">995</td><td>SSL/TLS</td></tr>
+        <tr><td><strong>Outgoing (SMTP)</strong></td><td><code>{{.MailHost}}</code></td><td class="num">587</td><td>STARTTLS, with sign-in</td></tr>
+      </tbody>
+    </table>
+    <p class="small muted">User name: the full address (such as <code>anna@{{.Domain.Domain}}</code>). Password: the mailbox's password.</p>
+  </div>
+</section>
+
+{{if .CanEdit}}
+<section class="pane" id="settings" role="tabpanel" aria-label="Settings">
+  {{if .Domain.Active}}
+  <div class="section">
+    <h2>Catch-all</h2>
+    <p class="small muted">Mail to addresses that do not exist goes to this mailbox instead of being refused. Catch-alls attract spam: use one only if you need it.</p>
+    <form method="post" action="{{.Org.Path}}/mail/{{.Domain.Domain}}" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="catchall">
+      <select name="mailbox" aria-label="Catch-all mailbox"><option value="">Off: refuse unknown addresses</option>{{range .Mailboxes}}<option value="{{.LocalPart}}"{{if eq $.Domain.CatchAll .LocalPart}} selected{{end}}>{{.LocalPart}}@{{$.Domain.Domain}}</option>{{end}}</select>
+      <button type="submit" class="secondary">Save</button>
+    </form>
+  </div>
+  {{end}}
+  <div class="section">
+    <h2>Remove the domain</h2>
+    <p class="small muted">Deletes every mailbox of {{.Domain.Domain}} with its mail, and stops receiving mail for it. The domain stays a sending domain.</p>
+    <form method="post" action="{{.Org.Path}}/mail/{{.Domain.Domain}}" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="action" value="remove">
+      <input name="confirm" placeholder="type {{.Domain.Domain}} to confirm" required aria-label="Confirm domain">
+      <button class="danger" type="submit">Remove domain and mailboxes</button>
+    </form>
+  </div>
+</section>
+{{end}}
+{{end}}

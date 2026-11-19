@@ -149,6 +149,13 @@ func (s *Server) addEmailDomainTx(r *http.Request, tx pgx.Tx, o *orgInfo, domain
 }
 
 func (s *Server) deleteEmailDomainTx(r *http.Request, tx pgx.Tx, o *orgInfo, d *sendDomain) error {
+	var hosted bool
+	if err := tx.QueryRow(r.Context(), `SELECT EXISTS (SELECT 1 FROM mail_domains WHERE email_domain_id = $1)`, d.ID).Scan(&hosted); err != nil {
+		return err
+	}
+	if hosted {
+		return apiErr{http.StatusConflict, "this domain has mailboxes: remove it from Mailboxes first"}
+	}
 	if _, err := tx.Exec(r.Context(), `DELETE FROM email_domains WHERE id = $1`, d.ID); err != nil {
 		return err
 	}

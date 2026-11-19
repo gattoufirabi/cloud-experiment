@@ -339,6 +339,28 @@ check "a domain not hosted here is refused (not an open resolver)" "$(dig +time=
 check "[B->A] B cannot open A's zone (404)" "$(code_of jb "$BASE/o/$A/dns/$ZONE")" 404
 check "[A] zone deleted and no longer served" "$(code_of ja -X POST "$BASE/o/$A/dns/$ZONE" -d csrf=$CSRF_A -d action=remove -d "confirm=$ZONE"):$(sleep 2; dig +time=3 +tries=2 "@$PUBIP" "$ZONE" A | grep -c 'status: REFUSED')" "303:1"
 
+section "Hosted mailboxes"
+MZ=m$RUN.test; MP="Mailbox-pass-$RUN"
+imap_ok() { curl -sk --max-time 10 "imaps://127.0.0.1:993/" -u "$1:$2" -X CAPABILITY -o /dev/null 2>/dev/null && echo in || echo out; }
+imap_count() { curl -sk --max-time 10 "imaps://127.0.0.1:993/" -u "$1:$2" -X "STATUS \"$3\" (MESSAGES)" 2>/dev/null | grep -o 'MESSAGES [0-9]*' | grep -o '[0-9]*'; }
+inbox_total() { echo $(( $(imap_count "$1" "$2" INBOX || echo 0) + $(imap_count "$1" "$2" "Junk Mail" || echo 0) )); }
+smtp_in() { printf 'From: someone@sender.test\r\nTo: %s\r\nSubject: hello %s\r\n\r\nhi\r\n' "$1" "$RUN" > "$TMP/mail.eml"; curl -s --max-time 15 "smtp://127.0.0.1:25" --mail-from someone@sender.test --mail-rcpt "$1" -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}'; }
+check "mail server ports answer (25, 587, 993, 995)" "$(for p in 25 587; do curl -s --max-time 5 "smtp://127.0.0.1:$p" -o /dev/null && echo -n y; done; for p in 993 995; do timeout 5 openssl s_client -connect 127.0.0.1:$p </dev/null >/dev/null 2>&1 && echo -n y; done)" yyyy
+check "IMAP presents the mail host's certificate" "$(timeout 5 openssl s_client -connect 127.0.0.1:993 -servername "$(val CONSOLE_HOST)" </dev/null 2>/dev/null | openssl x509 -noout -ext subjectAltName 2>/dev/null | grep -c "$(val CONSOLE_HOST)")" 1
+code_of ja -X POST "$BASE/o/$A/dns" -d csrf=$CSRF_A -d "domain=$MZ" >/dev/null
+owner_sql "UPDATE dns_zones SET status = 'active', active_at = now() WHERE domain = '$MZ'; SELECT pg_notify('deployments', 'dns')" >/dev/null   # stands in for the delegation
+check "[A] a domain in an active hosted zone receives mail at once, with its records" "$(code_of ja -X POST "$BASE/o/$A/mail" -d csrf=$CSRF_A -d "domain=$MZ"):$(owner_sql "SELECT stalwart_id IS NOT NULL FROM mail_domains WHERE domain = '$MZ'"):$(owner_sql "SELECT string_agg(DISTINCT type, ',' ORDER BY type) FROM dns_records WHERE managed_by = 'mail:' || (SELECT id FROM mail_domains WHERE domain = '$MZ')")" "303:t:MX,SRV,TXT"
+check "its MX answers on the public DNS" "$(for _ in $(seq 1 10); do qdns "$MZ" MX | grep -q "$(val CONSOLE_HOST)" && { echo yes; break; }; sleep 1; done)" yes
+check "[A] mailbox created; it signs in over IMAP" "$(code_of ja -X POST "$BASE/o/$A/mail/$MZ" -d csrf=$CSRF_A -d action=add -d local_part=anna -d quota_mb=100 --data-urlencode "password=$MP"):$(imap_ok "anna@$MZ" "$MP")" "303:in"
+check "mail from the internet arrives (port 25)" "$(smtp_in "anna@$MZ"):$(for _ in $(seq 1 20); do [ "$(inbox_total "anna@$MZ" "$MP")" = 1 ] && { echo 1; break; }; sleep 1; done)" "250:1"
+check "an unknown address is refused" "$(smtp_in "nobody@$MZ")" 550
+check "sending needs sign-in on port 587" "$(curl -sk --max-time 15 smtp://127.0.0.1:587 --ssl-reqd -u "anna@$MZ:$MP" --mail-from "anna@$MZ" --mail-rcpt "anna@$MZ" -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}'):$(curl -sk --max-time 15 smtp://127.0.0.1:587 --ssl-reqd --mail-from "anna@$MZ" --mail-rcpt "someone@example.org" -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}')" "250:503"
+check "not an open relay (port 25 refuses mail for other domains)" "$(curl -s --max-time 15 smtp://127.0.0.1:25 --mail-from someone@sender.test --mail-rcpt someone@example.org -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}')" 550
+check "[B->A] B cannot open A's mail domain (404)" "$(code_of jb "$BASE/o/$A/mail/$MZ")" 404
+check "[A] domain removed: mailbox gone" "$(code_of ja -X POST "$BASE/o/$A/mail/$MZ" -d csrf=$CSRF_A -d action=remove -d "confirm=$MZ"):$(imap_ok "anna@$MZ" "$MP")" "303:out"
+code_of ja -X POST "$BASE/o/$A/email/d/$MZ/delete" -d csrf=$CSRF_A -d "confirm=$MZ" >/dev/null
+code_of ja -X POST "$BASE/o/$A/dns/$MZ" -d csrf=$CSRF_A -d action=remove -d "confirm=$MZ" >/dev/null
+
 section "Edge cache (CDN)"
 code_of ja -X POST "$BASE/o/$A/p/shop/services" -d csrf=$CSRF_A -d slug=cdn -d image=nginx:1.27-alpine >/dev/null
 check "[A] edge cache turned on" "$(code_of ja -X POST "$BASE/o/$A/p/shop/s/cdn/settings" -d csrf=$CSRF_A -d image=nginx:1.27-alpine -d port=80 -d health_path=%2F -d cpu_millis=100 -d memory_mb=64 -d instances=1 -d volume_path= -d env= -d edge_cache=1):$(owner_sql "SELECT s.edge_cache FROM services s JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'cdn'")" "303:t"

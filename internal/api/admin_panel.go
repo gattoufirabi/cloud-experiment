@@ -135,6 +135,8 @@ var planFields = []planField{
 	{"max_public_ports", "Public TCP/UDP ports", "int", "Limits"},
 	{"max_email_domains", "Email sending domains", "int", "Limits"},
 	{"max_emails_day", "Emails a day", "int", "Limits"},
+	{"max_mailboxes", "Mailboxes", "int", "Limits"},
+	{"max_mailbox_storage_mb", "Mailbox storage (MB, total)", "int", "Limits"},
 	{"log_retention_days", "Log retention (days)", "int", "Limits"},
 	{"allow_builds", "Builds from git allowed", "bool", "Limits"},
 }

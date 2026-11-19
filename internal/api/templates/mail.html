@@ -1,0 +1,40 @@
+{{define "title"}}Mailboxes · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>Mailboxes</h1>
+  {{if and .CanEdit .Enabled}}<a class="button-link right" href="#add">Add a domain</a>{{end}}
+</div>
+<p class="lede">Real mailboxes on your own domains, for any mail app (Outlook, Apple Mail, Thunderbird, phones): IMAP, POP3 and SMTP, with aliases, a catch-all and spam filtering. {{.Count}} of {{.MaxBoxes}} mailboxes, {{.UsedMB}} of {{.MaxMB}} MB of storage given out.</p>
+<p class="help"><a href="/docs/user#mailboxes" target="_blank" rel="noopener">Guide: mailboxes ↗</a></p>
+{{if not .Enabled}}
+<div class="panel"><p>Mailboxes are not available on this platform yet.</p></div>
+{{else}}
+<div class="section">
+  <h2>Mail domains <span class="count">{{len .Domains}}</span></h2>
+  {{if .Domains}}
+  <table class="resources">
+    <thead><tr><th>Domain</th><th>Status</th><th class="num">Mailboxes</th><th>Added</th></tr></thead>
+    <tbody>
+    {{range .Domains}}<tr>
+      <td><a href="{{$.Org.Path}}/mail/{{.Domain}}"><strong>{{.Domain}}</strong></a></td>
+      <td>{{if .Active}}<span class="badge">receiving mail</span>{{else if eq .Status "verified"}}verified: ready to turn on{{else}}waiting for DNS verification{{end}}</td>
+      <td class="num">{{.Mailboxes}}</td>
+      <td class="nowrap">{{ago .Created}}</td>
+    </tr>{{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="small muted">No mail domain yet. Add one below: if its DNS is hosted here, everything is set up automatically.</p>{{end}}
+</div>
+{{if .CanEdit}}
+<div class="section" id="add">
+  <h2>Add a domain</h2>
+  <p class="small muted">The domain is verified like a sending domain (one DNS record, or nothing to do when its zone is hosted on the platform). Its mail is then delivered to <code>{{.MailHost}}</code>.</p>
+  <form method="post" action="{{.Org.Path}}/mail" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input name="domain" placeholder="example.com" required aria-label="Domain">
+    <button type="submit">Add domain</button>
+  </form>
+</div>
+{{end}}
+{{end}}
+{{end}}

@@ -14,6 +14,7 @@ All platform services run as containers on one server. Only the agent can change
 | registry | Per-organization image spaces; checks tokens signed by the API. | Unprivileged. |
 | victoria-metrics / logs | Metrics and logs, readable only through the API's tenant filter. | Unprivileged. |
 | trivy | Vulnerability database for image scans. | Unprivileged. |
+| stalwart | Mail server of hosted mailboxes: SMTP 25 (incoming), 587 (submission), IMAP 993, POP3 995, spam filter, DKIM signing. Its admin API (8080) is reached only by the API and the agent on the compose network. | Unprivileged (uid 2000), may bind ports below 1024; data in `/srv/platform/stalwart`. |
 | agent | Re-checks every spec, deploys, updates Caddy, runs scans and backups in short-lived containers, health probes, alerts. | Root and Docker socket; no open port. |
 
 Client applications run under gVisor, each project on its own network (a /24 from `10.208.0.0/12`), with no route to other clients, private ranges or the host. Managed PostgreSQL and Redis databases are containers on the same project networks (`pd-<id>`), with their data in `pvdb-<id>` volumes and their dumps in `pbdb-<id>` volumes; a deleted database's volumes are kept until you remove them.
@@ -35,7 +36,8 @@ You need a Debian 13 server (8 vCPU and 32 GB RAM fit roughly 40 to 80 small cli
 7. **Create the keys and start:**
 
 ```
-mkdir -p secrets /srv/platform/{postgres,caddy,vlogs,vmdata,registry,trivy}
+mkdir -p secrets /srv/platform/{postgres,caddy,vlogs,vmdata,registry,trivy,stalwart}
+chown 2000:2000 /srv/platform/stalwart   # the mail server's user
 docker compose -f compose.prod.yml build
 docker run --rm --user 0 -v "$PWD/secrets:/out" platform:local admin init-key --file /out/master.key
 docker run --rm --user 0 -v "$PWD/secrets:/out" platform:local admin init-registry-key --file /out/registry-token.key --cert /out/registry-token.crt
@@ -66,6 +68,16 @@ docker compose -f compose.prod.yml exec api /platform admin create-org --slug ac
 | pro | 10 | 4000 millicores | 4096 MB | 20 |
 
 Plans live in the `plans` table. Move a client with `set-plan`; lowering a plan does not stop running services but blocks changes that would exceed it.
+
+## Hosted mailboxes (mail server)
+
+Organizations can host mailboxes on their own domains. The mail server is Stalwart (open source), started by the production compose file as `platform-stalwart`; the platform drives it through its admin API and is the source of truth for domains and mailboxes.
+
+- **Set up:** set `STALWART_ADMIN_PASSWORD` in `.env` (`openssl rand -hex 24`), create `/srv/platform/stalwart` owned by uid 2000, open ports 25, 587, 993 and 995 in the host firewall, and start the stack. The agent then names the server after the mail host (`MAIL_HOSTNAME`, by default the console host), adds the submission listener on port 587 (restarting the mail server once) and installs the mail host's certificate from the proxy, again whenever the proxy renews it.
+- **Deliverability:** the server's reverse DNS (PTR) must name the mail host, and the mail host must resolve to the server. Outgoing port 25 must be open at the hosting provider.
+- **Domains** go on the mail server only once their organization has verified them (a domain on the mail server is local for every mailbox). The agent removes domains of deleted organizations and turns off those of suspended ones.
+- **Limits:** plans set the number of mailboxes and the total mailbox storage (**Plans and prices**).
+- **Backups:** mail is in `/srv/platform/stalwart`; include it in the host backups.
 
 ## Several servers (nodes and clusters)
 
@@ -213,6 +225,8 @@ Clients' alerts cover their applications; watch the server and the platform serv
 | ALERTS_ENABLED, ALERT_INTERVAL_SECONDS | false, 30 | Alerts and health-check period. |
 | ALERT_ALLOW_PRIVATE_TARGETS | false | Development only. Never in production. |
 | COOKIE_SECURE | false | true in production. |
+| STALWART_ADMIN_PASSWORD | — | Admin password of the mail server (hosted mailboxes); the API and the agent use it on the internal network. Required by the production compose file. |
+| STALWART_URL | http://stalwart:8080 | The mail server's admin API. Empty turns hosted mailboxes off. |
 
 ## Admin troubleshooting
 

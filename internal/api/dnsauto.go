@@ -69,6 +69,8 @@ func (s *Server) setManagedTx(ctx context.Context, r *http.Request, tx pgx.Tx, o
 				z.ID, in.Name, strings.TrimSuffix(prefix, ";")).Scan(&conflict)
 		case in.Type == "CNAME":
 			err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM dns_records WHERE zone_id = $1 AND name = $2)`, z.ID, in.Name).Scan(&conflict)
+		case in.Type == "MX": // mail goes to one place: MX records of yours (elsewhere) are kept
+			err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM dns_records WHERE zone_id = $1 AND name = $2 AND type IN ('MX', 'CNAME'))`, z.ID, in.Name).Scan(&conflict)
 		default:
 			err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM dns_records WHERE zone_id = $1 AND name = $2 AND (type = 'CNAME' OR (type = $3 AND $3 IN ('A', 'AAAA'))))`,
 				z.ID, in.Name, in.Type).Scan(&conflict)

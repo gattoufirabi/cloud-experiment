@@ -57,6 +57,8 @@ x-app: &app
     DBPROXY_IMAGE: "platform:dev"
     DNS_NAMESERVERS: ns1.platform.test,ns2.platform.test
     PUBLIC_IP: 127.0.0.1
+    STALWART_URL: http://stalwart:8080
+    STALWART_ADMIN: admin:dev-stalwart-admin
     SIGNUPS_PER_HOUR: "100"            # dev only: the e2e test signs up several times per run
     # Dev only: both test nodes share one Docker host and its local backup volume.
     MOVES_SHARED_LOCAL_REPO: "true"
@@ -238,6 +240,22 @@ services:
     ports: ["127.0.0.1:4954:4954"] # dev: reachable by scan containers on the VM network
     volumes: [trivy-cache:/cache]
 
+  # Hosted mailboxes. Dev ports: SMTP 2525, submission 2588, IMAP 2993, POP3 2995
+  # (self-signed certificate: TLS is off in dev).
+  stalwart:
+    image: stalwartlabs/stalwart:v1.1.1
+    container_name: platform-stalwart
+    restart: unless-stopped
+    # its binary carries the capability to bind ports below 1024 (no no-new-privileges)
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    environment:
+      STALWART_RECOVERY_ADMIN: admin:dev-stalwart-admin
+    ports: ["127.0.0.1:2525:25", "127.0.0.1:2588:587", "127.0.0.1:2993:993", "127.0.0.1:2995:995"]
+    volumes:
+      - ./stalwart/config.json:/etc/stalwart/config.json:ro
+      - stalwart-data:/var/lib/stalwart
+
   # Local mail catcher for signup emails: http://localhost:8025
   mailpit:
     image: axllent/mailpit:v1.31.6
@@ -273,6 +291,7 @@ networks:
 
 volumes:
   garage-data:
+  stalwart-data:
   pgdata:
   caddy-admin:
   caddy-data:

@@ -184,6 +184,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.queueLoop(ctx)
 	go a.autoscaleLoop(ctx)
 	go a.emailLoop(ctx)
+	go a.mailHostLoop(ctx)
 	go a.scrapeLoop(ctx)
 	go a.accessLogLoop(ctx)
 	go a.alarmLoop(ctx)

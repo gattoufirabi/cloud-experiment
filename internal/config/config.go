@@ -115,13 +115,18 @@ type Config struct {
 	AlertAllowPrivate bool          // dev only: let notifications reach private addresses
 
 	// Object storage (S3-compatible, served by Garage). On when S3Host is set.
-	S3Host           string // public host[:port] of the S3 endpoint, e.g. s3.example.com
-	S3Upstream       string // Garage S3 API address for Caddy and the API
-	S3WebUpstream    string // Garage website endpoint address for Caddy
-	S3Region         string // region clients sign requests for
-	S3ServiceURL     string // endpoint given to services (default: the public URL)
-	GarageAdminURL   string
-	GarageAdminToken string
+	S3Host        string // public host[:port] of the S3 endpoint, e.g. s3.example.com
+	S3Upstream    string // Garage S3 API address for Caddy and the API
+	S3WebUpstream string // Garage website endpoint address for Caddy
+	S3Region      string // region clients sign requests for
+	S3ServiceURL  string // endpoint given to services (default: the public URL)
+	// Hosted mailboxes: STALWART_URL (the mail server's management HTTP, e.g.
+	// http://stalwart:8080) and STALWART_ADMIN ("admin:password"); MAIL_CERT_DIR (agent):
+	// Caddy's certificates folder, from which the mail host's certificate is installed on
+	// the mail server.
+	StalwartURL, StalwartAdmin, MailCertDir string
+	GarageAdminURL                          string
+	GarageAdminToken                        string
 
 	// OIDCAllowInsecure lets single sign-on use http:// and private addresses (development
 	// only, for a local test provider).
@@ -179,6 +184,9 @@ func (c Config) MovesEnabled() bool {
 }
 
 // StorageEnabled reports whether object storage is configured.
+// MailHostingEnabled: the platform runs a mail server for organizations' mailboxes.
+func (c Config) MailHostingEnabled() bool { return c.StalwartURL != "" && c.StalwartAdmin != "" }
+
 func (c Config) StorageEnabled() bool { return c.S3Host != "" && c.GarageAdminToken != "" }
 
 // S3PublicURL is the S3 endpoint as clients outside the platform use it.
@@ -280,6 +288,9 @@ func Load() Config {
 		S3WebUpstream:    env("S3_WEB_UPSTREAM", "garage:3902"),
 		S3Region:         env("S3_REGION", "us-east-1"),
 		S3ServiceURL:     strings.TrimRight(env("S3_SERVICE_URL", ""), "/"),
+		StalwartURL:      strings.TrimRight(env("STALWART_URL", ""), "/"),
+		StalwartAdmin:    env("STALWART_ADMIN", ""),
+		MailCertDir:      env("MAIL_CERT_DIR", ""),
 		GarageAdminURL:   strings.TrimRight(env("GARAGE_ADMIN_URL", "http://garage:3903"), "/"),
 		GarageAdminToken: env("GARAGE_ADMIN_TOKEN", ""),
 

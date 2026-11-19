@@ -1745,6 +1745,48 @@ check "a response without Cache-Control is never kept" "$(grep -ci '^cache-statu
 code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/cdn >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
 
+section "Hosted mailboxes (Stalwart)"
+MZ=m$RUN.test
+MP="Mailbox-pass-$RUN"
+admin set-plan --slug "$A" --plan pro >/dev/null   # earlier sections used the starter plan's sending domains
+mapi() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' "$@"; }
+imap_count() { curl -sk --max-time 10 "imaps://127.0.0.1:2993/" -u "$1:$2" -X "STATUS \"$3\" (MESSAGES)" 2>/dev/null | grep -o 'MESSAGES [0-9]*' | grep -o '[0-9]*'; }
+inbox_total() { echo $(( $(imap_count "$1" "$2" INBOX || echo 0) + $(imap_count "$1" "$2" "Junk Mail" || echo 0) )); }
+smtp_in() { printf 'From: someone@sender.test\r\nTo: %s\r\nSubject: hello %s\r\n\r\nhi\r\n' "$1" "$RUN" > "$TMP/mail.eml"; curl -s --max-time 15 "smtp://127.0.0.1:2525" --mail-from someone@sender.test --mail-rcpt "$1" -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}'; }
+# every test connection comes from the Docker gateway: lift bans earlier failed sign-ins (from earlier runs) caused
+stw() { MSYS_NO_PATHCONV=1 docker run --rm --network platform-core curlimages/curl:8.11.0 -s -u admin:dev-stalwart-admin -H 'Content-Type: application/json' -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":$1}" http://stalwart:8080/jmap/; }
+stw '[["x:BlockedIp/query",{},"q"],["x:BlockedIp/set",{"#destroy":{"resultOf":"q","name":"x:BlockedIp/query","path":"/ids"}},"d"],["x:Action/set",{"create":{"r":{"@type":"ReloadBlockedIps"}}},"a"]]' >/dev/null
+check "the mail server is set up by the agent (submission port 587 answers)" "$(until_is yes 90 sh -c 'curl -s --max-time 3 smtp://127.0.0.1:2588 -o /dev/null && echo yes')" yes
+code_of ja -X POST "$BASE/o/$A/dns" -d csrf=$CSRF_A -d "domain=$MZ" >/dev/null
+owner_sql "UPDATE dns_zones SET status = 'active', active_at = now() WHERE domain = '$MZ'; SELECT pg_notify('deployments', 'dns')" >/dev/null   # stands in for the delegation
+check "[A] a domain in an active hosted zone is verified and receives mail at once" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/mail" -d csrf=$CSRF_A -d "domain=$MZ" | grep -c 'create+its+mailboxes'):$(owner_sql "SELECT stalwart_id IS NOT NULL FROM mail_domains WHERE domain = '$MZ'")" "1:t"
+check "its MX, DKIM, SPF, DMARC and client SRV records were written" "$(owner_sql "SELECT string_agg(DISTINCT type, ',' ORDER BY type) FROM dns_records WHERE managed_by = 'mail:' || (SELECT id FROM mail_domains WHERE domain = '$MZ')"):$(owner_sql "SELECT count(*) FROM dns_records WHERE type = 'TXT' AND name LIKE '%._domainkey' AND managed_by LIKE 'mail:%' AND zone_id = (SELECT id FROM dns_zones WHERE domain = '$MZ')")" "MX,SRV,TXT:2"
+check "the MX answers on the platform's DNS" "$(sleep 2; ask_dns "$MZ" MX | grep -c 'console.localhost')" 1
+check "[A] mailbox created with a chosen password" "$(code_of ja -X POST "$BASE/o/$A/mail/$MZ" -d csrf=$CSRF_A -d action=add -d local_part=anna -d "display_name=Anna Test" -d quota_mb=200 --data-urlencode "password=$MP")" 303
+check "a too-short password is refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/mail/$MZ" -d csrf=$CSRF_A -d action=add -d local_part=short -d quota_mb=100 -d password=short | grep -c 'err=')" 1
+check "anna signs in over IMAP (TLS)" "$(curl -sk --max-time 10 "imaps://127.0.0.1:2993/" -u "anna@$MZ:$MP" -X 'CAPABILITY' -o /dev/null -w '%{exitcode}' 2>/dev/null; echo)" 0
+check "a wrong password is refused" "$(curl -sk --max-time 10 "imaps://127.0.0.1:2993/" -u "anna@$MZ:wrong-password-x" -X 'CAPABILITY' -o /dev/null 2>/dev/null && echo in || echo refused)" refused
+check "mail sent to anna from the internet arrives (port 25)" "$(smtp_in "anna@$MZ"):$(until_is 1 20 inbox_total "anna@$MZ" "$MP")" "250:1"
+check "anna sends with sign-in on port 587 (STARTTLS)" "$(curl -sk --max-time 15 "smtp://127.0.0.1:2588" --ssl-reqd -u "anna@$MZ:$MP" --mail-from "anna@$MZ" --mail-rcpt "anna@$MZ" -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}')" 250
+check "[A] alias added; its mail reaches anna" "$(code_of ja -X POST "$BASE/o/$A/mail/$MZ" -d csrf=$CSRF_A -d action=alias -d mailbox=anna -d alias=sales):$(smtp_in "sales@$MZ"):$(until_is 3 20 inbox_total "anna@$MZ" "$MP")" "303:250:3"
+check "an unknown address is refused" "$(smtp_in "nobody@$MZ")" 550
+check "not an open relay (no sign-in: refused on 587 and 25)" "$(curl -sk --max-time 15 smtp://127.0.0.1:2588 --ssl-reqd --mail-from "anna@$MZ" --mail-rcpt someone@example.org -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}'):$(curl -s --max-time 15 smtp://127.0.0.1:2525 --mail-from someone@sender.test --mail-rcpt someone@example.org -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}')" "503:550"
+check "[A] catch-all on anna: unknown addresses are delivered to her" "$(code_of ja -X POST "$BASE/o/$A/mail/$MZ" -d csrf=$CSRF_A -d action=catchall -d mailbox=anna):$(smtp_in "nobody@$MZ"):$(until_is 4 20 inbox_total "anna@$MZ" "$MP")" "303:250:4"
+check "the domain page lists the mailbox, its alias and storage" "$(c ja "$BASE/o/$A/mail/$MZ" | grep -c -e "anna@$MZ" -e "sales@$MZ" -e '/ 200 MB' | sed 's/^[3-9]$/yes/')" yes
+check "[API] mailbox with a generated password (shown once)" "$(mapi -X POST "$BASE/api/v1/mail/domains/$MZ/mailboxes" -d '{"name":"bob","quota_mb":100}' | grep -o '"password":"[A-Za-z0-9]\{20\}"' | wc -l | tr -d ' ')" 1
+check "[API] mailboxes listed" "$(mapi "$BASE/api/v1/mail/domains/$MZ/mailboxes" | grep -o '"address":"[a-z]*@' | sort | tr -d '\n')" '"address":"anna@"address":"bob@'
+check "[API] new password for bob" "$(mapi -X POST "$BASE/api/v1/mail/domains/$MZ/mailboxes/bob/password" -d "{\"password\":\"$MP-bob\"}" -o /dev/null -w '%{http_code}'):$(curl -sk --max-time 10 "imaps://127.0.0.1:2993/" -u "bob@$MZ:$MP-bob" -X CAPABILITY -o /dev/null && echo in)" "200:in"
+check "the plan's mailbox storage limit is enforced" "$(mapi -X POST "$BASE/api/v1/mail/domains/$MZ/mailboxes" -d '{"name":"huge","quota_mb":900000}' -o /dev/null -w '%{http_code}')" 422
+check "[B] another organization cannot take the domain" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/mail" -d csrf=$CSRF_B -d "domain=$MZ" | grep -c 'err=')" 1
+check "[B->A] B cannot open A's mail domain (404)" "$(code_of jb "$BASE/o/$B/mail/$MZ"):$(code_of jb "$BASE/o/$A/mail/$MZ")" "404:404"
+check "the sending domain cannot be deleted while it has mailboxes" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/email/d/$MZ/delete" -d csrf=$CSRF_A -d "confirm=$MZ" | grep -c 'has+mailboxes')" 1
+check "[A] mailbox deleted: it can no longer sign in" "$(code_of ja -X POST "$BASE/o/$A/mail/$MZ" -d csrf=$CSRF_A -d action=delete -d mailbox=bob -d "confirm=bob@$MZ"):$(curl -sk --max-time 10 "imaps://127.0.0.1:2993/" -u "bob@$MZ:$MP-bob" -X CAPABILITY -o /dev/null && echo in || echo out)" "303:out"
+check "[A] domain removed with its mailboxes and records" "$(code_of ja -X POST "$BASE/o/$A/mail/$MZ" -d csrf=$CSRF_A -d action=remove -d "confirm=$MZ"):$(curl -sk --max-time 10 "imaps://127.0.0.1:2993/" -u "anna@$MZ:$MP" -X CAPABILITY -o /dev/null && echo in || echo out):$(owner_sql "SELECT count(*) FROM dns_records WHERE managed_by LIKE 'mail:%' AND zone_id = (SELECT id FROM dns_zones WHERE domain = '$MZ')")" "303:out:0"
+check "mail to the removed domain is no longer accepted" "$(smtp_in "anna@$MZ" | grep -c '^250$')" 0
+code_of ja -X POST "$BASE/o/$A/email/d/$MZ/delete" -d csrf=$CSRF_A -d "confirm=$MZ" >/dev/null
+code_of ja -X POST "$BASE/o/$A/dns/$MZ" -d csrf=$CSRF_A -d action=remove -d "confirm=$MZ" >/dev/null
+admin set-plan --slug "$A" --plan starter >/dev/null
+
 section "Bulk actions and create forms on the lists"
 admin set-plan --slug "$A" --plan pro >/dev/null
 BK_CODE='export const handler = async () => ({ ok: true });'
