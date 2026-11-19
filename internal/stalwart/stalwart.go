@@ -474,3 +474,60 @@ func (c *Client) Unban(ctx context.Context, id string) error {
 	}
 	return c.action(ctx, "ReloadBlockedIps")
 }
+
+// AllowedIP is an address the server never bans.
+type AllowedIP struct {
+	ID      string `json:"id"`
+	Address string `json:"address"`
+	Reason  string `json:"reason"`
+}
+
+// AllowedIPs lists the addresses exempt from bans.
+func (c *Client) AllowedIPs(ctx context.Context) ([]AllowedIP, error) {
+	var out []AllowedIP
+	err := c.get(ctx, "AllowedIp", nil, nil, &out)
+	return out, err
+}
+
+// SetAllowed makes the addresses tagged reason exactly addrs (adding and removing entries).
+func (c *Client) SetAllowed(ctx context.Context, reason string, addrs []string) (changed bool, err error) {
+	cur, err := c.AllowedIPs(ctx)
+	if err != nil {
+		return false, err
+	}
+	want := map[string]bool{}
+	for _, a := range addrs {
+		want[a] = true
+	}
+	have := map[string]bool{}
+	var stale []string
+	for _, a := range cur {
+		if a.Reason != reason {
+			continue
+		}
+		if want[a.Address] {
+			have[a.Address] = true
+		} else {
+			stale = append(stale, a.ID)
+		}
+	}
+	if len(stale) > 0 {
+		if _, err := c.set(ctx, "AllowedIp", map[string]any{"destroy": stale}); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+	for _, a := range addrs {
+		if have[a] {
+			continue
+		}
+		if _, err := c.set(ctx, "AllowedIp", map[string]any{"create": map[string]any{"new": map[string]any{"address": a, "reason": reason}}}); err != nil {
+			return changed, err
+		}
+		changed = true
+	}
+	if changed {
+		err = c.action(ctx, "ReloadBlockedIps")
+	}
+	return changed, err
+}

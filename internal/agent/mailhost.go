@@ -47,6 +47,7 @@ func (a *Agent) mailHostLoop(ctx context.Context) {
 		if setup {
 			certMod = a.mailCertificate(ctx, ms, certMod)
 			a.reconcileMailDomains(ctx, ms)
+			a.allowWebmail(ctx, ms)
 		}
 		wait := tick.C
 		if !setup {
@@ -144,5 +145,32 @@ func (a *Agent) reconcileMailDomains(ctx context.Context, ms *stalwart.Client) {
 				a.log.Info("mail server: domain switched", "domain", d.Name, "enabled", !s)
 			}
 		}
+	}
+}
+
+// allowWebmail keeps the webmail's address on the mail server's allow list: every webmail
+// sign-in reaches the mail server from that one address, so its failed sign-ins (which
+// the webmail limits per visitor itself) must not ban everybody's webmail.
+func (a *Agent) allowWebmail(ctx context.Context, ms *stalwart.Client) {
+	cs, err := a.dk.ContainerList(ctx, "com.docker.compose.service=webmail")
+	if err != nil {
+		return
+	}
+	var ips []string
+	for _, c := range cs {
+		info, err := a.dk.ContainerInspect(ctx, c.ID)
+		if err != nil {
+			continue
+		}
+		for _, n := range info.NetworkSettings.Networks {
+			if n.IPAddress != "" {
+				ips = append(ips, n.IPAddress)
+			}
+		}
+	}
+	if changed, err := ms.SetAllowed(ctx, "platform webmail", ips); err != nil {
+		a.log.Warn("mail server: allow the webmail", "err", err)
+	} else if changed {
+		a.log.Info("mail server: webmail address allowed", "addresses", ips)
 	}
 }

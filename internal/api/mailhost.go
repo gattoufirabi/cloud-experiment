@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -53,6 +54,23 @@ type mailbox struct {
 type mailAlias struct{ ID, LocalPart string }
 
 func (s *Server) mailHostingEnabled() bool { return s.cfg.MailHostingEnabled() }
+
+// webmailURL is the webmail's address ("" when there is none), with the console's scheme
+// and port.
+func (s *Server) webmailURL() string {
+	if s.cfg.WebmailHost == "" {
+		return ""
+	}
+	u, err := url.Parse(s.cfg.BaseURL)
+	if err != nil {
+		return "https://" + s.cfg.WebmailHost
+	}
+	host := s.cfg.WebmailHost
+	if p := u.Port(); p != "" && !strings.Contains(host, ":") {
+		host += ":" + p
+	}
+	return u.Scheme + "://" + host
+}
 
 func (s *Server) mailServer() *stalwart.Client {
 	return stalwart.New(s.cfg.StalwartURL, s.cfg.StalwartAdmin)
@@ -608,7 +626,7 @@ func (s *Server) mailPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "mail", http.StatusOK, data{"Org": o, "Domains": ds, "Enabled": s.mailHostingEnabled(),
-		"Count": count, "UsedMB": used, "MaxBoxes": maxBoxes, "MaxMB": maxMB, "MailHost": s.cfg.MailHost(),
+		"Count": count, "UsedMB": used, "MaxBoxes": maxBoxes, "MaxMB": maxMB, "MailHost": s.cfg.MailHost(), "Webmail": s.webmailURL(),
 		"CanEdit": model.RoleAtLeast(o.Role, "developer")})
 }
 
@@ -688,7 +706,7 @@ func (s *Server) renderMailDomain(w http.ResponseWriter, r *http.Request, extra 
 		s.fillUsage(r.Context(), boxes)
 	}
 	d := data{"Org": o, "Domain": md, "Mailboxes": boxes, "Records": s.mailRecords(md), "Zone": zone, "ForeignMX": foreignMX,
-		"MailHost": s.cfg.MailHost(), "CanEdit": model.RoleAtLeast(o.Role, "developer"), "MinPassword": minMailboxPassword}
+		"MailHost": s.cfg.MailHost(), "CanEdit": model.RoleAtLeast(o.Role, "developer"), "MinPassword": minMailboxPassword, "Webmail": s.webmailURL()}
 	for k, v := range extra {
 		d[k] = v
 	}

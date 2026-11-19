@@ -1,0 +1,57 @@
+{{define "folders"}}
+<nav class="folders" aria-label="Folders">
+  <a class="compose-btn" href="/compose">{{template "i-pen"}}<span>New message</span></a>
+  {{range .Folders}}<a href="/f/{{.Key}}" class="folder{{if and $.Folder (eq $.Folder.ID .ID)}} cur{{end}}"{{if and $.Folder (eq $.Folder.ID .ID)}} aria-current="page"{{end}}>
+    <span class="f-name">{{.Label}}</span>{{if and .Unread (ne .Role "sent") (ne .Role "drafts") (ne .Role "trash")}}<span class="f-count">{{.Unread}}</span>{{end}}</a>{{end}}
+</nav>
+{{end}}
+
+{{define "i-pen"}}<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/></svg>{{end}}
+{{define "i-search"}}<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>{{end}}
+{{define "i-clip"}}<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.5l-8.5 8.5a5 5 0 0 1-7-7L14 5.5a3.5 3.5 0 0 1 5 5L10.5 19a2 2 0 0 1-3-3L15 8.5"/></svg>{{end}}
+{{define "i-star"}}<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>{{end}}
+
+{{define "layout"}}<!doctype html>
+<html lang="en"{{with .Theme}} data-theme="{{.}}"{{end}}>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{with .Title}}{{.}} · {{end}}Mail</title>
+  <link rel="stylesheet" href="/static/webmail.css?v=1">
+  <script src="/static/webmail.js?v=1" defer></script>
+</head>
+<body>
+{{if .Me}}
+<div class="app">
+  <header class="bar">
+    <a class="brand" href="/f/inbox" aria-label="Inbox"><span class="mark" aria-hidden="true"></span>mail</a>
+    <form class="search" method="get" action="/search" role="search">{{template "i-search"}}<input name="q" type="search" value="{{.Q}}" placeholder="Search mail" aria-label="Search mail"></form>
+    <div class="bar-right">
+      <details class="menu">
+        <summary><span class="avatar" aria-hidden="true">{{slice .Me.Email 0 1}}</span><span class="who">{{.Me.Name}}</span></summary>
+        <div class="menu-panel">
+          <span class="menu-meta">{{.Me.Email}}</span>
+          <div class="theme" role="group" aria-label="Appearance">
+            <a href="/theme?set=light&amp;back={{.Here}}"{{if eq .Theme "light"}} aria-current="true"{{end}}>Light</a>
+            <a href="/theme?set=dark&amp;back={{.Here}}"{{if eq .Theme "dark"}} aria-current="true"{{end}}>Dark</a>
+            <a href="/theme?set=system&amp;back={{.Here}}"{{if not .Theme}} aria-current="true"{{end}}>Auto</a>
+          </div>
+          <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="ghost wide">Sign out</button></form>
+        </div>
+      </details>
+    </div>
+  </header>
+  <div class="cols">
+    {{template "folders" .}}
+    <main class="main" id="main">
+      {{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}
+      {{with .Err}}<p class="flash err" role="alert">{{.}}</p>{{end}}
+      {{template "content" .}}
+    </main>
+  </div>
+</div>
+{{else}}
+<main class="center" id="main">{{template "content" .}}</main>
+{{end}}
+</body>
+</html>{{end}}

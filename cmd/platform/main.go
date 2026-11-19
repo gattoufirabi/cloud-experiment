@@ -31,6 +31,7 @@ import (
 	"platform/internal/model"
 	"platform/internal/registry"
 	"platform/internal/secure"
+	"platform/internal/webmail"
 )
 
 func main() {
@@ -55,6 +56,17 @@ func main() {
 		if pc, err = dbproxy.FromEnv(); err == nil {
 			err = dbproxy.Run(ctx, pc)
 		}
+	case "webmail": // the webmail for hosted mailboxes (its own container, no database)
+		var ws *webmail.Server
+		listen := os.Getenv("WEBMAIL_LISTEN")
+		if listen == "" {
+			listen = ":8090"
+		}
+		if cfg.StalwartURL == "" {
+			err = fmt.Errorf("STALWART_URL is not set")
+		} else if ws, err = webmail.New(webmail.Config{Listen: listen, MailURL: cfg.StalwartURL, CookieSecure: cfg.CookieSecure, ConsoleURL: cfg.BaseURL}, slog.Default()); err == nil {
+			err = ws.Run(ctx)
+		}
 	case "healthcheck":
 		err = healthcheck(cfg)
 	case "admin":
@@ -69,7 +81,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: platform api | agent | migrate | healthcheck | admin <command>")
+	fmt.Fprintln(os.Stderr, "usage: platform api | agent | migrate | webmail | healthcheck | admin <command>")
 	os.Exit(2)
 }
 

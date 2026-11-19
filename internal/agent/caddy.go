@@ -206,6 +206,14 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 		}}},
 		"terminal": true,
 	}}
+	if cfg.WebmailHost != "" {
+		// Webmail of hosted mailboxes: its own name, outside the console.
+		rs = append(rs, obj{
+			"match":    []any{obj{"host": []string{hostOnly(cfg.WebmailHost)}}},
+			"handle":   []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.WebmailUpstream}}}},
+			"terminal": true,
+		})
+	}
 	if cfg.RegistryHost != "" {
 		// Registry host: /token is the API's token endpoint, everything else the registry.
 		rs = append(rs, obj{
@@ -405,6 +413,9 @@ func platformHosts(cfg config.Config) []string {
 	}
 	if cfg.StorageEnabled() {
 		hosts = append(hosts, hostOnly(cfg.S3Host))
+	}
+	if cfg.WebmailHost != "" {
+		hosts = append(hosts, hostOnly(cfg.WebmailHost))
 	}
 	return hosts
 }

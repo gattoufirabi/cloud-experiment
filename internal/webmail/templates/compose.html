@@ -1,0 +1,19 @@
+{{define "content"}}
+<div class="list-head"><h1>{{if .Subject}}{{.Subject}}{{else}}New message{{end}}</h1></div>
+<form method="post" action="/compose" enctype="multipart/form-data" class="compose">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="in_reply_to" value="{{.InReplyTo}}"><input type="hidden" name="references" value="{{.References}}">
+  <div class="field"><label for="to">To</label><input id="to" name="to" value="{{.To}}" placeholder="anna@example.com, Bob &lt;bob@example.org&gt;" required autofocus></div>
+  <details class="more-recipients"{{if or .Cc .Bcc}} open{{end}}><summary>Cc and Bcc</summary>
+    <div class="field"><label for="cc">Cc</label><input id="cc" name="cc" value="{{.Cc}}"></div>
+    <div class="field"><label for="bcc">Bcc</label><input id="bcc" name="bcc" value="{{.Bcc}}"></div>
+  </details>
+  <div class="field"><label for="subject">Subject</label><input id="subject" name="subject" value="{{.Subject}}" maxlength="500"></div>
+  <textarea name="body" rows="16" aria-label="Message">{{.Body}}</textarea>
+  <div class="compose-foot">
+    <label class="attach">{{template "i-clip"}} <span>Attach files</span><input type="file" name="files" multiple></label>
+    <span class="hint">{{.MaxMB}} MB in all</span>
+    <button type="submit" class="cta">Send <span aria-hidden="true">→</span></button>
+  </div>
+</form>
+{{end}}

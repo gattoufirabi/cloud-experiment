@@ -45,6 +45,8 @@ x-app: &app
     # Hosted mailboxes: the mail server (service stalwart), managed through its admin API.
     STALWART_URL: ${STALWART_URL:-http://stalwart:8080}
     STALWART_ADMIN: admin:${STALWART_ADMIN_PASSWORD:-}
+    # The webmail's public name (for example webmail.example.com); empty turns it off.
+    WEBMAIL_HOST: ${WEBMAIL_HOST:-}
     PUBLIC_IP: ${PUBLIC_IP:-}
     OPERATOR_NTFY_URL: ${OPERATOR_NTFY_URL:-}
     # resolv.conf for gVisor containers (they cannot use Docker's embedded DNS); set by host/deploy.sh
@@ -208,6 +210,22 @@ services:
       - ./garage/garage.toml:/etc/garage.toml:ro
       - /srv/platform/garage:/var/lib/garage
     deploy: { resources: { limits: { memory: 512M } } }
+
+  # Webmail of hosted mailboxes, at WEBMAIL_HOST: people sign in with their mailbox's
+  # address and password. No database, no secrets: it reaches the mail server only.
+  webmail:
+    image: platform:${PLATFORM_VERSION:-local}
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    logging: *logging
+    command: ["webmail"]
+    environment:
+      STALWART_URL: ${STALWART_URL:-http://stalwart:8080}
+      COOKIE_SECURE: "true"
+      BASE_URL: https://${CONSOLE_HOST}
+    deploy: { resources: { limits: { memory: 256M } } }
 
   # Hosted mailboxes: SMTP (25 in, 587 submission), IMAP 993, POP3 995. Its admin API
   # (8080) stays on the compose network; data in /srv/platform/stalwart (owned by uid 2000).

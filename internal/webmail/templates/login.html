@@ -1,0 +1,17 @@
+{{define "content"}}
+<div class="login">
+  <div class="glow" aria-hidden="true"></div>
+  <a class="brand big" href="/"><span class="mark" aria-hidden="true"></span>mail</a>
+  <h1>Sign in to your mailbox</h1>
+  <p class="sub">Use your full email address and the password of your mailbox.</p>
+  {{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}
+  {{with .Err}}<p class="flash err" role="alert">{{.}}</p>{{end}}
+  <form method="post" action="/login" class="stack">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <label>Email address<input name="email" type="email" value="{{.Email}}" autocomplete="username" required autofocus placeholder="you@example.com"></label>
+    <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit" class="cta">Sign in <span aria-hidden="true">→</span></button>
+  </form>
+  <p class="settings-hint"><code>imap · 993</code> <code>smtp · 587</code> <span>also work in any mail app</span></p>
+</div>
+{{end}}

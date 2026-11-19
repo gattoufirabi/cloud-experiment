@@ -59,6 +59,7 @@ x-app: &app
     PUBLIC_IP: 127.0.0.1
     STALWART_URL: http://stalwart:8080
     STALWART_ADMIN: admin:dev-stalwart-admin
+    WEBMAIL_HOST: webmail.localhost      # http://webmail.localhost:8088
     SIGNUPS_PER_HOUR: "100"            # dev only: the e2e test signs up several times per run
     # Dev only: both test nodes share one Docker host and its local backup volume.
     MOVES_SHARED_LOCAL_REPO: "true"
@@ -239,6 +240,18 @@ services:
       TRIVY_TOKEN: dev-trivy-token
     ports: ["127.0.0.1:4954:4954"] # dev: reachable by scan containers on the VM network
     volumes: [trivy-cache:/cache]
+
+  # Webmail of hosted mailboxes: http://webmail.localhost:8088
+  webmail:
+    image: platform:dev
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    command: ["webmail"]
+    environment:
+      STALWART_URL: http://stalwart:8080
+      BASE_URL: http://console.localhost:8088
 
   # Hosted mailboxes. Dev ports: SMTP 2525, submission 2588, IMAP 2993, POP3 2995
   # (self-signed certificate: TLS is off in dev).

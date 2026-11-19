@@ -119,6 +119,7 @@
 <section class="pane" id="apps" role="tabpanel" aria-label="Mail app settings">
   <div class="section">
     <h2>Mail app settings</h2>
+    {{with .Webmail}}<p>In the browser: <a href="{{.}}" target="_blank" rel="noopener">{{.}}</a>, with the full address and the mailbox's password.</p>{{end}}
     <p class="small muted">Most apps find these on their own from the address; if yours asks, enter:</p>
     <table class="resources">
       <thead><tr><th></th><th>Server</th><th class="num">Port</th><th>Security</th></tr></thead>

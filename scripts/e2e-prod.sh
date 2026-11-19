@@ -406,6 +406,11 @@ check "mail from the internet arrives (port 25)" "$(smtp_in "anna@$MZ"):$(for _ 
 check "an unknown address is refused" "$(smtp_in "nobody@$MZ")" 550
 check "sending needs sign-in on port 587" "$(curl -sk --max-time 15 smtp://127.0.0.1:587 --ssl-reqd -u "anna@$MZ:$MP" --mail-from "anna@$MZ" --mail-rcpt "anna@$MZ" -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}'):$(curl -sk --max-time 15 smtp://127.0.0.1:587 --ssl-reqd --mail-from "anna@$MZ" --mail-rcpt "someone@example.org" -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}')" "250:503"
 check "not an open relay (port 25 refuses mail for other domains)" "$(curl -s --max-time 15 smtp://127.0.0.1:25 --mail-from someone@sender.test --mail-rcpt someone@example.org -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}')" 550
+WMH=$(val WEBMAIL_HOST)
+if [ -n "$WMH" ]; then
+  wm() { curl -sS --resolve "$WMH:443:127.0.0.1" -b "$TMP/wm" -c "$TMP/wm" "$@"; }
+  check "webmail served over HTTPS; anna signs in and sees her mail" "$(wm -o /dev/null -w '%{http_code}' "https://$WMH/login"):$(wm -o /dev/null -w '%{http_code}' -X POST "https://$WMH/login" --data-urlencode "email=anna@$MZ" --data-urlencode "password=$MP"):$(wm "https://$WMH/f/inbox" | grep -q "hello $RUN" && echo yes)" "200:303:yes"
+fi
 check "[B->A] B cannot open A's mail domain (404)" "$(code_of jb "$BASE/o/$A/mail/$MZ")" 404
 check "[A] domain removed: mailbox gone" "$(code_of ja -X POST "$BASE/o/$A/mail/$MZ" -d csrf=$CSRF_A -d action=remove -d "confirm=$MZ"):$(imap_ok "anna@$MZ" "$MP")" "303:out"
 code_of ja -X POST "$BASE/o/$A/email/d/$MZ/delete" -d csrf=$CSRF_A -d "confirm=$MZ" >/dev/null

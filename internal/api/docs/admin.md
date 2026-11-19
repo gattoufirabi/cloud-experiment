@@ -78,6 +78,7 @@ Organizations can host mailboxes on their own domains. The mail server is Stalwa
 - **Domains** go on the mail server only once their organization has verified them (a domain on the mail server is local for every mailbox). The agent removes domains of deleted organizations and turns off those of suspended ones.
 - **Limits:** plans set the number of mailboxes and the total mailbox storage (**Plans and prices**).
 - **Backups:** mail is in `/srv/platform/stalwart`; include it in the host backups.
+- **Webmail:** set `WEBMAIL_HOST` (a DNS name pointing to the server, for example `webmail.example.com`) and start the `webmail` service: the proxy serves it with its own HTTPS certificate. People sign in with their mailbox's address and password; the webmail keeps them only in memory for the session (12 hours at most, 2 idle), has no database and no secret, and limits sign-in attempts per visitor and per address. The agent keeps its address on the mail server's allow list so failed sign-ins through it never ban everybody.
 
 ## Several servers (nodes and clusters)
 
@@ -231,6 +232,7 @@ Clients' alerts cover their applications; watch the server and the platform serv
 | COOKIE_SECURE | false | true in production. |
 | STALWART_ADMIN_PASSWORD | — | Admin password of the mail server (hosted mailboxes); the API and the agent use it on the internal network. Required by the production compose file. |
 | STALWART_URL | http://stalwart:8080 | The mail server's admin API. Empty turns hosted mailboxes off. |
+| WEBMAIL_HOST | — | Public name of the webmail (for example webmail.example.com). Empty turns it off. |
 
 ## Admin troubleshooting
 

@@ -1,0 +1,38 @@
+{{define "content"}}
+<div class="list-head">
+  <h1>{{if .Q}}Results for “{{.Q}}”{{else}}{{.Title}}{{end}}</h1>
+  <span class="meta">{{if .Q}}{{.Total}} found{{else if .Folder}}{{.Folder.Total}} message{{if ne .Folder.Total 1}}s{{end}}{{if .Folder.Unread}} · {{.Folder.Unread}} unread{{end}}{{end}}</span>
+</div>
+{{if .Messages}}
+<form method="post" action="/bulk" id="bulk">
+  <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="back" value="{{.Here}}">
+  <div class="toolbar">
+    <label class="check-all"><input type="checkbox" data-select-all aria-label="Select all"></label>
+    <button name="action" value="read" class="ghost sm">Mark read</button>
+    <button name="action" value="unread" class="ghost sm">Unread</button>
+    {{if and .Folder (eq .Folder.Role "trash")}}<button name="action" value="inbox" class="ghost sm">Restore</button><button name="action" value="delete" class="ghost sm danger" data-confirm="Delete the selected messages for good?">Delete for good</button>
+    {{else}}<button name="action" value="archive" class="ghost sm">Archive</button><button name="action" value="junk" class="ghost sm">Spam</button><button name="action" value="trash" class="ghost sm">Delete</button>{{end}}
+  </div>
+  <ul class="msgs">
+    {{range .Messages}}
+    <li class="msg{{if not .Seen}} unread{{end}}">
+      <input type="checkbox" name="sel" value="{{.ID}}" aria-label="Select “{{.Subject}}”">
+      <a href="/m/{{.ID}}" class="msg-link">
+        <span class="avatar sm" aria-hidden="true">{{initial .Sender}}</span>
+        <span class="msg-from">{{if and $.Folder (eq $.Folder.Role "sent")}}To {{range $i, $a := .To}}{{if $i}}, {{end}}{{$a.Short}}{{end}}{{else}}{{.Sender.Short}}{{end}}</span>
+        <span class="msg-text"><span class="msg-subject">{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</span> <span class="msg-preview">{{.Preview}}</span></span>
+        <span class="msg-icons">{{if .Flagged}}<span class="star">{{template "i-star"}}</span>{{end}}{{if .HasAttachment}}{{template "i-clip"}}{{end}}</span>
+        <time class="msg-date" datetime="{{.Received.Format "2006-01-02T15:04:05Z07:00"}}">{{when .Received}}</time>
+      </a>
+    </li>
+    {{end}}
+  </ul>
+</form>
+{{if or .Page .HasNext}}<nav class="pager">{{if .Page}}<a class="ghost-link" href="?page={{add .Page -1}}">← Newer</a>{{end}}{{if .HasNext}}<a class="ghost-link" href="?page={{add .Page 1}}">Older →</a>{{end}}</nav>{{end}}
+{{else}}
+<div class="empty">
+  <p>{{if .Q}}No message matches.{{else}}Nothing here.{{end}}</p>
+  {{if and .Folder (eq .Folder.Role "inbox")}}<a class="cta" href="/compose">Write a message <span aria-hidden="true">→</span></a>{{end}}
+</div>
+{{end}}
+{{end}}

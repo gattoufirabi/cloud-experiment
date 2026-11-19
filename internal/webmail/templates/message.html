@@ -1,0 +1,37 @@
+{{define "content"}}
+<article class="read">
+  <div class="read-tools">
+    <a class="ghost-link" href="/f/{{with .Folder}}{{.Key}}{{else}}inbox{{end}}">← {{with .Folder}}{{.Label}}{{else}}Inbox{{end}}</a>
+    <div class="read-actions">
+      <a class="btn ghost sm" href="/compose?reply={{.M.ID}}">Reply</a>
+      {{if or (gt (len .M.To) 1) .M.Cc}}<a class="btn ghost sm" href="/compose?reply={{.M.ID}}&amp;all=1">Reply all</a>{{end}}
+      <a class="btn ghost sm" href="/compose?forward={{.M.ID}}">Forward</a>
+      <form method="post" action="/m/{{.M.ID}}" class="inline">
+        <input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="back" value="{{.Here}}">
+        {{if .M.Flagged}}<button name="action" value="unflag" class="ghost sm" title="Remove the star">★</button>{{else}}<button name="action" value="flag" class="ghost sm" title="Star">☆</button>{{end}}
+        <button name="action" value="unread" class="ghost sm">Unread</button>
+        {{if and .Folder (eq .Folder.Role "trash")}}<button name="action" value="inbox" class="ghost sm">Restore</button><button name="action" value="delete" class="ghost sm danger" data-confirm="Delete this message for good?">Delete for good</button>
+        {{else}}<button name="action" value="archive" class="ghost sm">Archive</button><button name="action" value="junk" class="ghost sm">Spam</button><button name="action" value="trash" class="ghost sm danger">Delete</button>{{end}}
+      </form>
+    </div>
+  </div>
+  <h1 class="read-subject">{{if .M.Subject}}{{.M.Subject}}{{else}}(no subject){{end}}</h1>
+  <div class="read-head">
+    <span class="avatar" aria-hidden="true">{{initial .M.Sender}}</span>
+    <div class="read-who">
+      <div><strong>{{.M.Sender.Short}}</strong> <span class="addr">&lt;{{.M.Sender.Email}}&gt;</span></div>
+      <div class="addr">to {{range $i, $a := .M.To}}{{if $i}}, {{end}}{{$a.Short}}{{end}}{{with .M.Cc}} · cc {{range $i, $a := .}}{{if $i}}, {{end}}{{$a.Short}}{{end}}{{end}}</div>
+    </div>
+    <time class="read-date">{{.M.Received.Local.Format "Mon 2 Jan 2006, 15:04"}}</time>
+  </div>
+  {{with .M.Files}}
+  <ul class="files">{{range .}}<li><a href="/m/{{$.M.ID}}/file/{{.BlobID}}">{{template "i-clip"}} <span>{{if .Name}}{{.Name}}{{else}}attachment{{end}}</span> <small>{{size .Size}}</small></a></li>{{end}}</ul>
+  {{end}}
+  {{if .HasHTML}}
+  <iframe class="body-frame" src="/m/{{.M.ID}}/body" sandbox="allow-popups allow-popups-to-escape-sandbox" title="Message" loading="lazy"></iframe>
+  <p class="note">Remote images and scripts in this message are blocked.</p>
+  {{else}}
+  <pre class="body-text">{{.M.Text}}</pre>
+  {{end}}
+</article>
+{{end}}
