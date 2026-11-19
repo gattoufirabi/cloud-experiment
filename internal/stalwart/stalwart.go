@@ -376,6 +376,22 @@ func (c *Client) Setup(ctx context.Context, hostname string) (restart bool, err 
 	}}}); err != nil {
 		return false, err
 	}
+	// The system resolver inside a container cannot validate DNSSEC, which the server
+	// requires for outgoing mail ("DNSSEC validation failed": nothing is sent). Use a
+	// validating public resolver over TLS, unless an operator chose another one.
+	var res []struct {
+		Type string `json:"@type"`
+	}
+	if err := c.get(ctx, "DnsResolver", []string{"singleton"}, nil, &res); err != nil {
+		return false, err
+	}
+	if len(res) == 0 || res[0].Type == "System" {
+		if _, err := c.set(ctx, "DnsResolver", map[string]any{"update": map[string]any{"singleton": map[string]any{
+			"@type": "Quad9", "useTls": true, "tcpOnError": true,
+		}}}); err != nil {
+			return false, err
+		}
+	}
 	// automatic bans expire (by default they are forever: a person who mistyped a
 	// password too often would never get back in)
 	if _, err := c.set(ctx, "Security", map[string]any{"update": map[string]any{"singleton": map[string]any{
@@ -530,4 +546,36 @@ func (c *Client) SetAllowed(ctx context.Context, reason string, addrs []string) 
 		err = c.action(ctx, "ReloadBlockedIps")
 	}
 	return changed, err
+}
+
+// QueueProblems counts the waiting deliveries by their last error ("" errors are left
+// out): what keeps outgoing mail from leaving, without any address or content.
+func (c *Client) QueueProblems(ctx context.Context) (map[string]int, error) {
+	ids, err := c.query(ctx, "QueuedMessage", nil)
+	if err != nil || len(ids) == 0 {
+		return map[string]int{}, err
+	}
+	if len(ids) > 500 {
+		ids = ids[:500]
+	}
+	var list []struct {
+		Recipients map[string]struct {
+			Status struct {
+				Type    string `json:"@type"`
+				Message string `json:"errorMessage"`
+			} `json:"status"`
+		} `json:"recipients"`
+	}
+	if err := c.get(ctx, "QueuedMessage", ids, []string{"recipients"}, &list); err != nil {
+		return nil, err
+	}
+	out := map[string]int{}
+	for _, m := range list {
+		for _, r := range m.Recipients {
+			if r.Status.Message != "" {
+				out[r.Status.Message]++
+			}
+		}
+	}
+	return out, nil
 }

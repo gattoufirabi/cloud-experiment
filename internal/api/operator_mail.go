@@ -48,6 +48,9 @@ func (s *Server) operatorMailPage(w http.ResponseWriter, r *http.Request) {
 			if n, err := ms.QueueSize(ctx); err == nil {
 				d["Queue"] = n
 			}
+			if p, err := ms.QueueProblems(ctx); err == nil && len(p) > 0 {
+				d["QueueProblems"] = p
+			}
 			if ips, err := ms.BlockedIPs(ctx); err == nil {
 				d["Blocked"] = ips
 			}

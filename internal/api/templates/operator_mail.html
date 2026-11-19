@@ -17,6 +17,14 @@
   </table>
   <p class="small muted">Receiving servers (Gmail, Outlook) refuse or file as spam mail from a server whose reverse DNS does not name it. Outgoing port 25 must also be open at the hosting provider.</p>
 </div>
+{{with .QueueProblems}}
+<div class="section" id="queue">
+  <h2>Why outgoing mail is waiting</h2>
+  <p class="small muted">The last error of each delivery still in the queue (the mail server retries for 3 days). Addresses and contents are not shown.</p>
+  <table class="resources"><thead><tr><th>Error</th><th class="num">Deliveries</th></tr></thead>
+    <tbody>{{range $e, $n := .}}<tr><td class="small">{{$e}}</td><td class="num">{{$n}}</td></tr>{{end}}</tbody></table>
+</div>
+{{end}}
 <div class="section" id="blocked">
   <h2>Banned addresses <span class="count">{{len .Blocked}}</span></h2>
   <p class="small muted">The mail server bans an address for an hour after too many failed sign-ins, relay attempts or scans. Lift a ban when a customer was locked out.</p>
