@@ -478,7 +478,7 @@ func (a *Agent) send(ctx context.Context, d delivery) error {
 		body := state + ": " + title + "\n\n" + d.Summary + "\n\nWhere: " + where +
 			"\nStarted: " + d.StartedAt.UTC().Format("2006-01-02 15:04 UTC") + "\nOpen in the console: " + link +
 			"\n\nYou receive this because this address is an alert channel of " + d.OrgSlug + ".\n"
-		return a.sendMail(ctx, strings.TrimPrefix(d.URL, "mailto:"), "[platform] "+title+" · "+where, body)
+		return a.sendMail(ctx, strings.TrimPrefix(d.URL, "mailto:"), "["+a.cfg.ProductName+"] "+title+" · "+where, body)
 	}
 	var req *http.Request
 	var err error

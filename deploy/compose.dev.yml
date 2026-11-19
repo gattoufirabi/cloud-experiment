@@ -23,7 +23,7 @@ x-app: &app
     SMTP_HOST: mailpit
     SMTP_PORT: "1025"
     SMTP_TLS: none                 # dev only: local mail catcher
-    SMTP_FROM: Platform <noreply@example.test>
+    SMTP_FROM: Staysa Cloud <noreply@example.test>
     BUILDS_ENABLED: "true"
     BUILD_ALLOW_INSECURE_REPOS: "true"   # dev only: the e2e test serves its repository over http
     BILLING_ENABLED: "true"

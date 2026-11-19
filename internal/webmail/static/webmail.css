@@ -51,6 +51,8 @@ code, pre, kbd, textarea { font-family: var(--mono); }
 .brand:hover { text-decoration: none; }
 .mark { width: 26px; height: 26px; border-radius: 8px; background: radial-gradient(circle at 35% 30%, #a5f3fc, #52e1fe 45%, #25aeba); box-shadow: 0 0 12px rgba(82, 225, 254, .35); }
 .brand.big { font-size: 20px; margin-bottom: 28px; }
+.brand-tag { font: 400 11px/1 var(--mono); padding: 3px 6px; border-radius: 2px; color: var(--text-3); box-shadow: 0 0 0 1px var(--border-strong) inset; }
+.bar .brand { white-space: nowrap; }
 .brand.big .mark { width: 34px; height: 34px; border-radius: 9px; }
 
 /* controls */

@@ -720,6 +720,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, sta
 		d = data{}
 	}
 	d["V"] = s.assetV
+	d["Product"] = s.cfg.ProductName
 	// pages whose settings open on their own page (…/settings)
 	d["PagePath"] = strings.TrimSuffix(r.URL.Path, "/settings")
 	if v, _ := r.Context().Value(viewKey{}).(string); v != "" {

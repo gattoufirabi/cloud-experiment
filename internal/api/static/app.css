@@ -104,6 +104,7 @@ code { font-size: 0.86em; background: var(--surface-2); border-radius: 4px; padd
 .brand::before { content: ""; width: 26px; height: 26px; margin-right: 10px; border-radius: 8px; background: radial-gradient(circle at 35% 30%, #a5f3fc, var(--cyan) 45%, var(--teal)); box-shadow: 0 0 12px rgba(82, 225, 254, .35); }
 .brand:hover { text-decoration: none; }
 .brand-mark { opacity: .55; }
+.brand-name { white-space: nowrap; }
 .side-nav { position: fixed; inset: 0 auto 0 0; width: 252px; z-index: 30; background: var(--side); border-right: 1px solid #1c1c1f; color: #fff; display: flex; flex-direction: column; }
 .side-nav .container-fluid { display: flex; flex-direction: column; height: 100%; padding: 0; }
 .side-nav .navbar-brand { padding: 20px 20px 14px; color: #fff; }

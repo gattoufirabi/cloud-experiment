@@ -1538,7 +1538,7 @@ CH=$(challenge jx); N=$(pow "$CH")
 signup jx "bot@$T.test" "${T}h" "$CH" "$N" -d website=http://spam.example >/dev/null
 check "honeypot: bot gets the same answer, nothing stored" "$(owner_sql "SELECT count(*) FROM signups WHERE email = 'bot@$T.test'")" 0
 CH=$(challenge jx); N=$(pow "$CH")
-if signup jx "$TEMAIL" "${T}e" "$CH" "$N" | grep -q "Check your email" && mail_body "$TEMAIL" "Your Platform account" | grep -q "already has an account"; then
+if signup jx "$TEMAIL" "${T}e" "$CH" "$N" | grep -q "Check your email" && mail_body "$TEMAIL" "Your Staysa Cloud account" | grep -q "already has an account"; then
   ok "existing address: same answer on screen, owner told by email"; else bad "existing-account handling"; fi
 CSRF_T=$(c jt "$BASE/o/$T" | csrf_of)
 code_of jt -X POST "$BASE/o/$T/projects" -d csrf=$CSRF_T -d slug=app -d name=App >/dev/null

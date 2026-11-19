@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="login">
   <div class="glow" aria-hidden="true"></div>
-  <a class="brand big" href="/"><span class="mark" aria-hidden="true"></span>mail</a>
+  <a class="brand big" href="/"><span class="mark" aria-hidden="true"></span>{{.Product}}<span class="brand-tag">mail</span></a>
   <h1>Sign in to your mailbox</h1>
   <p class="sub">Use your full email address and the password of your mailbox.</p>
   {{with .Msg}}<p class="flash ok" role="status">{{.}}</p>{{end}}

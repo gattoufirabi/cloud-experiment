@@ -16,7 +16,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{with .Title}}{{.}} · {{end}}Mail</title>
+  <title>{{with .Title}}{{.}} · {{end}}{{.Product}} Mail</title>
   <link rel="stylesheet" href="/static/webmail.css?v=1">
   <script src="/static/webmail.js?v=1" defer></script>
 </head>
@@ -24,7 +24,7 @@
 {{if .Me}}
 <div class="app">
   <header class="bar">
-    <a class="brand" href="/f/inbox" aria-label="Inbox"><span class="mark" aria-hidden="true"></span>mail</a>
+    <a class="brand" href="/f/inbox" aria-label="Inbox"><span class="mark" aria-hidden="true"></span>{{.Product}}<span class="brand-tag">mail</span></a>
     <form class="search" method="get" action="/search" role="search">{{template "i-search"}}<input name="q" type="search" value="{{.Q}}" placeholder="Search mail" aria-label="Search mail"></form>
     <div class="bar-right">
       <details class="menu">

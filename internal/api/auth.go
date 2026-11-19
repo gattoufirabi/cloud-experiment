@@ -90,7 +90,7 @@ func (s *Server) totpSetupPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	uri := secure.TOTPURI("Platform", sess.Email, secret)
+	uri := secure.TOTPURI(s.cfg.ProductName, sess.Email, secret)
 	qr, err := qrSVG(uri, "QR code: scan it with your authenticator app")
 	if err != nil {
 		s.serverError(w, r, err)
@@ -152,7 +152,7 @@ func (s *Server) checkTOTP(w http.ResponseWriter, r *http.Request, enrolling boo
 		d := data{"Err": msg}
 		if enrolling {
 			if secret, err := s.pendingTOTPSecret(r, sess.UserID); err == nil {
-				d["Secret"], d["URI"] = secret, secure.TOTPURI("Platform", sess.Email, secret)
+				d["Secret"], d["URI"] = secret, secure.TOTPURI(s.cfg.ProductName, sess.Email, secret)
 			}
 		}
 		s.render(w, r, page, status, d)

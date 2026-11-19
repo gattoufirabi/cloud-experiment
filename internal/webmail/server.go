@@ -39,6 +39,7 @@ type Config struct {
 	MailURL      string // the mail server's HTTP (JMAP), such as http://stalwart:8080
 	CookieSecure bool
 	ConsoleURL   string // shown on the sign-in page ("" hides it)
+	ProductName  string // the name people see ("Staysa Cloud")
 }
 
 const (
@@ -381,6 +382,10 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, sta
 	}
 	d["Here"] = r.URL.RequestURI()
 	d["Console"] = s.cfg.ConsoleURL
+	d["Product"] = s.cfg.ProductName
+	if d["Product"] == "" {
+		d["Product"] = "Mail"
+	}
 	if m := r.URL.Query().Get("msg"); m != "" && len(m) < 300 {
 		d["Msg"] = m
 	}

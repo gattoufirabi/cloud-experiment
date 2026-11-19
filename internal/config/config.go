@@ -128,6 +128,8 @@ type Config struct {
 	// The webmail of hosted mailboxes: WEBMAIL_HOST (its public name, such as
 	// webmail.example.com) and WEBMAIL_UPSTREAM (where the proxy reaches it).
 	WebmailHost, WebmailUpstream string
+	// ProductName is the name people see (console, webmail, emails): PRODUCT_NAME.
+	ProductName string
 	GarageAdminURL               string
 	GarageAdminToken             string
 
@@ -295,6 +297,7 @@ func Load() Config {
 		StalwartAdmin:    env("STALWART_ADMIN", ""),
 		MailCertDir:      env("MAIL_CERT_DIR", ""),
 		WebmailHost:      env("WEBMAIL_HOST", ""),
+		ProductName:      env("PRODUCT_NAME", "Staysa Cloud"),
 		WebmailUpstream:  env("WEBMAIL_UPSTREAM", "webmail:8090"),
 		GarageAdminURL:   strings.TrimRight(env("GARAGE_ADMIN_URL", "http://garage:3903"), "/"),
 		GarageAdminToken: env("GARAGE_ADMIN_TOKEN", ""),

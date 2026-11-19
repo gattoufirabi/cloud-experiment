@@ -218,7 +218,7 @@ func (s *Server) signupSubmit(w http.ResponseWriter, r *http.Request) {
 	if exists {
 		// Same answer on screen; the owner of the address learns it already has an account.
 		go func() {
-			_ = s.sendMail(r.Context(), email, "Your Platform account",
+			_ = s.sendMail(r.Context(), email, "Your "+s.cfg.ProductName+" account",
 				"Someone (maybe you) tried to sign up with this address, but it already has an account.\n\n"+
 					"Log in at "+s.cfg.BaseURL+"/login\n\nIf this wasn't you, you can ignore this message.\n")
 		}()

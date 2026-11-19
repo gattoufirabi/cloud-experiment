@@ -116,7 +116,7 @@ func (s *Server) forgotSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	go func() {
 		if err := s.sendMail(r.Context(), email, "Reset your password",
-			"Someone (hopefully you) asked to reset the password of your Platform account.\n\n"+
+			"Someone (hopefully you) asked to reset the password of your "+s.cfg.ProductName+" account.\n\n"+
 				"Choose a new password here (the link works once, within 1 hour):\n\n"+link+"\n\n"+
 				"If this wasn't you, ignore this message: your password stays the same.\n"); err != nil {
 			s.log.Error("send reset email", "err", err)
@@ -212,7 +212,7 @@ func (s *Server) resetSubmit(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		if platmail.Configured(s.cfg) {
 			_ = s.sendMail(r.Context(), email, "Your password was changed",
-				"The password of your Platform account was just changed. If this wasn't you, contact the platform operator now.\n")
+				"The password of your "+s.cfg.ProductName+" account was just changed. If this wasn't you, contact the platform operator now.\n")
 		}
 	}()
 	back(w, r, "/login", "Password changed. Log in with the new one (two-step login is still required).", "")

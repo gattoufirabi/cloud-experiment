@@ -30,7 +30,7 @@ import (
 
 func newWebAuthn(cfg config.Config) (*webauthn.WebAuthn, error) {
 	return webauthn.New(&webauthn.Config{
-		RPDisplayName: "Platform",
+		RPDisplayName: cfg.ProductName,
 		RPID:          cfg.ConsoleHost,
 		RPOrigins:     []string{cfg.BaseURL},
 	})
