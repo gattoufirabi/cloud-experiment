@@ -333,12 +333,38 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	var formErr string
 	deployNow := r.PostFormValue("deploy") == "1"
 	o, p, sv, err, ok := s.withService(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
-		env, err := model.ParseEnv(r.PostFormValue("env"))
+		var err error
+		formErr, _, err = s.applyServiceSettings(r, tx, o, p, sv, r.PostForm, deployNow)
+		return err
+	})
+	if !ok {
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	switch {
+	case formErr != "":
+		back(w, r, svcPath(o, p, sv)+"#settings", "", formErr)
+	case deployNow:
+		back(w, r, svcPath(o, p, sv)+"#settings", "Settings saved. Deployment started.", "")
+	default:
+		back(w, r, svcPath(o, p, sv)+"#settings", "Settings saved. They apply at the next deployment.", "")
+	}
+}
+
+// applyServiceSettings validates and saves a service's settings from form-style values
+// (the console form, or the API's JSON turned into the same fields). formErr is a
+// message for the user; err an internal error.
+func (s *Server) applyServiceSettings(r *http.Request, tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo, f url.Values, deployNow bool) (formErr string, rev int, err error) {
+	err = func() error {
+		env, err := model.ParseEnv(f.Get("env"))
 		if err != nil {
 			formErr = "Environment: " + err.Error()
 			return nil
 		}
-		ports, err := model.ParsePorts(r.PostFormValue("ports"))
+		ports, err := model.ParsePorts(f.Get("ports"))
 		if err != nil {
 			formErr = "Public ports: " + err.Error()
 			return nil
@@ -348,15 +374,15 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		next := model.Spec{
 			Ports:      ports,
-			Image:      strings.TrimSpace(r.PostFormValue("image")),
-			Port:       atoi(r.PostFormValue("port")),
-			CPUMillis:  atoi(r.PostFormValue("cpu_millis")),
-			MemoryMB:   atoi(r.PostFormValue("memory_mb")),
-			HealthPath: strings.TrimSpace(r.PostFormValue("health_path")),
-			VolumePath: strings.TrimSpace(r.PostFormValue("volume_path")),
+			Image:      strings.TrimSpace(f.Get("image")),
+			Port:       atoi(f.Get("port")),
+			CPUMillis:  atoi(f.Get("cpu_millis")),
+			MemoryMB:   atoi(f.Get("memory_mb")),
+			HealthPath: strings.TrimSpace(f.Get("health_path")),
+			VolumePath: strings.TrimSpace(f.Get("volume_path")),
 			Env:        env,
-			Worker:     r.PostFormValue("kind") == "worker",
-			Instances:  max(1, atoi(r.PostFormValue("instances"))),
+			Worker:     f.Get("kind") == "worker",
+			Instances:  max(1, atoi(f.Get("instances"))),
 		}
 		if sv.isPreview() {
 			next.Instances = 1 // previews run a single instance
@@ -365,9 +391,9 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			next.HealthPath = "/" // unused by workers
 		}
 		// Autoscaling: between min and max instances around a CPU target.
-		autoMin, autoMax, autoCPU := 0, 0, atoiDefault(r.PostFormValue("autoscale_cpu"), 70)
-		if r.PostFormValue("autoscale") == "1" && !sv.isPreview() {
-			autoMin, autoMax = atoi(r.PostFormValue("autoscale_min")), atoi(r.PostFormValue("autoscale_max"))
+		autoMin, autoMax, autoCPU := 0, 0, atoiDefault(f.Get("autoscale_cpu"), 70)
+		if f.Get("autoscale") == "1" && !sv.isPreview() {
+			autoMin, autoMax = atoi(f.Get("autoscale_min")), atoi(f.Get("autoscale_max"))
 			switch {
 			case autoMin < 1 || autoMax < autoMin || autoMax > 10:
 				formErr = "Autoscaling: from 1 to 10 instances, the minimum at most the maximum."
@@ -418,14 +444,14 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
-		metricsPath, metricsPort := strings.TrimSpace(r.PostFormValue("metrics_path")), atoiDefault(r.PostFormValue("metrics_port"), 0)
+		metricsPath, metricsPort := strings.TrimSpace(f.Get("metrics_path")), atoiDefault(f.Get("metrics_port"), 0)
 		if metricsPath != "" && (!metricsPathRe.MatchString(metricsPath) || len(metricsPath) > 200) || metricsPort < 0 || metricsPort > 65535 {
 			formErr = "Metrics: a path such as /metrics, and a port from 1 to 65535 (empty: the service's port)."
 			return nil
 		}
 		if _, err := tx.Exec(r.Context(), `UPDATE services SET autoscale_min = $2, autoscale_max = $3, autoscale_cpu = $4, metrics_path = $5, metrics_port = $6, edge_cache = $7, public = $8 WHERE id = $1`,
-			sv.ID, autoMin, autoMax, autoCPU, metricsPath, metricsPort, r.PostFormValue("edge_cache") == "1",
-			sv.isPreview() || r.PostFormValue("private") != "1"); err != nil {
+			sv.ID, autoMin, autoMax, autoCPU, metricsPath, metricsPort, f.Get("edge_cache") == "1",
+			sv.isPreview() || f.Get("private") != "1"); err != nil {
 			return err
 		}
 		if next.Ports, err = s.allocatePorts(r, tx, o, sv.ID, next.Ports); err != nil {
@@ -439,33 +465,20 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		envJSON, _ := json.Marshal(next.Env)
 		portsJSON, _ := json.Marshal(next.Ports)
 		if _, err := tx.Exec(r.Context(), `
-			UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8, worker = $9,
-			       instances = $10, ports = $11
-			WHERE id = $1`, sv.ID, next.Image, next.Port, next.CPUMillis, next.MemoryMB, next.HealthPath, next.VolumePath, envJSON, next.Worker, next.Count(), portsJSON); err != nil {
+				UPDATE services SET image = $2, port = $3, cpu_millis = $4, memory_mb = $5, health_path = $6, volume_path = $7, env = $8, worker = $9,
+				       instances = $10, ports = $11
+				WHERE id = $1`, sv.ID, next.Image, next.Port, next.CPUMillis, next.MemoryMB, next.HealthPath, next.VolumePath, envJSON, next.Worker, next.Count(), portsJSON); err != nil {
 			return err
 		}
 		s.audit(r, tx, o.ID, "service.updated", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"image": next.Image, "cpu_millis": next.CPUMillis, "memory_mb": next.MemoryMB, "worker": next.Worker, "instances": next.Count()})
 		if deployNow {
-			_, err := s.createDeployment(r, tx, o, sv.ID, next)
+			var err error
+			rev, err = s.createDeployment(r, tx, o, sv.ID, next)
 			return err
 		}
 		return nil
-	})
-	if !ok {
-		return
-	}
-	if err != nil {
-		s.serverError(w, r, err)
-		return
-	}
-	switch {
-	case formErr != "":
-		back(w, r, svcPath(o, p, sv)+"#settings", "", formErr)
-	case deployNow:
-		back(w, r, svcPath(o, p, sv)+"#settings", "Settings saved. Deployment started.", "")
-	default:
-		back(w, r, svcPath(o, p, sv)+"#settings", "Settings saved. They apply at the next deployment.", "")
-	}
+	}()
+	return formErr, rev, err
 }
 
 func atoi(s string) int {
@@ -664,7 +677,33 @@ const challengePrefix = "_platform-challenge."
 func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) {
 	var formErr, auto string
 	o, p, sv, err, ok := s.withService(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
-		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(r.PostFormValue("hostname"))), ".")
+		var err error
+		formErr, auto, _, err = s.addDomainTx(r, tx, o, p, sv, r.PostFormValue("hostname"))
+		return err
+	})
+	if !ok {
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if formErr != "" {
+		back(w, r, svcPath(o, p, sv)+"#domains", "", formErr)
+		return
+	}
+	if auto != "" {
+		back(w, r, svcPath(o, p, sv)+"#domains", auto, "")
+		return
+	}
+	back(w, r, svcPath(o, p, sv)+"#domains", "Domain added. Create the DNS records shown, then click Verify.", "")
+}
+
+// addDomainTx adds a custom domain to a service; in a zone hosted here the platform
+// writes its records (auto is then the message to show). id is the new domain's ID.
+func (s *Server) addDomainTx(r *http.Request, tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo, hostname string) (formErr, auto, id string, err error) {
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hostname)), ".")
+	err = func() error {
 		if sv.Worker {
 			formErr = "A worker has no public address, so it cannot have a domain."
 			return nil
@@ -690,7 +729,6 @@ func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		token := secure.NewToken()[:32]
-		var id string
 		if err := tx.QueryRow(r.Context(), `INSERT INTO domains (org_id, service_id, hostname, verify_token) VALUES ($1, $2, $3, $4) RETURNING id`,
 			o.ID, sv.ID, host, token).Scan(&id); err != nil {
 			if isUniqueViolation(err) {
@@ -716,23 +754,8 @@ func (s *Server) addDomain(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		return nil
-	})
-	if !ok {
-		return
-	}
-	if err != nil {
-		s.serverError(w, r, err)
-		return
-	}
-	if formErr != "" {
-		back(w, r, svcPath(o, p, sv)+"#domains", "", formErr)
-		return
-	}
-	if auto != "" {
-		back(w, r, svcPath(o, p, sv)+"#domains", auto, "")
-		return
-	}
-	back(w, r, svcPath(o, p, sv)+"#domains", "Domain added. Create the DNS records shown, then click Verify.", "")
+	}()
+	return formErr, auto, id, err
 }
 
 func (s *Server) verifyDomain(w http.ResponseWriter, r *http.Request) {
@@ -781,17 +804,7 @@ func (s *Server) verifyDomain(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteDomain(w http.ResponseWriter, r *http.Request) {
 	o, p, sv, err, ok := s.withService(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
-		var host string
-		if err := tx.QueryRow(r.Context(), `DELETE FROM domains WHERE id = $1 AND service_id = $2 RETURNING hostname`,
-			r.PathValue("id"), sv.ID).Scan(&host); err != nil {
-			return err
-		}
-		s.audit(r, tx, o.ID, "domain.removed", "domain:"+host, nil)
-		if err := s.removeManagedTx(r.Context(), r, tx, o, "domain:"+r.PathValue("id")); err != nil {
-			return err
-		}
-		_, err := tx.Exec(r.Context(), `SELECT pg_notify('deployments', '')`)
-		return err
+		return s.deleteDomainTx(r, tx, o, sv, r.PathValue("id"))
 	})
 	if !ok {
 		return
@@ -801,4 +814,19 @@ func (s *Server) deleteDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	back(w, r, svcPath(o, p, sv)+"#domains", "Domain removed.", "")
+}
+
+// deleteDomainTx removes a custom domain and the DNS records the platform wrote for it.
+func (s *Server) deleteDomainTx(r *http.Request, tx pgx.Tx, o *orgInfo, sv *serviceInfo, id string) error {
+	var host string
+	if err := tx.QueryRow(r.Context(), `DELETE FROM domains WHERE id = $1 AND service_id = $2 RETURNING hostname`,
+		id, sv.ID).Scan(&host); err != nil {
+		return err
+	}
+	s.audit(r, tx, o.ID, "domain.removed", "domain:"+host, nil)
+	if err := s.removeManagedTx(r.Context(), r, tx, o, "domain:"+id); err != nil {
+		return err
+	}
+	_, err := tx.Exec(r.Context(), `SELECT pg_notify('deployments', '')`)
+	return err
 }

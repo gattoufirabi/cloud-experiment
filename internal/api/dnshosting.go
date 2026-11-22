@@ -201,31 +201,38 @@ func normalizeRecord(zone string, in dnsRecordInput) (dnsRecordInput, error) {
 }
 
 func (s *Server) addRecordTx(ctx context.Context, r *http.Request, tx pgx.Tx, o *orgInfo, z *dnsZoneView, in dnsRecordInput) error {
+	_, err := s.addRecordIDTx(ctx, r, tx, o, z, in)
+	return err
+}
+
+// addRecordIDTx adds a record and returns its ID.
+func (s *Server) addRecordIDTx(ctx context.Context, r *http.Request, tx pgx.Tx, o *orgInfo, z *dnsZoneView, in dnsRecordInput) (string, error) {
 	in, err := normalizeRecord(z.Domain, in)
 	if err != nil {
-		return err
+		return "", err
 	}
 	// A CNAME stands alone at its name.
 	var others, cnames int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE type <> 'CNAME'), count(*) FILTER (WHERE type = 'CNAME') FROM dns_records WHERE zone_id = $1 AND name = $2`,
 		z.ID, in.Name).Scan(&others, &cnames); err != nil {
-		return err
+		return "", err
 	}
 	if in.Type == "CNAME" && others+cnames > 0 || in.Type != "CNAME" && cnames > 0 {
-		return apiErr{http.StatusUnprocessableEntity, "a CNAME cannot share its name with other records"}
+		return "", apiErr{http.StatusUnprocessableEntity, "a CNAME cannot share its name with other records"}
 	}
 	var count int
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM dns_records WHERE zone_id = $1`, z.ID).Scan(&count); err != nil {
-		return err
+		return "", err
 	}
 	if count >= 500 {
-		return apiErr{http.StatusUnprocessableEntity, "a zone holds at most 500 records"}
+		return "", apiErr{http.StatusUnprocessableEntity, "a zone holds at most 500 records"}
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO dns_records (org_id, zone_id, name, type, value, priority, ttl) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		o.ID, z.ID, in.Name, in.Type, in.Value, in.Priority, in.TTL); err != nil {
-		return err
+	var id string
+	if err := tx.QueryRow(ctx, `INSERT INTO dns_records (org_id, zone_id, name, type, value, priority, ttl) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id::text`,
+		o.ID, z.ID, in.Name, in.Type, in.Value, in.Priority, in.TTL).Scan(&id); err != nil {
+		return "", err
 	}
-	return s.zoneChanged(ctx, r, tx, o, z, "dns.record_added", map[string]any{"name": in.Name, "type": in.Type})
+	return id, s.zoneChanged(ctx, r, tx, o, z, "dns.record_added", map[string]any{"name": in.Name, "type": in.Type})
 }
 
 func (s *Server) zoneChanged(ctx context.Context, r *http.Request, tx pgx.Tx, o *orgInfo, z *dnsZoneView, action string, detail any) error {
@@ -462,6 +469,7 @@ func (s *Server) apiDNSRecords(w http.ResponseWriter, r *http.Request, o *orgInf
 
 func (s *Server) apiAddDNSRecord(w http.ResponseWriter, r *http.Request, o *orgInfo) {
 	var in dnsRecordInput
+	var out dnsRecordView
 	if json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&in) != nil {
 		apiError(w, http.StatusBadRequest, `body must be JSON: {"name": "www", "type": "CNAME", "value": "target.example.com"}`)
 		return
@@ -471,10 +479,22 @@ func (s *Server) apiAddDNSRecord(w http.ResponseWriter, r *http.Request, o *orgI
 		if err != nil {
 			return err
 		}
-		return s.addRecordTx(r.Context(), r, tx, o, z, in)
+		id, err := s.addRecordIDTx(r.Context(), r, tx, o, z, in)
+		if err != nil {
+			return err
+		}
+		_, recs, err := loadDNSZone(r.Context(), tx, r.PathValue("zone"))
+		for _, rec := range recs {
+			if rec.ID == id {
+				out = rec
+			}
+		}
+		return err
 	})
 	if apiTx(w, s, err) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(out)
 	}
 }
 
@@ -492,6 +512,25 @@ func (s *Server) apiDeleteDNSRecord(w http.ResponseWriter, r *http.Request, o *o
 			return pgx.ErrNoRows
 		}
 		return s.zoneChanged(r.Context(), r, tx, o, z, "dns.record_deleted", nil)
+	})
+	if apiTx(w, s, err) {
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// apiDeleteDNSZone deletes a hosted zone with its records: DELETE /api/v1/dns/zones/{zone}
+func (s *Server) apiDeleteDNSZone(w http.ResponseWriter, r *http.Request, o *orgInfo) {
+	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
+		z, _, err := loadDNSZone(r.Context(), tx, r.PathValue("zone"))
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(r.Context(), `DELETE FROM dns_zones WHERE id = $1`, z.ID); err != nil {
+			return err
+		}
+		s.audit(r, tx, o.ID, "dns.zone_deleted", "zone:"+z.Domain, nil)
+		_, err = tx.Exec(r.Context(), `SELECT pg_notify('deployments', 'dns')`)
+		return err
 	})
 	if apiTx(w, s, err) {
 		w.WriteHeader(http.StatusNoContent)

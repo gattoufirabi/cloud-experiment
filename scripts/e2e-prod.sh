@@ -132,7 +132,7 @@ check "a node reported in the last 2 minutes" "$(owner_sql "SELECT count(*) > 0 
 check "every migration applied" "$(ls ../migrations/*.sql | wc -l | tr -d ' ')" "$(owner_sql "SELECT count(*) FROM schema_migrations")"
 check "deployments are not paused" "$(owner_sql "SELECT deploys_paused FROM platform_settings")" f
 DOC() { curl -sS --resolve "$CONSOLE:443:127.0.0.1" "$BASE$1"; }
-check "docs index lists every topic" "$(DOC /docs | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 31
+check "docs index lists every topic" "$(DOC /docs | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 32
 check "a topic page has its four parts" "$(DOC /docs/databases | grep -cE 'id="(overview|use-cases|how-to-use-it|technical-reference)"')" 4
 check "old guide links are forwarded" "$(DOC /docs/user | grep -c 'data-legacy=')" 1
 check "unknown topic is 404" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "$CONSOLE:443:127.0.0.1" "$BASE/docs/nope")" 404
@@ -447,6 +447,19 @@ check "[bulk] two functions deleted" "$(code_of ja -X POST "$BASE/o/$A/functions
 check "[B->A] B's bulk action cannot touch A's bucket" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$B/storage/actions" -d csrf=$CSRF_B -d action=delete -d confirm=delete -d sel=media | grep -c 'Skipped'):$(owner_sql "SELECT count(*) FROM buckets b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.name = 'media'")" "1:1"
 check "[bulk] bucket deleted from the list" "$(code_of ja -X POST "$BASE/o/$A/storage/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=media):$(owner_sql "SELECT count(*) FROM buckets b JOIN orgs o ON o.id = b.org_id WHERE o.slug = '$A' AND b.name = 'media'")" "303:0"
 check "the lists show selection checkboxes" "$(for p in functions storage; do c ja "$BASE/o/$A/$p" | grep -c 'data-bulk=' ; done | tr -d '\n')" "11"
+
+fi
+if want "Infrastructure as code API"; then
+section "Infrastructure as code API"
+TOK_IAC=$(c ja -X POST "$BASE/o/$A/api-tokens" -d csrf=$CSRF_A -d name=terraform -d role=admin | grep -o 'pla_[A-Za-z0-9_-]*' | head -1)
+jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
+check "[API] project created (201)" "$(apicode "$TOK_IAC" POST /projects -d '{"id": "iac", "name": "IaC"}')" 201
+check "[API] application created and deployed" "$(apicode "$TOK_IAC" POST /projects/iac/services -d '{"id": "web", "image": "nginx:1.27-alpine", "port": 80, "health_path": "/", "cpu_millis": 100, "memory_mb": 64, "env": {"MODE": "iac"}, "deploy": true}')" 201
+check "[API] it goes live and reads back its settings" "$(for _ in $(seq 1 60); do [ "$(api "$TOK_IAC" GET /projects/iac/services/web | jget 'd["status"]')" = live ] && break; sleep 2; done; api "$TOK_IAC" GET /projects/iac/services/web | jget 'd["status"]+":"+d["env"]["MODE"]+":"+str(d["port"])')" "live:iac:80"
+check "[API] a partial change keeps the other settings" "$(api "$TOK_IAC" PATCH /projects/iac/services/web -d '{"autoscaling": {"min": 1, "max": 2}}' | jget 'str(d["autoscaling"]["max"])+":"+d["env"]["MODE"]')" "2:iac"
+check "[API] database created with its connection URL" "$(api "$TOK_IAC" POST /projects/iac/databases -d '{"id": "kv", "engine": "redis"}' | jget 'd["engine"]+":"+str(d["url"].startswith("redis://"))')" "redis:True"
+check "[B->A API] B cannot read A's project (404)" "$(apicode "$TOK_B" GET /projects/iac)" 404
+check "[API] project not deleted while it holds resources (409), then deleted with force" "$(apicode "$TOK_IAC" DELETE /projects/iac):$(apicode "$TOK_IAC" DELETE '/projects/iac?force=true'):$(apicode "$TOK_IAC" GET /projects/iac)" "409:204:404"
 
 fi
 if want "Operator and admin panel"; then

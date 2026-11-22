@@ -28,9 +28,10 @@ want() {
   if [ "${FAST:-0}" = 1 ] && [[ $1 =~ $SLOW ]]; then echo "   (skipped, FAST=1: $1)"; return 1; fi
 }
 [ -n "${ONLY:-}" ] && set +u   # variables from skipped sections may be unset
+DCF=${E2E_COMPOSE:--f compose.dev.yml}
 # Container names, resolved once: "docker exec" is about twice as fast as "docker compose exec"
-PG_C=$(docker compose -f compose.dev.yml ps --format '{{.Name}}' postgres); API_C=$(docker compose -f compose.dev.yml ps --format '{{.Name}}' api)
-NTFY_C=$(docker compose -f compose.dev.yml ps --format '{{.Name}}' ntfy)
+PG_C=$(docker compose $DCF ps --format '{{.Name}}' postgres); API_C=$(docker compose $DCF ps --format '{{.Name}}' api)
+NTFY_C=$(docker compose $DCF ps --format '{{.Name}}' ntfy)
 # MSYS_NO_PATHCONV: Git Bash on Windows would otherwise rewrite /platform into a Windows path
 admin() { MSYS_NO_PATHCONV=1 docker exec -i "$API_C" /platform admin "$@"; }
 live_cid() { docker exec -i "$PG_C" psql -qtA -U platform_owner platform -c "SELECT d.container_id FROM deployments d JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$1' AND d.status = 'live'" | tr -d '\r'; }
@@ -38,6 +39,11 @@ psql_api() { docker exec -i "$PG_C" psql -qtA "postgres://platform_api:dev-api-p
 
 RUN=$(date +%s | tail -c 5)
 TMP=$(mktemp -d)
+# Also runs on a Linux test server (scripts/e2e-remote.sh): no cygpath there, python is python3,
+# and the compose files include the Linux override (E2E_COMPOSE="-f compose.dev.yml -f compose.dev.linux.yml").
+command -v cygpath >/dev/null || cygpath() { while [ "${1#-}" != "$1" ]; do shift; done; printf '%s
+' "$1"; }
+command -v python >/dev/null || python() { python3 "$@"; }
 
 # curl with a per-tenant cookie jar; *.localhost forced to loopback
 c() { local jar=$1; shift; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -b "$TMP/$jar" -c "$TMP/$jar" "$@"; }
@@ -178,7 +184,7 @@ inbox_total() { echo $(( $(imap_count "$1" "$2" INBOX || echo 0) + $(imap_count 
 smtp_in() { printf 'From: someone@sender.test\r\nTo: %s\r\nSubject: hello %s\r\n\r\nhi\r\n' "$1" "$RUN" > "$TMP/mail.eml"; curl -s --max-time 15 "smtp://127.0.0.1:2525" --mail-from someone@sender.test --mail-rcpt "$1" -T "$TMP/mail.eml" -o /dev/null -w '%{response_code}'; }
 stw() { MSYS_NO_PATHCONV=1 docker run --rm --network platform-core curlimages/curl:8.11.0 -s -u admin:dev-stalwart-admin -H 'Content-Type: application/json' -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":$1}" http://stalwart:8080/jmap/; }
 ex_get() { curl -s --max-time 10 --resolve "$1:$PORT:127.0.0.1" "http://$1:$PORT$2"; }
-pgq() { MSYS_NO_PATHCONV=1 docker run --rm postgres:17-alpine psql "host=host.docker.internal port=$PUBPORT dbname=app user=app password=$DBPW $1" -tAc 'SELECT 40 + 2' 2>&1 | tr -d '\r'; }
+pgq() { MSYS_NO_PATHCONV=1 docker run --rm --add-host=host.docker.internal:host-gateway postgres:17-alpine psql "host=host.docker.internal port=$PUBPORT dbname=app user=app password=$DBPW $1" -tAc 'SELECT 40 + 2' 2>&1 | tr -d '\r'; }
 capi() { local m=$1 path=$2; shift 2; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_ADMAPI" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1$path" "$@"; }
 pn_cid() { owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = '$1' AND s.slug = '$2' AND d.status = 'live'"; }
 pn_get() { dx exec "$(pn_cid "$1" "$2")" wget -qO- -T 5 "$3" 2>&1 | grep -q 'Welcome to nginx' && echo 1 || echo 0; }
@@ -191,7 +197,7 @@ onboard jb "$B" "owner@$B.test"
 fi
 if want "Unauthenticated access"; then
 section "Unauthenticated access"
-check "docs index lists every topic" "$(curl -sS "$BASE/docs" | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 31
+check "docs index lists every topic" "$(curl -sS "$BASE/docs" | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 32
 check "a topic page has its four parts" "$(curl -sS "$BASE/docs/databases" | grep -cE 'id="(overview|use-cases|how-to-use-it|technical-reference)"')" 4
 check "old guide links are forwarded" "$(curl -sS "$BASE/docs/user" | grep -c 'data-legacy=')" 1
 check "unknown topic is 404" "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/docs/nope")" 404
@@ -1307,7 +1313,7 @@ api_code "$TOK_B" -X PUT -H 'Content-Type: application/json' -d '{"value":"evil"
 check "[B->A] B's write lands in B's own project only" "$([ "$(A_ROW)" = "$A_BEFORE" ] && echo a-unchanged):$(owner_sql "SELECT count(*) FROM project_variables v JOIN orgs o ON o.id = v.org_id WHERE o.slug = '$B' AND v.name = 'SHARED_TOKEN'")" "a-unchanged:1"
 PPAGE=$(c ja "$BASE/o/$A/p/shop")
 if grep -q "shared.example.test" <<<"$PPAGE" && ! grep -q "shared-secret-xyz" <<<"$PPAGE"; then ok "project page shows plain values and hides secret ones"; else bad "project page shows the wrong values"; fi
-if grep -q "<code>SHARED_TOKEN</code>" <<<"$(c ja "$BASE$SVC_A")"; then ok "service page lists the variables it receives from the project"; else bad "inherited variables not listed"; fi
+if grep -q "<code>SHARED_TOKEN</code>" <<<"$(c ja "$BASE$SVC_A/settings")"; then ok "service settings page lists the variables it receives from the project"; else bad "inherited variables not listed"; fi
 VLIST=$(pctl var list shop)
 if grep -q "SHARED_HOST *shared.example.test" <<<"$VLIST" && grep -q "SHARED_TOKEN *(secret)" <<<"$VLIST" && ! grep -q "shared-secret-xyz" <<<"$VLIST"; then ok "[CLI] platformctl var list hides secret values"; else bad "[CLI] var list wrong: $VLIST"; fi
 check "secret values encrypted at rest" "$(owner_sql "SELECT count(*) FROM project_variables WHERE position(convert_to('shared-secret-xyz', 'UTF8') IN value_enc) > 0")" 0
@@ -1630,7 +1636,7 @@ check "[A] failed deployment pushed" "$(ntfy_has "alerts-$A" "Deployment failed"
 
 # Regression: a recreated agent (every upgrade) must re-attach to tenant networks,
 # not report healthy apps as down.
-docker compose -f compose.dev.yml up -d --force-recreate --no-deps agent >/dev/null 2>&1
+docker compose $DCF up -d --force-recreate --no-deps agent >/dev/null 2>&1
 sleep 35
 check "[agent recreated] healthy apps not reported down" "$(incident_status files service_down)" resolved
 check "[agent recreated] app still reachable through the proxy" \
@@ -1792,7 +1798,7 @@ RES=$(c ja "$BASE/operator/resources?q=$A")
 check "resources list A's services" "$(grep -c '<td>service</td>' <<<"$RES" | sed 's/^[1-9][0-9]*$/yes/')" yes
 if grep -q "tenant-a-secret\|API_KEY" <<<"$RES"; then bad "resources page leaks secrets"; else ok "resources page shows no secrets"; fi
 # feature switches: a service turned off for one organization leaves its menus, pages and API
-form_on() { grep -o "name=\"$1[a-z0-9_-]*\"[^>]*$2" | grep -o 'name="[^"]*"' | sed 's/^name="//; s/"$/=1/' | sort -u | paste -sd '&' -; }
+form_on() { grep -o "name=\"$1[a-z0-9_-]*\"[^>]*${2:-}" | grep -o 'name="[^"]*"' | sed 's/^name="//; s/"$/=1/' | sort -u | paste -sd '&' -; }
 ON_ALL=$(c ja "$BASE/operator/orgs/$A" | form_on on_)
 check "[A] queues turned off for A by the operator" "$(code_of ja -X POST "$BASE/operator/orgs/$A/features" --data "csrf=$OPCSRF&$(tr '&' '\n' <<<"$ON_ALL" | grep -v '^on_queues=' | paste -sd '&' -)"):$(code_of ja "$BASE/o/$A/queues"):$(c ja "$BASE/o/$A/compute" | grep -c "href=\"/o/$A/queues\"")" "303:403:0"
 check "[API] A's queues answer that they are off" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_DEV" -o /dev/null -w '%{http_code}' "$BASE/api/v1/queues")" 403
@@ -1804,7 +1810,7 @@ code_of ja -X POST "$BASE/operator/features" --data "csrf=$OPCSRF&$FEAT_ON" >/de
 check "everything back on" "$(code_of jb "$BASE/o/$B/queues")" 200
 check "feature switches audited" "$(owner_sql "SELECT count(*) >= 4 FROM audit_events WHERE action IN ('operator.org_features', 'operator.features') AND created_at > now() - interval '10 minutes'")" t
 check "a platform service restarted from the panel" "$(code_of ja -X POST "$BASE/operator/servers/restart" -d csrf=$OPCSRF -d service=trivy):$(until_is t 60 owner_sql "SELECT done_at IS NOT NULL AND error = '' FROM platform_restarts ORDER BY id DESC LIMIT 1")" "303:t"
-check "the mail page shows its deliverability checks" "$(c ja "$BASE/operator/mail" | grep -c -e 'Mail server answers' -e 'Reverse DNS (PTR)')" 2
+check "the mail page shows its deliverability checks" "$(c ja "$BASE/operator/mail" | grep -oE 'Mail server answers|Reverse DNS \(PTR\)' | sort -u | wc -l | tr -d ' ')" 2
 check "invoice generation requested from the panel" "$(code_of ja -X POST "$BASE/operator/invoices/generate" -d csrf=$OPCSRF -d "month=$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)")" 303
 check "a future month is refused" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/operator/invoices/generate" -d csrf=$OPCSRF -d "month=$(date -u -d '+1 month' +%Y-%m)" | grep -c 'err=')" 1
 
@@ -2036,13 +2042,47 @@ admin set-plan --slug "$A" --plan pro >/dev/null
 TOK_ADMAPI=$(new_api_token ja "$A" "$CSRF_A" automation admin)
 check "[API] project created" "$(capi POST /projects -d '{"slug": "apiproj", "name": "From the API"}' | grep -c '"message"')" 1
 check "[API] a developer token cannot create a project (403)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' -d '{"slug": "nope"}' "$BASE/api/v1/projects")" 403
-check "[API] service created and its settings saved (private, worker refused port)" "$(capi POST /projects/apiproj/services -d '{"slug": "svc", "image": "nginx:1.27-alpine"}' | grep -c '"message"'):$(capi PUT /projects/apiproj/services/svc/settings -d '{"image": "nginx:1.27-alpine", "port": 80, "health_path": "/", "cpu_millis": 100, "memory_mb": 64, "instances": 1, "env": "A=1", "private": true, "deploy": true}' | grep -c '"message"'):$(owner_sql "SELECT public FROM services s JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'apiproj' AND s.slug = 'svc'")" "1:1:f"
+check "[API] service created and its settings saved (private, worker refused port)" "$(capi POST /projects/apiproj/services -d '{"slug": "svc", "image": "nginx:1.27-alpine"}' | grep -c '"message"'):$(capi PUT /projects/apiproj/services/svc/settings -d '{"image": "nginx:1.27-alpine", "port": 80, "health_path": "/", "cpu_millis": 100, "memory_mb": 64, "instances": 1, "env": "A=1", "private": true, "deploy": true}' | grep -c '"message"'):$(owner_sql "SELECT public FROM services s JOIN projects p ON p.id = s.project_id WHERE p.org_id = (SELECT id FROM orgs WHERE slug = '$A') AND p.slug = 'apiproj' AND s.slug = 'svc'")" "1:1:f"
 check "[API] a refused form answers 422 with the console's message" "$(capi PUT /projects/apiproj/services/svc/settings -o /dev/null -w '%{http_code}' -d '{"image": "nginx:1.27-alpine", "port": 0, "health_path": "/", "cpu_millis": 100, "memory_mb": 64}')" 422
 check "[API] database created and attached as a secret" "$(capi POST /projects/apiproj/databases -d '{"slug": "kv", "engine": "redis:7"}' | grep -c '"message"'):$(capi POST /projects/apiproj/databases/kv/attach -d '{"service": "svc", "name": "REDIS_URL"}' | grep -c '"message"')" "1:1"
 check "[API] a missing database answers 404" "$(capi POST /projects/apiproj/databases/nope/attach -o /dev/null -w '%{http_code}' -d '{"service": "svc", "name": "X_URL"}')" 404
-check "[B->A API] B's token cannot act in A's project (refused, nothing created in A)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_B" -H 'Content-Type: application/json' -d '{"slug": "bx", "engine": "redis:7"}' "$BASE/api/v1/projects/apiproj/databases" | sed 's/^404$/refused/; s/^422$/refused/'):$(owner_sql "SELECT count(*) FROM databases WHERE org_id = '$ORG_A' AND slug = 'bx'")" "refused:0"
-check "[API] console actions audited with the token" "$(owner_sql "SELECT count(*) > 0 FROM audit_events WHERE org_id = '$ORG_A' AND action = 'project.created' AND detail::text LIKE '%automation%'")" t
+check "[B->A API] B's token cannot act in A's project (refused, nothing created in A)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_B" -H 'Content-Type: application/json' -d '{"slug": "bx", "engine": "redis:7"}' "$BASE/api/v1/projects/apiproj/databases" | sed 's/^404$/refused/; s/^422$/refused/'):$(owner_sql "SELECT count(*) FROM databases WHERE org_id = (SELECT id FROM orgs WHERE slug = '$A') AND slug = 'bx'")" "refused:0"
+check "[API] console actions audited with the token" "$(owner_sql "SELECT count(*) > 0 FROM audit_events WHERE org_id = (SELECT id FROM orgs WHERE slug = '$A') AND action = 'project.created' AND detail::text LIKE '%automation%'")" t
 code_of ja -X POST "$BASE/o/$A/p/apiproj/delete" -d csrf=$CSRF_A -d confirm=apiproj >/dev/null
+admin set-plan --slug "$A" --plan starter >/dev/null
+
+fi
+if want "Infrastructure as code API"; then
+section "Infrastructure as code API"
+admin set-plan --slug "$A" --plan pro >/dev/null
+TOK_IAC=$(new_api_token ja "$A" "$CSRF_A" terraform admin)
+TOK_IACV=$(new_api_token ja "$A" "$CSRF_A" iac-viewer viewer)
+TOK_IACB=$(new_api_token jb "$B" "$CSRF_B" iac-b admin)
+iac() { local m=$1 path=$2; shift 2; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_IAC" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1$path" "$@"; }
+iacc() { iac "$@" -o /dev/null -w '%{http_code}'; }
+jget() { python -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
+check "[API] project created (201) and read back" "$(iacc POST /projects -d '{"id": "iac", "name": "IaC"}'):$(iac GET /projects/iac | jget 'd["name"]')" "201:IaC"
+check "[API] project renamed" "$(iac PATCH /projects/iac -d '{"name": "Infra"}' | jget 'd["name"]')" Infra
+check "[API] a second project with the same ID answers 409" "$(iacc POST /projects -d '{"id": "iac"}')" 409
+check "[API] application created with its settings and deployed" "$(iacc POST /projects/iac/services -d '{"id": "web", "image": "nginx:1.27-alpine", "port": 80, "health_path": "/", "cpu_millis": 100, "memory_mb": 64, "env": {"MODE": "iac", "URL": "a=b"}, "deploy": true}')" 201
+for _ in $(seq 1 60); do [ "$(iac GET /projects/iac/services/web | jget 'd["status"]')" = live ] && break; sleep 2; done
+check "[API] the application is live and reads back every setting" "$(iac GET /projects/iac/services/web | jget 'd["status"]+":"+str(d["port"])+":"+d["env"]["URL"]+":"+str(d["autoscaling"])+":"+str(d["public"])')" "live:80:a=b:None:True"
+check "[API] a partial change keeps the other settings (autoscaling on, port kept)" "$(iac PATCH /projects/iac/services/web -d '{"autoscaling": {"min": 1, "max": 3}}' | jget 'str(d["autoscaling"]["max"])+":"+str(d["autoscaling"]["cpu_percent"])+":"+str(d["port"])+":"+d["env"]["MODE"]')" "3:70:80:iac"
+check "[API] autoscaling turned off with null" "$(iac PATCH /projects/iac/services/web -d '{"autoscaling": null}' | jget 'str(d["autoscaling"])')" None
+check "[API] an unknown field is refused (400), a bad value with the console's message (422)" "$(iacc PATCH /projects/iac/services/web -d '{"imgae": "x"}'):$(iacc PATCH /projects/iac/services/web -d '{"memory_mb": 1}')" "400:422"
+check "[API] a viewer token reads but cannot change (403)" "$(api_code "$TOK_IACV" "$BASE/api/v1/projects/iac/services/web"):$(api_code "$TOK_IACV" -X PATCH -H 'Content-Type: application/json' -d '{"port": 81}' "$BASE/api/v1/projects/iac/services/web")" "200:403"
+check "[API] secret set, listed by name only, deleted (then 404)" "$(iac PUT /projects/iac/services/web/secrets/API_KEY -d '{"value": "s3cret-'$RUN'"}' >/dev/null; iac GET /projects/iac/services/web/secrets | grep -c '"name":"API_KEY"'):$(iac GET /projects/iac/services/web/secrets | grep -c "s3cret-$RUN"):$(iacc DELETE /projects/iac/services/web/secrets/API_KEY):$(iacc DELETE /projects/iac/services/web/secrets/API_KEY)" "1:0:204:404"
+check "[API] database created (engine without a version: the newest)" "$(iac POST /projects/iac/databases -d '{"id": "pg", "engine": "postgres", "memory_mb": 512, "backup_hour": 4}' | jget 'd["engine"]+":"+d["version"]+":"+str(d["memory_mb"])+":"+str(d["backup_hour"])')" "postgres:17:512:4"
+check "[API] the connection URL goes to developers and admins, not viewers" "$(iac GET /projects/iac/databases/pg | grep -c '"url":"postgres://'):$(api_get "$TOK_IACV" "$BASE/api/v1/projects/iac/databases/pg" | grep -c '"password"')" "1:0"
+check "[API] database settings changed; an unknown engine refused (422)" "$(iac PATCH /projects/iac/databases/pg -d '{"backup_hour": 5}' | jget 'str(d["backup_hour"])'):$(iacc POST /projects/iac/databases -d '{"id": "x1", "engine": "oracle"}')" "5:422"
+check "[API] domain added with the DNS records to create, read, removed" "$(iac POST /projects/iac/services/web/domains -d '{"hostname": "iac-'$RUN'.example.org"}' | jget 'len(d["dns_records"])'):$(iacc GET /projects/iac/services/web/domains/iac-$RUN.example.org):$(iacc DELETE /projects/iac/services/web/domains/iac-$RUN.example.org):$(iacc GET /projects/iac/services/web/domains/iac-$RUN.example.org)" "2:200:204:404"
+IZ=iac$RUN.example
+iacc POST /dns/zones -d '{"domain": "'$IZ'"}' >/dev/null
+RID=$(iac POST /dns/zones/$IZ/records -d '{"name": "www", "type": "A", "value": "203.0.113.7"}' | jget 'd["ID"]')
+check "[API] a new DNS record answers its ID; the zone is deleted with its records" "$(iac GET /dns/zones/$IZ/records | grep -c "$RID"):$(iacc DELETE /dns/zones/$IZ):$(owner_sql "SELECT count(*) FROM dns_zones WHERE domain = '$IZ'")" "1:204:0"
+check "[B->A API] B cannot read, change or delete A's project (404)" "$(api_code "$TOK_IACB" "$BASE/api/v1/projects/iac"):$(api_code "$TOK_IACB" -X PATCH -H 'Content-Type: application/json' -d '{"name": "x"}' "$BASE/api/v1/projects/iac"):$(api_code "$TOK_IACB" -X DELETE "$BASE/api/v1/projects/iac/services/web")" "404:404:404"
+check "[API] a project with applications is not deleted without force (409), then is" "$(iacc DELETE /projects/iac):$(iacc DELETE '/projects/iac?force=true'):$(iacc GET /projects/iac)" "409:204:404"
+check "[API] changes audited with the token" "$(owner_sql "SELECT count(*) >= 5 FROM audit_events WHERE org_id = (SELECT id FROM orgs WHERE slug = '$A') AND detail::text LIKE '%terraform%'")" t
 admin set-plan --slug "$A" --plan starter >/dev/null
 
 fi
@@ -2129,7 +2169,7 @@ admin set-plan --slug "$A" --plan starter >/dev/null
 fi
 if want "Several servers (a second node on the same machine)"; then
 section "Several servers (a second node on the same machine)"
-docker compose -f compose.dev.yml --profile multinode up -d agent2 >/dev/null 2>&1
+docker compose $DCF --profile multinode up -d agent2 >/dev/null 2>&1
 for _ in $(seq 1 40); do [ "$(owner_sql "SELECT count(*) FROM nodes WHERE id = 'node-2' AND last_seen > now() - interval '1 minute'")" = 1 ] && break; sleep 2; done
 check "a second node joins with its heartbeat" "$(owner_sql "SELECT role || ':' || (cpus > 0) FROM nodes WHERE id = 'node-2'")" "worker:true"
 PRIMARY=$(owner_sql "SELECT id FROM nodes WHERE role = 'primary' ORDER BY last_seen DESC LIMIT 1")
@@ -2180,17 +2220,17 @@ code_of ja -X POST "$BASE/o/$A/p/fover/s/web/settings" -d csrf=$CSRF_A -d image=
 check "[A] stateless project running on node-2" "$(wait_status ja /o/$A/p/fover/s/web):$(owner_sql "SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover'")" "live:node-2"
 FOVER_CID=$(owner_sql "SELECT d.container_id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover' AND d.status = 'live'")
 code_of ja -X POST "$BASE/operator/nodes/$PRIMARY" -d csrf=$OPCSRF -d cluster=default >/dev/null
-docker compose -f compose.dev.yml --profile multinode stop agent2 >/dev/null 2>&1
+docker compose $DCF --profile multinode stop agent2 >/dev/null 2>&1
 owner_sql "UPDATE nodes SET last_seen = now() - interval '10 minutes' WHERE id = 'node-2'" >/dev/null   # silent for 10 minutes
 check "the silent node is failed over: cordoned, its project placed on the primary" "$(until_is "true:$PRIMARY" 90 owner_sql "SELECT (SELECT cordoned AND failed_over_at IS NOT NULL FROM nodes WHERE id = 'node-2') || ':' || coalesce((SELECT node_id FROM projects p JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover'), '')")" "true:$PRIMARY"
 FOVER_HOST=web-fover-$A.apps.localhost
 check "the app is redeployed on the primary and answers" "$(for _ in $(seq 1 60); do [ "$(owner_sql "SELECT upstream FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = p.org_id WHERE o.slug = '$A' AND p.slug = 'fover' AND d.status = 'live'")" = "" ] && curl -s --resolve "$FOVER_HOST:$PORT:127.0.0.1" "http://$FOVER_HOST:$PORT/" | grep -q 'Welcome to nginx' && { echo yes; break; }; sleep 2; done)" yes
 check "failover audited and the operator notified" "$(owner_sql "SELECT count(*) FROM audit_events WHERE action = 'node.failed_over' AND target = 'node:node-2'" | sed 's/^[1-9][0-9]*$/yes/'):$(ntfy_has platform-operator "Node node-2 failed over")" "yes:yes"
-docker compose -f compose.dev.yml --profile multinode start agent2 >/dev/null 2>&1
+docker compose $DCF --profile multinode start agent2 >/dev/null 2>&1
 check "when node-2 comes back, it removes its old container" "$(for _ in $(seq 1 45); do docker inspect "$FOVER_CID" >/dev/null 2>&1 || { echo gone; break; }; sleep 2; done)" gone
 code_of ja -X POST "$BASE/o/$A/p/fover/delete" -d csrf=$CSRF_A -d confirm=fover >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null
-docker compose -f compose.dev.yml --profile multinode rm -sf agent2 >/dev/null 2>&1
+docker compose $DCF --profile multinode rm -sf agent2 >/dev/null 2>&1
 owner_sql "DELETE FROM nodes WHERE id = 'node-2'" >/dev/null
 
 fi

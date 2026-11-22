@@ -148,6 +148,7 @@ func (e apiErr) Error() string { return e.msg }
 func (s *Server) apiRoutes(m *http.ServeMux) {
 	const svc = "/api/v1/projects/{project}/services/{service}"
 	m.HandleFunc("GET /api/v1/me", s.apiAuth("viewer", s.apiMe))
+	s.apiInfraRoutes(m)
 	s.apiConsoleRoutes(m)
 	m.HandleFunc("GET /api/v1/prometheus/api/v1/{rest...}", s.apiAuth("viewer", s.apiPrometheus))
 	m.HandleFunc("POST /api/v1/prometheus/api/v1/{rest...}", s.apiAuth("viewer", s.apiPrometheus))
@@ -167,6 +168,7 @@ func (s *Server) apiRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/v1/projects/{project}/functions/{fn}/invocations", s.apiAuth("viewer", s.apiInvocations))
 	m.HandleFunc("GET /api/v1/dns/zones", s.apiAuth("viewer", s.apiDNSZones))
 	m.HandleFunc("POST /api/v1/dns/zones", s.apiAuth("developer", s.apiAddDNSZone))
+	m.HandleFunc("DELETE /api/v1/dns/zones/{zone}", s.apiAuth("admin", s.apiDeleteDNSZone))
 	m.HandleFunc("GET /api/v1/dns/zones/{zone}/records", s.apiAuth("viewer", s.apiDNSRecords))
 	m.HandleFunc("POST /api/v1/dns/zones/{zone}/records", s.apiAuth("developer", s.apiAddDNSRecord))
 	m.HandleFunc("POST /api/v1/dns/zones/{zone}/import", s.apiAuth("developer", s.apiImportZone))
@@ -334,32 +336,21 @@ func toAPIDeployments(in []deploymentView) []apiDeploymentView {
 }
 
 func (s *Server) apiService1(w http.ResponseWriter, r *http.Request, o *orgInfo) {
-	var resp map[string]any
+	var view apiServiceView
 	if !s.apiService(w, r, o, func(tx pgx.Tx, p *projectInfo, sv *serviceInfo) error {
 		deps, err := recentDeployments(r, tx, sv.ID, 10)
 		if err != nil {
 			return err
 		}
-		url := s.appURL(s.serviceHost(o, p, sv))
-		if !sv.DefaultAddress && !sv.isPreview() {
-			var host string
-			if tx.QueryRow(r.Context(), `SELECT hostname FROM domains WHERE service_id = $1 AND verified_at IS NOT NULL ORDER BY hostname LIMIT 1`, sv.ID).Scan(&host) == nil {
-				url = "https://" + host
-			}
+		if view, err = s.apiServiceViewOf(r, tx, o, p, sv); err != nil {
+			return err
 		}
-		resp = map[string]any{
-			"default_address": sv.DefaultAddress,
-			"id":              sv.Slug, "project": p.Slug, "image": sv.Image, "port": sv.Port, "health_path": sv.HealthPath,
-			"cpu_millis": sv.CPUMillis, "memory_mb": sv.MemoryMB, "volume_path": sv.VolumePath,
-			"instances": sv.Instances, "worker": sv.Worker,
-			"url":         url,
-			"deployments": toAPIDeployments(deps),
-		}
+		view.Deployments = toAPIDeployments(deps)
 		return nil
 	}) {
 		return
 	}
-	writeJSON(w, resp)
+	writeJSON(w, view)
 }
 
 // apiScale changes the number of instances and deploys: POST {"instances": 3}

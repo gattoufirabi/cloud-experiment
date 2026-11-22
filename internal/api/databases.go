@@ -151,11 +151,6 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		eng = model.Engines[0]
 	}
-	engine, version := eng.ID, eng.Version
-	dbName, user := "app", "app" // SQL database and user
-	if engine == "redis" {
-		dbName, user = "0", "default" // Redis logical database and ACL user
-	}
 	base := o.Path() + "/p/" + r.PathValue("project")
 	if !model.ValidSlug(slug) {
 		back(w, r, base+"#databases", "", "Database ID: 2 to 20 characters, lowercase letters, digits and dashes.")
@@ -167,6 +162,30 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		formErr, err = s.createDatabaseTx(r, tx, o, p, slug, eng)
+		return err
+	})
+	switch {
+	case formErr != "":
+		back(w, r, base+"#databases", "", formErr)
+	case isNoRows(err):
+		s.notFound(w, r)
+	case err != nil:
+		s.serverError(w, r, err)
+	default:
+		back(w, r, base+"/d/"+slug, "Database created. It is starting; this takes under a minute.", "")
+	}
+}
+
+// createDatabaseTx creates a managed database with a generated password. A duplicate ID
+// rolls the transaction back (errRollback) with formErr set.
+func (s *Server) createDatabaseTx(r *http.Request, tx pgx.Tx, o *orgInfo, p *projectInfo, slug string, eng model.Engine) (formErr string, err error) {
+	engine, version := eng.ID, eng.Version
+	dbName, user := "app", "app" // SQL database and user
+	if engine == "redis" {
+		dbName, user = "0", "default" // Redis logical database and ACL user
+	}
+	err = func() error {
 		plan, err := s.loadPlan(r, tx, o.PlanID)
 		if err != nil {
 			return err
@@ -213,17 +232,8 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		s.audit(r, tx, o.ID, "database.created", "database:"+p.Slug+"/"+slug, map[string]string{"engine": engine, "version": version})
 		_, err = tx.Exec(r.Context(), `SELECT pg_notify('deployments', '')`)
 		return err
-	})
-	switch {
-	case formErr != "":
-		back(w, r, base+"#databases", "", formErr)
-	case isNoRows(err):
-		s.notFound(w, r)
-	case err != nil:
-		s.serverError(w, r, err)
-	default:
-		back(w, r, base+"/d/"+slug, "Database created. It is starting; this takes under a minute.", "")
-	}
+	}()
+	return formErr, err
 }
 
 func (s *Server) databasePage(w http.ResponseWriter, r *http.Request) {
@@ -273,6 +283,31 @@ func (s *Server) databaseSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	enabled := r.PostFormValue("backup_enabled") == "1"
 	o, p, d, err, ok := s.withDatabase(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, d *databaseInfo) error {
+		var err error
+		formErr, err = s.databaseSettingsTx(r, tx, o, d, cpu, mem, hour, enabled)
+		return err
+	})
+	if !ok {
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if formErr != "" {
+		back(w, r, dbPath(o, p, d)+"#db-settings", "", formErr)
+		return
+	}
+	msg := "Settings saved."
+	if cpu != d.CPUMillis || mem != d.MemoryMB {
+		msg = "Settings saved. The database restarts with the new resources (a few seconds of downtime)."
+	}
+	back(w, r, dbPath(o, p, d)+"#db-settings", msg, "")
+}
+
+// databaseSettingsTx validates and saves a database's resources and backup schedule.
+func (s *Server) databaseSettingsTx(r *http.Request, tx pgx.Tx, o *orgInfo, d *databaseInfo, cpu, mem, hour int, enabled bool) (formErr string, err error) {
+	err = func() error {
 		if d.Streaming() {
 			enabled = false // Kafka has no backups
 		}
@@ -299,23 +334,8 @@ func (s *Server) databaseSettings(w http.ResponseWriter, r *http.Request) {
 		s.audit(r, tx, o.ID, "database.updated", "database:"+d.Slug, map[string]any{"cpu_millis": cpu, "memory_mb": mem})
 		_, err := tx.Exec(r.Context(), `SELECT pg_notify('deployments', '')`)
 		return err
-	})
-	if !ok {
-		return
-	}
-	if err != nil {
-		s.serverError(w, r, err)
-		return
-	}
-	if formErr != "" {
-		back(w, r, dbPath(o, p, d)+"#db-settings", "", formErr)
-		return
-	}
-	msg := "Settings saved."
-	if cpu != d.CPUMillis || mem != d.MemoryMB {
-		msg = "Settings saved. The database restarts with the new resources (a few seconds of downtime)."
-	}
-	back(w, r, dbPath(o, p, d)+"#db-settings", msg, "")
+	}()
+	return formErr, err
 }
 
 // attachDatabase stores the connection URL as an encrypted secret of a service.

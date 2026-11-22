@@ -79,6 +79,7 @@ var docGroups = []docGroup{
 		{Slug: "account", Title: "Account security", Summary: "Passwords, two-step login, passkeys and sessions."},
 		{Slug: "billing", Title: "Billing and usage", Summary: "Plans, usage, invoices and disk limits."},
 		{Slug: "api-and-cli", Title: "API and command-line tool", Summary: "Automate everything with the REST API, API tokens and platformctl."},
+		{Slug: "terraform", Title: "Terraform and OpenTofu", Summary: "Describe projects, applications, databases, domains and DNS as code, and apply them with one command."},
 		{Slug: "good-practices", Title: "Limits and troubleshooting", Summary: "Platform limits, good practices and fixes for common problems."},
 	}},
 }

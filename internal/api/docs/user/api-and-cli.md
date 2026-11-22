@@ -19,6 +19,7 @@ The API covers the main areas of the console: projects and services, deployments
 - **Preview every pull request**: create a preview named `pr-42` when a pull request opens and delete it when it closes (see [Preview environments](/docs/previews)).
 - **Upload source code from a script**: use `platformctl zip` to build and deploy a folder without git (see [Builds](/docs/builds)).
 - **Rotate a secret**: set a variable or a [secrets manager](/docs/variables) secret from a script, reading the value from standard input.
+- **Describe your infrastructure as code**: manage projects, applications, databases, domains and DNS with Terraform or OpenTofu (see [Terraform and OpenTofu](/docs/terraform)).
 - **Read your data in your own tools**: list projects, services, costs or analytics as JSON.
 - **Create a restricted token**: give a contractor a project token that can only deploy one project.
 - **Monitor with Grafana**: use a viewer token against the Prometheus-compatible API (see [Logs and metrics](/docs/logs-and-metrics)).
@@ -137,27 +138,54 @@ These routes are explained in [Applications](/docs/applications), with domains i
 | --- | --- | --- |
 | `GET /api/v1/me` | viewer | The token's organization, name and role. |
 | `GET /api/v1/projects` | viewer | Lists projects. |
-| `POST /api/v1/projects` | admin | `{"slug": "shop", "name": "Shop"}` |
+| `POST /api/v1/projects` | admin | `{"id": "shop", "name": "Shop"}`; answers `201` with the project. |
+| `GET /api/v1/projects/PROJECT` | viewer | One project. |
+| `PATCH /api/v1/projects/PROJECT` | admin | `{"name": "New name"}` |
+| `DELETE /api/v1/projects/PROJECT` | admin | `409` while the project still holds applications or databases; add `?force=true` to delete it with everything in it. |
 | `GET /api/v1/projects/PROJECT/services` | viewer | Services and their last deployment. |
-| `POST /api/v1/projects/PROJECT/services` | developer | `{"slug": "web", "image": "nginx:1.27-alpine"}` |
-| `GET /api/v1/projects/PROJECT/services/SERVICE` | viewer | Settings, address and recent deployments. |
-| `PUT /api/v1/projects/PROJECT/services/SERVICE/settings` | developer | The full settings form (see below). |
+| `POST /api/v1/projects/PROJECT/services` | developer | `{"id": "web", "image": "nginx:1.27-alpine"}`, optionally any setting below and `"deploy": true`; answers `201` with the service. |
+| `GET /api/v1/projects/PROJECT/services/SERVICE` | viewer | Every setting, address, status and recent deployments. |
+| `PATCH /api/v1/projects/PROJECT/services/SERVICE` | developer | Changes only the settings given (see below); `"deploy": true` deploys them. |
+| `DELETE /api/v1/projects/PROJECT/services/SERVICE` | developer | Deletes the service. |
+| `PUT /api/v1/projects/PROJECT/services/SERVICE/settings` | developer | The full console settings form (older form, see below). |
 | `POST /api/v1/projects/PROJECT/services/SERVICE/deploy` | developer | Optional `{"image": "…"}` |
 | `POST /api/v1/projects/PROJECT/services/SERVICE/scale` | developer | `{"instances": 3}` |
 | `GET /api/v1/projects/PROJECT/services/SERVICE/deployments/REVISION` | viewer | One deployment and its status. |
 | `GET /api/v1/projects/PROJECT/services/SERVICE/logs?q=text` | viewer | Last 6 hours, up to 300 lines. See [Logs and metrics](/docs/logs-and-metrics). |
+| `GET /api/v1/projects/PROJECT/services/SERVICE/secrets` | viewer | Secret names (never their values). |
 | `PUT /api/v1/projects/PROJECT/services/SERVICE/secrets/NAME` | developer | `{"value": "…"}` |
+| `DELETE /api/v1/projects/PROJECT/services/SERVICE/secrets/NAME` | developer | |
 | `GET /api/v1/projects/PROJECT/services/SERVICE/ports` | viewer | Extra public HTTP ports. |
 | `POST /api/v1/projects/PROJECT/services/SERVICE/ports` | developer | `{"label": "admin", "port": 8081}` |
 | `DELETE /api/v1/projects/PROJECT/services/SERVICE/ports/LABEL` | developer | |
-| `POST /api/v1/projects/PROJECT/services/SERVICE/domains` | developer | `{"hostname": "shop.example.com"}` |
+| `GET /api/v1/projects/PROJECT/services/SERVICE/domains` | viewer | Custom domains, whether each is verified, and the DNS records to create. |
+| `POST /api/v1/projects/PROJECT/services/SERVICE/domains` | developer | `{"hostname": "shop.example.com"}`; answers `201` with the DNS records to create. |
+| `GET /api/v1/projects/PROJECT/services/SERVICE/domains/HOSTNAME` | viewer | One domain. |
+| `DELETE /api/v1/projects/PROJECT/services/SERVICE/domains/HOSTNAME` | developer | Removes the domain (and the records the platform wrote for it). |
 | `POST /api/v1/projects/PROJECT/services/SERVICE/default-address` | developer | `{"on": false}` turns the platform address off (a custom domain must be verified), `{"on": true}` turns it back on. |
 | `GET /api/v1/projects/PROJECT/services/SERVICE/schedules` | viewer | Scheduled scaling rules. |
 | `POST /api/v1/projects/PROJECT/services/SERVICE/schedules` | developer | `{"cron": "0 8 * * 1-5", "instances": 3, "label": "office hours"}` |
 | `DELETE /api/v1/projects/PROJECT/services/SERVICE/schedules/ID` | developer | |
 | `GET /api/v1/projects/PROJECT/services/SERVICE/analytics?period=24h` | viewer | Traffic and behavior report (`1h`, `24h`, `7d`, `30d`). |
 
-The settings endpoint takes the same fields as the **Settings** tab:
+`PATCH …/services/SERVICE` (and the creation) take these JSON fields. Fields you leave out keep their value, and an unknown field is refused with `400`:
+
+| Field | Description |
+| --- | --- |
+| `image` | The container image. |
+| `port`, `health_path` | The port the application listens on and its health check path. |
+| `cpu_millis`, `memory_mb` | CPU (1000 = one core) and memory per instance. |
+| `instances` | Number of instances. |
+| `worker` | `true` for a background worker (no address). |
+| `env` | An object of plain variables, such as `{"MODE": "production"}`. It replaces all of them. |
+| `public_ports` | Public TCP/UDP ports, such as `["25565/tcp"]`. |
+| `autoscaling` | `{"min": 1, "max": 5, "cpu_percent": 70}`, or `null` to turn it off. |
+| `volume_path` | Persistent folder path (empty for none). |
+| `public`, `edge_cache` | Public address and edge cache switches. |
+| `metrics_path`, `metrics_port` | Where your application serves Prometheus metrics. |
+| `deploy` | `true` to deploy right after saving. |
+
+The older `PUT …/settings` endpoint takes the same fields as the **Settings** tab:
 
 | Field | Description |
 | --- | --- |
@@ -216,7 +244,11 @@ See [Databases](/docs/databases).
 
 | Method and path | Role | Body and notes |
 | --- | --- | --- |
-| `POST /api/v1/projects/PROJECT/databases` | developer | `{"slug": "main", "engine": "postgres:17"}` |
+| `GET /api/v1/projects/PROJECT/databases` | viewer | Databases with their connection details. |
+| `POST /api/v1/projects/PROJECT/databases` | developer | `{"id": "main", "engine": "postgres:17"}`, optionally `cpu_millis`, `memory_mb`, `backup_enabled`, `backup_hour`. An engine without a version (`"postgres"`) takes the newest. Answers `201` with the database. |
+| `GET /api/v1/projects/PROJECT/databases/DB` | viewer | Engine, resources, backups, host, port, user. The password and `url` go only to developer and admin tokens. |
+| `PATCH /api/v1/projects/PROJECT/databases/DB` | developer | Any of `cpu_millis`, `memory_mb`, `backup_enabled`, `backup_hour` (0 to 23, UTC). New resources restart the database. |
+| `DELETE /api/v1/projects/PROJECT/databases/DB` | admin | Deletes the database and its data. |
 | `POST /api/v1/projects/PROJECT/databases/DB/attach` | developer | `{"service": "web", "name": "DATABASE_URL"}` |
 | `POST /api/v1/projects/PROJECT/databases/DB/public` | admin | `{"allow": "203.0.113.7"}` to open public access to an address, or `{"close": true}` |
 
@@ -285,7 +317,8 @@ See [DNS hosting](/docs/dns).
 | `GET /api/v1/dns/zones` | viewer | |
 | `POST /api/v1/dns/zones` | developer | `{"domain": "example.com"}`; answers the name servers to set at your registrar. |
 | `GET /api/v1/dns/zones/ZONE/records` | viewer | |
-| `POST /api/v1/dns/zones/ZONE/records` | developer | `{"name": "www", "type": "CNAME", "value": "target.example.com"}`, optionally `priority` and `ttl` |
+| `DELETE /api/v1/dns/zones/ZONE` | admin | Deletes the zone and its records. |
+| `POST /api/v1/dns/zones/ZONE/records` | developer | `{"name": "www", "type": "CNAME", "value": "target.example.com"}`, optionally `priority` and `ttl`; answers `201` with the record and its `ID`. |
 | `POST /api/v1/dns/zones/ZONE/import` | developer | A zone file as the body (or `{"zone_file": "…"}`); answers `{"added": N, "skipped": [ … ]}` |
 | `DELETE /api/v1/dns/zones/ZONE/records/ID` | developer | |
 
@@ -346,7 +379,7 @@ Monitoring is explained in [Logs and metrics](/docs/logs-and-metrics) and [Alert
 
 ### Console actions on the API
 
-Some endpoints above run the console's own form behind the scenes: creating projects, services and databases, saving settings, adding domains, attaching resources (databases, buckets, queues, email), the platform address switch, function triggers and webhooks. They apply exactly the same checks, plan limits and audit as the console. They answer `200 {"message": "…"}` on success, or `422 {"error": "…"}` with the message the console would show when it refuses the form. In their bodies, `true` means a ticked box and `false` an unticked one (use `0` for the `on` switch of the platform address).
+Some endpoints above run the console's own form behind the scenes: the older settings form, attaching resources (databases, buckets, queues, email), the platform address switch, function triggers and webhooks. They apply exactly the same checks, plan limits and audit as the console. They answer `200 {"message": "…"}` on success, or `422 {"error": "…"}` with the message the console would show when it refuses the form. In their bodies, `true` means a ticked box and `false` an unticked one (use `0` for the `on` switch of the platform address).
 
 ### Command-line tool
 
@@ -463,4 +496,4 @@ Each address may send up to 600 API requests per minute. Slow down or batch your
 
 ### Settings fields disappeared after a PUT
 
-The settings endpoint replaces the whole form. Read the current values with `GET …/services/SERVICE`, change what you need and send everything back.
+The older `PUT …/settings` endpoint replaces the whole form. Use `PATCH …/services/SERVICE` instead, which changes only the fields you send. To keep using `PUT`, read the current values with `GET …/services/SERVICE` and send everything back.

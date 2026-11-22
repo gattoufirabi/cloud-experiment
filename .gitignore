@@ -4,3 +4,4 @@ deploy/.env
 /platform
 /platform.exe
 /platformctl.exe
+e2e-remote.log

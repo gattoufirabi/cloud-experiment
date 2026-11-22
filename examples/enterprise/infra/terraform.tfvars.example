@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars (never committed) or pass as TF_VAR_* environment variables in CI.
+project_prefix = "store"
+
+# From scripts/build-and-push.sh (registry/org/store:<git sha>)
+image = "registry.example.com/acme/store:3f2c1a9"
+
+# Promote to production by setting the image tested in staging (empty: no production yet)
+production_image = ""
+
+# openssl rand -hex 24   (better: TF_VAR_internal_token / TF_VAR_payment_secret in CI)
+internal_token = "change-me"
+payment_secret = "change-me"
+
+email_from = "" # "Store <shop@example.com>" once the sending domain is verified
+report_to  = ""
+dns_zone   = "" # "example.com" to host the zone on the platform

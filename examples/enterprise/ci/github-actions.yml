@@ -1,0 +1,100 @@
+# Delivery pipeline of the store (copy to .github/workflows/deliver.yml).
+#
+#   pull request  -> plan of the infrastructure changes against staging (job log)
+#   push to main  -> build the image once, apply staging, platform extras, smoke test
+#   manual run    -> promote the image tested in staging to production (protected environment)
+#
+# Repository secrets: STAYSA_ENDPOINT, STAYSA_TOKEN (admin API token of the staging
+# organization), PRODUCTION_TOKEN (admin API token of the production organization), REGISTRY, ORG,
+# REGISTRY_TOKEN (push), PRODUCTION_ORG, PRODUCTION_REGISTRY_TOKEN, TF_VAR_INTERNAL_TOKEN, TF_VAR_PAYMENT_SECRET, TF_VAR_STATE_PASSPHRASE,
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (S3 key of the state bucket).
+# Repository variable: STAGING_IMAGE (the image staging runs, for pull request plans).
+name: deliver
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Image to promote to production (as tested in staging)"
+        required: true
+
+concurrency: infra # one apply at a time
+
+env:
+  STAYSA_ENDPOINT: ${{ secrets.STAYSA_ENDPOINT }}
+  STAYSA_TOKEN: ${{ secrets.STAYSA_TOKEN }}
+  TF_VAR_production_token: ${{ secrets.PRODUCTION_TOKEN }}
+  TF_VAR_internal_token: ${{ secrets.TF_VAR_INTERNAL_TOKEN }}
+  TF_VAR_payment_secret: ${{ secrets.TF_VAR_PAYMENT_SECRET }}
+  TF_VAR_state_passphrase: ${{ secrets.TF_VAR_STATE_PASSPHRASE }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: examples/enterprise/infra } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+      - run: tofu init -input=false
+      # infrastructure changes of the PR against staging (the image stays the current one)
+      - run: tofu plan -input=false -var "image=${{ vars.STAGING_IMAGE }}" -target=module.staging
+
+  staging:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+      - name: Build and push the image (once)
+        id: build
+        env: { REGISTRY: "${{ secrets.REGISTRY }}", ORG: "${{ secrets.ORG }}", REGISTRY_TOKEN: "${{ secrets.REGISTRY_TOKEN }}" }
+        run: echo "image=$(examples/enterprise/scripts/build-and-push.sh)" >> "$GITHUB_OUTPUT"
+      - name: Apply staging
+        working-directory: examples/enterprise/infra
+        run: |
+          tofu init -input=false
+          # -target keeps production as it is: it only changes when an image is promoted
+          tofu apply -input=false -auto-approve -var "image=${{ steps.build.outputs.image }}" -target=module.staging
+      - run: examples/enterprise/scripts/platform-extras.sh staging
+      - name: Smoke test
+        run: examples/enterprise/scripts/smoke-test.sh "$(cd examples/enterprise/infra && tofu output -json staging | jq -r .storefront)"
+      - run: echo "Tested image ${{ steps.build.outputs.image }} — promote it with the manual run." >> "$GITHUB_STEP_SUMMARY"
+
+  production:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production # require a reviewer in the repository settings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+      - name: Copy the tested image to the production organization (same digest)
+        id: promote
+        env:
+          REGISTRY: "${{ secrets.REGISTRY }}"
+          ORG: "${{ secrets.ORG }}"
+          REGISTRY_TOKEN: "${{ secrets.REGISTRY_TOKEN }}"
+          PRODUCTION_ORG: "${{ secrets.PRODUCTION_ORG }}"
+          PRODUCTION_REGISTRY_TOKEN: "${{ secrets.PRODUCTION_REGISTRY_TOKEN }}"
+        run: echo "image=$(examples/enterprise/scripts/promote-image.sh '${{ inputs.image }}')" >> "$GITHUB_OUTPUT"
+      - name: Apply production with the promoted image
+        working-directory: examples/enterprise/infra
+        run: |
+          tofu init -input=false
+          tofu apply -input=false -auto-approve -var "image=${{ inputs.image }}" -var "production_image=${{ steps.promote.outputs.image }}" \
+            -target=module.production -target=staysa_dns_zone.main -target=staysa_dns_record.spf -target=staysa_dns_record.caa
+      - run: examples/enterprise/scripts/platform-extras.sh production
+        env: { STAYSA_TOKEN: "${{ secrets.PRODUCTION_TOKEN }}" }
+      - name: Smoke test
+        working-directory: examples/enterprise/infra
+        run: |
+          if ! ../scripts/smoke-test.sh "$(tofu output -json production | jq -r .storefront)"; then
+            echo "smoke test failed: redeploy the previous image with a manual run" >&2
+            exit 1
+          fi

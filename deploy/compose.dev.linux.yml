@@ -1,0 +1,15 @@
+# Override for running the dev stack on a Linux Docker Engine (a test server) instead of
+# Docker Desktop: Linux has no built-in host.docker.internal, which the dev stack and the
+# end-to-end tests use to reach the host (mock identity provider, second node, public DB ports).
+#   docker compose -f compose.dev.yml -f compose.dev.linux.yml up -d --build
+services:
+  api:
+    extra_hosts: ["host.docker.internal:host-gateway"]
+  agent:
+    extra_hosts: ["host.docker.internal:host-gateway"]
+  agent2:
+    extra_hosts: ["host.docker.internal:host-gateway"]
+  caddy:
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    # a shared server must not publish a console that uses the known dev secrets
+    ports: !override ["127.0.0.1:8088:80", "127.0.0.1:1465:465"]
