@@ -12,6 +12,7 @@ import (
 // lists, tables, fenced code, inline code, bold, italics and links. Everything is
 // HTML-escaped first; links are only kept for /path, #anchor and https:// targets.
 // No dependency, nothing to configure, nothing that can inject markup.
+// One extension: a line "::: diagram NAME" places a built-in SVG diagram (docDiagrams).
 
 type tocEntry struct {
 	ID, Title string
@@ -33,6 +34,10 @@ var (
 	emRe      = regexp.MustCompile(`(^|[\s(])\*([^*\s][^*]*?)\*`)
 	slugRe    = regexp.MustCompile(`[^a-z0-9]+`)
 )
+
+// docDiagrams are the built-in SVG diagrams, keyed by name, read from embedded files
+// when the docs load (docs/diagrams/NAME.svg): platform content, never user input.
+var docDiagrams = map[string]template.HTML{}
 
 func slugify(s string) string {
 	return strings.Trim(slugRe.ReplaceAllString(strings.ToLower(s), "-"), "-")
@@ -108,6 +113,11 @@ func renderMarkdown(src string) docPage {
 			b.WriteString(`<pre class="doc-code"><code>` + html.EscapeString(strings.Join(code, "\n")) + "</code></pre>\n")
 			i++
 			continue
+		case strings.HasPrefix(t, "::: diagram "):
+			flush()
+			if svg, ok := docDiagrams[strings.TrimSpace(t[len("::: diagram "):])]; ok {
+				b.WriteString(`<figure class="doc-diagram scroll-x">` + string(svg) + "</figure>\n")
+			}
 		case t == "":
 			flush()
 		case strings.HasPrefix(t, "# "):

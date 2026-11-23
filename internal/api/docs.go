@@ -4,7 +4,10 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"html/template"
+	"io/fs"
 	"net/http"
+	"path"
 	"strings"
 
 	"platform/internal/config"
@@ -20,7 +23,7 @@ import (
 // /docs/user      the former single-page guide: sends old /docs/user#anchor links to
 //                 the topic page that now covers them
 
-//go:embed docs/*.md docs/user/*.md
+//go:embed docs/*.md docs/user/*.md docs/diagrams/*.svg
 var docsFS embed.FS
 
 type docTopic struct {
@@ -37,6 +40,7 @@ type docGroup struct {
 var docGroups = []docGroup{
 	{"Get started", []docTopic{
 		{Slug: "getting-started", Title: "Getting started", Summary: "Create your account, sign in safely and learn how organizations, projects and services fit together."},
+		{Slug: "how-it-works", Title: "How the platform works", Summary: "The architecture under the hood: trust zones, the deploy loop, and what runs each feature."},
 	}},
 	{"Run applications", []docTopic{
 		{Slug: "applications", Title: "Applications", Summary: "Deploy containers from an image or from git, scale them, expose ports and roll back in one click."},
@@ -100,6 +104,15 @@ func loadDocs(cfg config.Config) (*docsSite, error) {
 	}
 	repl := strings.NewReplacer("{{console}}", cfg.BaseURL, "{{registry}}", registry, "{{apps}}", cfg.AppsDomain, "{{s3}}", cfg.S3PublicURL(), "{{s3region}}", cfg.S3Region)
 	site := &docsSite{pages: map[string]docPage{}}
+	if svgs, err := fs.Glob(docsFS, "docs/diagrams/*.svg"); err == nil {
+		for _, f := range svgs {
+			raw, err := docsFS.ReadFile(f)
+			if err != nil {
+				return nil, err
+			}
+			docDiagrams[strings.TrimSuffix(path.Base(f), ".svg")] = template.HTML(raw) // embedded at build time
+		}
+	}
 	for _, g := range docGroups {
 		for _, t := range g.Topics {
 			t.Group = g.Name

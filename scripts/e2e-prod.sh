@@ -132,7 +132,7 @@ check "a node reported in the last 2 minutes" "$(owner_sql "SELECT count(*) > 0 
 check "every migration applied" "$(ls ../migrations/*.sql | wc -l | tr -d ' ')" "$(owner_sql "SELECT count(*) FROM schema_migrations")"
 check "deployments are not paused" "$(owner_sql "SELECT deploys_paused FROM platform_settings")" f
 DOC() { curl -sS --resolve "$CONSOLE:443:127.0.0.1" "$BASE$1"; }
-check "docs index lists every topic" "$(DOC /docs | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 32
+check "docs index lists every topic" "$(DOC /docs | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 33
 check "a topic page has its four parts" "$(DOC /docs/databases | grep -cE 'id="(overview|use-cases|how-to-use-it|technical-reference)"')" 4
 check "old guide links are forwarded" "$(DOC /docs/user | grep -c 'data-legacy=')" 1
 check "unknown topic is 404" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "$CONSOLE:443:127.0.0.1" "$BASE/docs/nope")" 404

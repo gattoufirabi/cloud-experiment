@@ -847,3 +847,31 @@ dialog.modal .stack, dialog.modal .form-grid { max-width: none; }
 .docs-outline-mobile ol { margin: 10px 0 0; padding-left: 20px; }
 .docs-card[hidden], .docs-group[hidden] { display: none; }
 .doc :not(pre) > code { overflow-wrap: anywhere; }
+
+/* ---------- docs: built-in SVG diagrams ("::: diagram NAME") ---------- */
+:root { --dg-agent: #b69cf2; }
+:root[data-theme="light"] { --dg-agent: #6d4bb8; }
+@media (prefers-color-scheme: light) { :root:not([data-theme]) { --dg-agent: #6d4bb8; } }
+.doc-diagram { margin: 20px 0; padding: 12px; background: var(--surface); border-radius: var(--radius); box-shadow: var(--hairline-soft); }
+.doc-diagram svg.dg { display: block; width: 100%; min-width: 820px; height: auto; }
+.dg text { font-family: var(--font); fill: var(--text); }
+.dg .dg-t { font-size: 15px; font-weight: 600; }
+.dg .dg-s { font-size: 12px; fill: var(--text-2); }
+.dg .dg-z { font: 600 12px var(--mono); letter-spacing: .06em; }
+.dg .dg-lbl { font: 500 11px var(--mono); fill: var(--text-3); }
+.dg .dg-lblapp { fill: var(--ok); }
+.dg .dg-box { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.2; }
+.dg .dg-chip { fill: var(--surface-2); }
+.dg .dg-chipt { font: 500 11.5px var(--mono); }
+.dg .dg-arrow { stroke: var(--text-3); stroke-width: 1.6; fill: none; marker-end: url(#dg-ah); }
+.dg .dg-arrow.dg-app { stroke: var(--ok); stroke-dasharray: 5 4; marker-end: url(#dg-aht); }
+.dg .dg-bus { stroke: var(--ok); stroke-width: 1.6; stroke-dasharray: 5 4; fill: none; }
+.dg .dg-ah { fill: var(--text-3); }
+.dg .dg-aht { fill: var(--ok); }
+.dg .dg-zone { stroke-width: 1.2; }
+.dg .dg-zone-edge { fill: color-mix(in srgb, var(--warn) 9%, transparent); stroke: var(--warn); }
+.dg .dg-zone-ctrl { fill: color-mix(in srgb, var(--primary-text) 8%, transparent); stroke: var(--primary-text); }
+.dg .dg-zone-agent { fill: color-mix(in srgb, var(--dg-agent) 9%, transparent); stroke: var(--dg-agent); }
+.dg .dg-zone-tenant { fill: color-mix(in srgb, var(--ok) 8%, transparent); stroke: var(--ok); }
+.dg .dg-zt-edge { fill: var(--warn); } .dg .dg-zt-ctrl { fill: var(--primary-text); }
+.dg .dg-zt-agent { fill: var(--dg-agent); } .dg .dg-zt-tenant { fill: var(--ok); }

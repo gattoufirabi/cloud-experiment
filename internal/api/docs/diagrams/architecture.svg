@@ -1,0 +1,122 @@
+<svg class="dg" viewBox="0 0 1000 790" role="img" aria-label="Architecture: sources, edge, control plane, node agent and tenant workloads with the main data flows">
+        <defs>
+          <marker id="dg-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="dg-ah"/></marker>
+          <marker id="dg-aht" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="dg-aht"/></marker>
+        </defs>
+
+        <!-- sources -->
+        <rect class="dg-box" x="40" y="14" width="280" height="50" rx="8"/>
+        <text class="dg-t" x="56" y="36">Visitors</text><text class="dg-s" x="56" y="54">your customers' customers, over HTTPS</text>
+        <rect class="dg-box" x="360" y="14" width="280" height="50" rx="8"/>
+        <text class="dg-t" x="376" y="36">Teams in the console</text><text class="dg-s" x="376" y="54">browser · passkeys · SSO</text>
+        <rect class="dg-box" x="680" y="14" width="280" height="50" rx="8"/>
+        <text class="dg-t" x="696" y="36">Automation</text><text class="dg-s" x="696" y="54">REST API · platformctl · Terraform · CI</text>
+
+        <!-- zone 1: edge -->
+        <rect class="dg-zone dg-zone-edge" x="20" y="92" width="960" height="104" rx="10"/>
+        <text class="dg-z dg-zt-edge" x="34" y="112">1 · EDGE · INTERNET-FACING</text>
+        <rect class="dg-box" x="40" y="120" width="620" height="62" rx="8"/>
+        <text class="dg-t" x="56" y="144">Caddy proxy</text>
+        <text class="dg-s" x="56" y="166">automatic HTTPS · routes hosts to instances · rate limits · edge cache · access logs</text>
+        <rect class="dg-box" x="680" y="120" width="135" height="62" rx="8"/>
+        <text class="dg-t" x="694" y="144">DNS server</text><text class="dg-s" x="694" y="166">hosted zones :53</text>
+        <rect class="dg-box" x="825" y="120" width="135" height="62" rx="8"/>
+        <text class="dg-t" x="839" y="144">Stalwart</text><text class="dg-s" x="839" y="166">SMTP · IMAP · mail</text>
+
+        <path class="dg-arrow" d="M180 64 L180 118"/>
+        <path class="dg-arrow" d="M500 64 L500 118"/>
+        <path class="dg-arrow" d="M820 64 L820 80 L630 80 L630 118"/>
+
+        <!-- zone 2: control plane -->
+        <rect class="dg-zone dg-zone-ctrl" x="20" y="214" width="960" height="166" rx="10"/>
+        <text class="dg-z dg-zt-ctrl" x="34" y="234">2 · CONTROL PLANE · NO DOCKER ACCESS</text>
+        <rect class="dg-box" x="40" y="244" width="270" height="58" rx="8"/>
+        <text class="dg-t" x="56" y="267">API + console (Go)</text><text class="dg-s" x="56" y="288">auth · roles · quotas · audit log</text>
+        <rect class="dg-box" x="330" y="244" width="290" height="58" rx="8"/>
+        <text class="dg-t" x="346" y="267">PostgreSQL</text><text class="dg-s" x="346" y="288">desired state · row-level security per org</text>
+        <rect class="dg-box" x="640" y="244" width="320" height="58" rx="8"/>
+        <text class="dg-t" x="656" y="267">VictoriaMetrics + VictoriaLogs</text><text class="dg-s" x="656" y="288">read only through the API, org filter added</text>
+        <rect class="dg-box" x="40" y="314" width="160" height="54" rx="8"/>
+        <text class="dg-t" x="54" y="336">Registry</text><text class="dg-s" x="54" y="355">per-org namespaces</text>
+        <rect class="dg-box" x="212" y="314" width="132" height="54" rx="8"/>
+        <text class="dg-t" x="226" y="336">Trivy</text><text class="dg-s" x="226" y="355">vulnerability DB</text>
+        <rect class="dg-box" x="650" y="314" width="140" height="54" rx="8"/>
+        <text class="dg-t" x="664" y="336">Garage</text><text class="dg-s" x="664" y="355">S3 object storage</text>
+        <rect class="dg-box" x="820" y="314" width="140" height="54" rx="8"/>
+        <text class="dg-t" x="834" y="336">Master key</text><text class="dg-s" x="834" y="355">encrypts secrets</text>
+        <path class="dg-arrow" d="M175 182 L175 242"/>
+        <text class="dg-lbl" x="184" y="210">console + API hosts</text>
+        <path class="dg-arrow" d="M310 273 L328 273"/>
+
+        <!-- postgres -> agent -->
+        <path class="dg-arrow" d="M475 302 L475 430"/>
+        <text class="dg-lbl" x="486" y="334">LISTEN/NOTIFY:</text>
+        <text class="dg-lbl" x="486" y="350">"desired state changed"</text>
+        <!-- registry -> agent -->
+        <path class="dg-arrow" d="M120 368 L120 430"/>
+        <text class="dg-lbl" x="128" y="414">image pull</text>
+        <!-- agent -> victoria -->
+        <path class="dg-arrow" d="M805 430 L805 304"/>
+        <text class="dg-lbl" x="700" y="392">metrics + logs push</text>
+
+        <!-- zone 3: agent -->
+        <rect class="dg-zone dg-zone-agent" x="20" y="398" width="960" height="128" rx="10"/>
+        <text class="dg-z dg-zt-agent" x="34" y="418">3 · NODE AGENT · ROOT · NEVER INTERNET-FACING</text>
+        <rect class="dg-box" x="40" y="430" width="570" height="84" rx="8"/>
+        <g>
+          <rect class="dg-chipr" x="52" y="440" width="128" height="22" rx="5"/><text class="dg-chipt" x="60" y="455">reconcile · deploy</text>
+          <rect class="dg-chipr" x="186" y="440" width="86" height="22" rx="5"/><text class="dg-chipt" x="194" y="455">autoscaler</text>
+          <rect class="dg-chipr" x="278" y="440" width="70" height="22" rx="5"/><text class="dg-chipt" x="286" y="455">builds</text>
+          <rect class="dg-chipr" x="354" y="440" width="84" height="22" rx="5"/><text class="dg-chipt" x="362" y="455">functions</text>
+          <rect class="dg-chipr" x="444" y="440" width="48" height="22" rx="5"/><text class="dg-chipt" x="452" y="455">jobs</text>
+          <rect class="dg-chipr" x="498" y="440" width="102" height="22" rx="5"/><text class="dg-chipt" x="506" y="455">backups</text>
+          <rect class="dg-chipr" x="52" y="482" width="62" height="22" rx="5"/><text class="dg-chipt" x="60" y="497">scans</text>
+          <rect class="dg-chipr" x="120" y="482" width="78" height="22" rx="5"/><text class="dg-chipt" x="128" y="497">metering</text>
+          <rect class="dg-chipr" x="204" y="482" width="88" height="22" rx="5"/><text class="dg-chipt" x="212" y="497">telemetry</text>
+          <rect class="dg-chipr" x="298" y="482" width="104" height="22" rx="5"/><text class="dg-chipt" x="306" y="497">email delivery</text>
+          <rect class="dg-chipr" x="408" y="482" width="78" height="22" rx="5"/><text class="dg-chipt" x="416" y="497">alarms</text>
+          <rect class="dg-chipr" x="492" y="482" width="108" height="22" rx="5"/><text class="dg-chipt" x="500" y="497">abuse checks</text>
+        </g>
+        <rect class="dg-box" x="650" y="430" width="310" height="84" rx="8"/>
+        <text class="dg-t" x="666" y="454">Hard policy, whatever the DB says</text>
+        <text class="dg-s" x="666" y="476">gVisor only · no privileged containers</text>
+        <text class="dg-s" x="666" y="494">no host mounts or network · limits required</text>
+
+        <!-- app traffic bus -->
+        <path d="M630 182 L630 210 L998 210 L998 556 L740 556" class="dg-bus"/>
+        <path class="dg-arrow dg-app" d="M740 556 L740 572"/>
+        <path d="M740 556 L265 556" class="dg-bus"/>
+        <path class="dg-arrow dg-app" d="M265 556 L265 572"/>
+        <text class="dg-lbl dg-lblapp" x="840" y="550">app traffic</text>
+
+        <!-- agent -> data plane -->
+        <path class="dg-arrow" d="M120 514 L120 572"/>
+        <text class="dg-lbl" x="128" y="540">runs containers</text>
+
+        <!-- zone 4: tenants -->
+        <rect class="dg-zone dg-zone-tenant" x="20" y="562" width="960" height="214" rx="10"/>
+        <text class="dg-z dg-zt-tenant" x="34" y="760">4 · TENANT WORKLOADS · UNTRUSTED · gVisor SANDBOX · OWN CGROUPS AND NETWORKS</text>
+        <rect class="dg-box" x="40" y="576" width="450" height="160" rx="8"/>
+        <text class="dg-t" x="56" y="600">Organization A · project "shop"</text>
+        <text class="dg-s" x="56" y="619">private network shop · web.shop.internal</text>
+        <g>
+          <rect class="dg-chipr" x="56" y="632" width="96" height="24" rx="5"/><text class="dg-chipt" x="64" y="648">web ×3</text>
+          <rect class="dg-chipr" x="158" y="632" width="74" height="24" rx="5"/><text class="dg-chipt" x="166" y="648">worker</text>
+          <rect class="dg-chipr" x="238" y="632" width="96" height="24" rx="5"/><text class="dg-chipt" x="246" y="648">PostgreSQL</text>
+          <rect class="dg-chipr" x="340" y="632" width="64" height="24" rx="5"/><text class="dg-chipt" x="348" y="648">Redis</text>
+          <rect class="dg-chipr" x="56" y="664" width="108" height="24" rx="5"/><text class="dg-chipt" x="64" y="680">function</text>
+          <rect class="dg-chipr" x="170" y="664" width="98" height="24" rx="5"/><text class="dg-chipt" x="178" y="680">job run</text>
+          <rect class="dg-chipr" x="274" y="664" width="130" height="24" rx="5"/><text class="dg-chipt" x="282" y="680">preview pr-42</text>
+        </g>
+        <text class="dg-s" x="56" y="716">volumes with disk quotas · secrets injected at start</text>
+        <rect class="dg-box" x="510" y="576" width="450" height="160" rx="8"/>
+        <text class="dg-t" x="526" y="600">Organization B · project "api"</text>
+        <text class="dg-s" x="526" y="619">its own network: cannot see A at all</text>
+        <g>
+          <rect class="dg-chipr" x="526" y="632" width="64" height="24" rx="5"/><text class="dg-chipt" x="534" y="648">api ×2</text>
+          <rect class="dg-chipr" x="596" y="632" width="70" height="24" rx="5"/><text class="dg-chipt" x="604" y="648">MySQL</text>
+          <rect class="dg-chipr" x="672" y="632" width="62" height="24" rx="5"/><text class="dg-chipt" x="680" y="648">Kafka</text>
+          <rect class="dg-chipr" x="740" y="632" width="104" height="24" rx="5"/><text class="dg-chipt" x="748" y="648">db proxy (TLS)</text>
+        </g>
+        <text class="dg-s" x="526" y="716">firewall: no host, no other tenants, no private ranges, no outbound SMTP</text>
+      </svg>
