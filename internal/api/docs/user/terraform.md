@@ -52,7 +52,7 @@ Create a folder with a `main.tf` file:
 terraform {
   required_providers {
     staysa = {
-      source = "gattoufirabi/staysa"
+      source = "registry.opentofu.org/gattoufirabi/staysa"
     }
   }
 }
@@ -107,7 +107,7 @@ tofu plan
 tofu apply
 ```
 
-With Terraform, use `terraform` instead of `tofu`. The first `apply` creates the project, the database and the application, sets the secret and deploys it again so it gets the value.
+With Terraform, use `terraform` instead of `tofu`. The provider is published on the [OpenTofu Registry](https://search.opentofu.org/provider/gattoufirabi/staysa), so keep the full `registry.opentofu.org/gattoufirabi/staysa` source: Terraform then installs it from there too. The first `apply` creates the project, the database and the application, sets the secret and deploys it again so it gets the value.
 
 ### Change something
 
