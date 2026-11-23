@@ -229,7 +229,7 @@ Terraform keeps a state file with the IDs and the values it knows, sensitive one
 
 ### Where the provider comes from
 
-The provider is open source and lives in the platform's repository under `terraform-provider-staysa`. It is built with HashiCorp's plugin framework and works with Terraform 1.0 or later and every OpenTofu version.
+The provider is open source (MPL-2.0) and lives at [github.com/gattoufirabi/terraform-provider-staysa](https://github.com/gattoufirabi/terraform-provider-staysa). Each release is signed with the key in that repository (fingerprint `51353DC9411B4E07B5EE0730B3517F9E206ED882`), which Terraform and OpenTofu check when they install it. It is built with HashiCorp's plugin framework and works with Terraform 1.0 or later and every OpenTofu version.
 
 ## Troubleshooting
 
