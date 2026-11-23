@@ -75,6 +75,8 @@ func (a *Agent) meterMinute(ctx context.Context) {
 		JOIN projects p ON p.id = s.project_id
 		JOIN orgs o ON o.id = d.org_id
 		WHERE d.status = 'live' AND NOT o.suspended
+		  -- applications on the customer's own servers use the customer's hardware
+		  AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = p.node_id AND n.role = 'customer')
 		UNION ALL
 		SELECT db.org_id, db.id, 'database', p.slug || '/' || db.slug, date_trunc('hour', now()), db.cpu_millis, db.memory_mb
 		FROM databases db

@@ -14,6 +14,7 @@ type Config struct {
 
 	ListenAddr   string // public HTTP (behind Caddy)
 	InternalAddr string // internal HTTP: TLS ask endpoint, health; never proxied
+	TunnelAddr   string // internal HTTP: the proxy reaches apps on customer servers here; never proxied from outside
 	BaseURL      string // public console URL, e.g. https://console.example.com
 	ConsoleHost  string
 	AppsDomain   string // default app hosts: <service>-<project>-<org>.<AppsDomain>
@@ -36,6 +37,7 @@ type Config struct {
 	AgentContainer   string // set when the agent itself runs in a container (dev)
 	TLSMode          string // off | acme
 	APIUpstream      string
+	TunnelUpstream   string // the API's tunnel listener, as the proxy dials it
 	APIInternalURL   string
 	ACMECA           string
 	MaxCPUMillis     int
@@ -248,6 +250,7 @@ func Load() Config {
 		AdminDatabaseURL:     env("ADMIN_DATABASE_URL", ""),
 		ListenAddr:           env("LISTEN_ADDR", ":8080"),
 		InternalAddr:         env("INTERNAL_ADDR", ":8081"),
+		TunnelAddr:           env("TUNNEL_ADDR", ":8082"),
 		BaseURL:              strings.TrimRight(env("BASE_URL", "http://console.localhost:8088"), "/"),
 		ConsoleHost:          env("CONSOLE_HOST", "console.localhost"),
 		AppsDomain:           env("APPS_DOMAIN", "apps.localhost"),
@@ -263,6 +266,7 @@ func Load() Config {
 		AgentContainer:       env("AGENT_CONTAINER", ""),
 		TLSMode:              env("TLS_MODE", "off"),
 		APIUpstream:          env("API_UPSTREAM", "api:8080"),
+		TunnelUpstream:       env("TUNNEL_UPSTREAM", "api:8082"),
 		APIInternalURL:       strings.TrimRight(env("API_INTERNAL_URL", "http://api:8081"), "/"),
 		ACMECA:               env("ACME_CA", "https://acme-v02.api.letsencrypt.org/directory"),
 		MaxCPUMillis:         envInt("MAX_CPU_MILLIS", 4000),

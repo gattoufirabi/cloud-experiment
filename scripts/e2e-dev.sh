@@ -197,7 +197,7 @@ onboard jb "$B" "owner@$B.test"
 fi
 if want "Unauthenticated access"; then
 section "Unauthenticated access"
-check "docs index lists every topic" "$(curl -sS "$BASE/docs" | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 33
+check "docs index lists every topic" "$(curl -sS "$BASE/docs" | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 34
 check "a topic page has its four parts" "$(curl -sS "$BASE/docs/databases" | grep -cE 'id="(overview|use-cases|how-to-use-it|technical-reference)"')" 4
 check "old guide links are forwarded" "$(curl -sS "$BASE/docs/user" | grep -c 'data-legacy=')" 1
 check "unknown topic is 404" "$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/docs/nope")" 404
@@ -2092,6 +2092,65 @@ check "[B->A API] B cannot read, change or delete A's project (404)" "$(api_code
 check "[API] a project with applications is not deleted without force (409), then is" "$(iacc DELETE /projects/iac):$(iacc DELETE '/projects/iac?force=true'):$(iacc GET /projects/iac)" "409:204:404"
 check "[API] changes audited with the token" "$(owner_sql "SELECT count(*) >= 5 FROM audit_events WHERE org_id = (SELECT id FROM orgs WHERE slug = '$A') AND detail::text LIKE '%terraform%'")" t
 admin set-plan --slug "$A" --plan starter >/dev/null
+
+fi
+if want "Your own servers"; then
+section "Your own servers"
+# A customer server: the node agent runs in a container on this Docker, as it would on a
+# VM at AWS or Azure, and reaches the console through the proxy like any outside machine.
+NODE_IMG=$(docker inspect -f '{{.Config.Image}}' "$API_C")
+NODE_C=e2e-node-$RUN
+ORG_A=$(owner_sql "SELECT id FROM orgs WHERE slug = '$A'")
+node_cli() { dx run --rm --user 0:0 --network platform-core -v /var/run/docker.sock:/var/run/docker.sock "$@"; }
+pub() { curl -sS --resolve "console.localhost:$PORT:127.0.0.1" "$@"; }
+own_q() { owner_sql "SELECT count(*) FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.slug = 'onprem' AND p.org_id = '$ORG_A' AND $1"; }
+vl_has() { MSYS_NO_PATHCONV=1 docker run --rm --network platform-core curlimages/curl:8.11.1 -s 'http://victorialogs:9428/select/logsql/query' --data-urlencode "query=$1" | grep -c . | awk '{print ($1>0)}'; }
+own_http() { curl -sS --resolve "$OWN_HOST:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' "$@" "http://$OWN_HOST:$PORT/"; }
+node_ps() { docker ps -q --filter label=staysa.node.managed=true --filter "label=staysa.node.project=$1" | grep -c .; }
+check "[A] servers page" "$(code_of ja "$BASE/o/$A/servers")" 200
+JOIN=$(c ja -X POST "$BASE/o/$A/servers" -d csrf=$CSRF_A -d name=e2e-own | grep -o 'plj_[A-Za-z0-9_-]*' | head -1)
+check "[A] a one-time join command is shown" "$(echo "$JOIN" | grep -c '^plj_')" 1
+check "an invalid join token is refused (401), the node API needs a node token (401)" "$(pub -o /dev/null -w '%{http_code}' -X POST -d '{"token":"plj_nope"}' "$BASE/node/v1/join"):$(pub -o /dev/null -w '%{http_code}' "$BASE/node/v1/desired")" "401:401"
+check "the installer script names this console" "$(pub "$BASE/node/install.sh" | grep -c "CONSOLE=\"$BASE\"")" 1
+dx volume create "$NODE_C" >/dev/null
+node_cli -v "$NODE_C:/state" "$NODE_IMG" node join --server http://caddy --host console.localhost --token "$JOIN" --state /state >/dev/null 2>&1
+check "the join token works only once" "$(node_cli "$NODE_IMG" node join --server http://caddy --host console.localhost --token "$JOIN" --state /tmp/s 2>&1 | grep -c 'HTTP 401')" 1
+dx run -d --name "$NODE_C" --user 0:0 --network platform-core -e NODE_AGENT_CONTAINER="$NODE_C" -v /var/run/docker.sock:/var/run/docker.sock -v "$NODE_C:/state" "$NODE_IMG" node run --state /state >/dev/null
+NID=$(owner_sql "SELECT id FROM nodes WHERE org_id = '$ORG_A' AND role = 'customer'")
+check "the server joined with its own ID and a pull-only registry token, without platform secrets" "$(echo "$NID" | grep -c '^c-'):$(owner_sql "SELECT count(*) FROM registry_tokens t JOIN nodes n ON n.registry_token_id = t.id WHERE n.id = '$NID' AND NOT t.can_push"):$(docker inspect -f '{{json .Config.Env}}' "$NODE_C" | grep -c -e MASTER_KEY -e DATABASE_URL)" "1:1:0"
+srv_online() { c ja "$BASE/o/$A/servers" | grep -c 'st-live">online'; }
+check "[A] the server shows online" "$(until_is 1 40 srv_online)" 1
+check "[B] does not see A's server, the operator panel does not list it" "$(c jb "$BASE/o/$B/servers" | grep -c "$NID"):$(owner_sql "SELECT count(*) FROM operator_nodes() WHERE id = '$NID'")" "0:0"
+TOK_OWN=$(new_api_token ja "$A" "$CSRF_A" own-server admin)
+own() { local m=$1 path=$2; shift 2; curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -H "Authorization: Bearer $TOK_OWN" -H 'Content-Type: application/json' -X "$m" "$BASE/api/v1$path" "$@"; }
+ownj() { python -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
+own POST /projects -d '{"id": "onprem", "name": "On premises"}' >/dev/null
+own POST /projects -d '{"id": "withdb", "name": "With DB"}' >/dev/null
+own POST /projects/withdb/databases -d '{"id": "kv", "engine": "redis", "memory_mb": 128}' >/dev/null
+check "a project with a managed database cannot move to the server" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/servers/place" -d csrf=$CSRF_A -d project=withdb -d server=$NID | grep -c 'err=')" 1
+check "[A] project moved to the server" "$(code_of ja -X POST "$BASE/o/$A/servers/place" -d csrf=$CSRF_A -d project=onprem -d server=$NID):$(owner_sql "SELECT node_id FROM projects WHERE org_id = '$ORG_A' AND slug = 'onprem'")" "303:$NID"
+own POST /projects/onprem/services -d '{"id": "web", "image": "nginx:1.27-alpine", "port": 80, "health_path": "/", "cpu_millis": 100, "memory_mb": 64, "env": {"WHERE": "own"}, "deploy": false}' >/dev/null
+own PUT /projects/onprem/services/web/secrets/OWN_SECRET -d "{\"value\": \"own-$RUN\", \"redeploy\": false}" >/dev/null
+own POST /projects/onprem/services/web/deploy >/dev/null
+for _ in $(seq 1 90); do [ "$(own_q "d.status = 'live'")" = 1 ] && [ "$(own_q "d.status IN ('pending','deploying')")" = 0 ] && break; sleep 2; done
+OWN_DEP=$(owner_sql "SELECT d.id FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.slug = 'onprem' AND p.org_id = '$ORG_A' AND d.status = 'live'")
+OWN_CT=$(docker ps -q --filter "label=staysa.node.deployment=$OWN_DEP" | head -1)
+check "the application is live on the customer server (its labels, not the platform's), routed through the tunnel" "$(own GET /projects/onprem/services/web | ownj 'd["status"]'):$(docker inspect -f '{{index .Config.Labels "platform.managed"}}:{{index .Config.Labels "staysa.node.managed"}}' "$OWN_CT"):$(owner_sql "SELECT upstream FROM deployments WHERE id = '$OWN_DEP'")" "live::true:tunnel:$OWN_DEP"
+check "the server got the secret and the variable, decrypted by the API" "$(dx exec "$OWN_CT" printenv OWN_SECRET WHERE | tr -d '\r' | paste -sd,)" "own-$RUN,own"
+OWN_HOST=web-onprem-$A.apps.localhost
+check "visitors reach it at its usual address, through the proxy and the tunnel" "$(until_is 200 30 own_http):$(curl -sS --resolve "$OWN_HOST:$PORT:127.0.0.1" "http://$OWN_HOST:$PORT/" | grep -c '<h1>Welcome to nginx')" "200:1"
+check "a visitor's tunnel header cannot pick another deployment (the proxy overwrites it)" "$(own_http -H 'X-Platform-Tunnel: 00000000-0000-0000-0000-000000000000')" 200
+for _ in 1 2 3; do curl -sS --resolve "$OWN_HOST:$PORT:127.0.0.1" -o /dev/null "http://$OWN_HOST:$PORT/?e2e-own-$RUN"; done
+check "its logs reach the log store, filed under the organization by the API" "$(until_is 1 40 vl_has "e2e-own-$RUN org_id:$ORG_A")" 1
+check "a managed database cannot be created in a project on the server; nor a public port" "$(own POST /projects/onprem/databases -d '{"id": "kv", "engine": "redis"}' -o /dev/null -w '%{http_code}'):$(own PATCH /projects/onprem/services/web -d '{"public_ports": ["25565/tcp"]}' -o /dev/null -w '%{http_code}')" "422:422"
+check "its applications are not metered as platform compute" "$(owner_sql "SELECT count(*) FROM usage_hourly WHERE resource_id = (SELECT service_id FROM deployments WHERE id = '$OWN_DEP') AND cpu_milli_minutes > 0")" 0
+check "a server still running projects cannot be removed" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/servers/$NID/delete" -d csrf=$CSRF_A | grep -c 'err=')" 1
+OWN_PID=$(owner_sql "SELECT id FROM projects WHERE org_id = '$ORG_A' AND slug = 'onprem'")
+check "[A] project moved back to the platform: deployed there, then removed from the server" "$(code_of ja -X POST "$BASE/o/$A/servers/place" -d csrf=$CSRF_A -d project=onprem -d server=):$(until_is 1 120 own_q "d.status = 'live' AND d.upstream NOT LIKE 'tunnel:%'"):$(until_is 0 60 node_ps "$OWN_PID"):$(until_is 200 30 own_http)" "303:1:0:200"
+check "[A] server removed: its node token and registry token stop working" "$(code_of ja -X POST "$BASE/o/$A/servers/$NID/delete" -d csrf=$CSRF_A):$(owner_sql "SELECT count(*) FROM nodes WHERE id = '$NID'"):$(owner_sql "SELECT count(*) FROM registry_tokens WHERE org_id = '$ORG_A' AND name = 'server e2e-own'"):$(until_is 1 40 sh -c "docker logs '$NODE_C' 2>&1 | grep -c 'unknown or removed server' | awk '{print (\$1>0)}'")" "303:0:0:1"
+check "the audit log records the server's life" "$(owner_sql "SELECT count(DISTINCT action) FROM audit_events WHERE org_id = '$ORG_A' AND action IN ('server.join_created','server.joined','project.placed','server.removed')")" 4
+dx rm -f "$NODE_C" >/dev/null 2>&1; dx volume rm "$NODE_C" >/dev/null 2>&1
+own DELETE '/projects/onprem?force=true' >/dev/null; own DELETE '/projects/withdb?force=true' >/dev/null
 
 fi
 if want "Cost reports and budgets"; then

@@ -5,6 +5,7 @@
 //	platform migrate             apply database migrations (owner role)
 //	platform healthcheck         container health probe for the API
 //	platform admin <command>     operator commands (owner role), see "platform admin help"
+//	platform node join|run       node agent on a customer-owned server (talks to the API only)
 package main
 
 import (
@@ -29,6 +30,7 @@ import (
 	"platform/internal/db"
 	"platform/internal/dbproxy"
 	"platform/internal/model"
+	"platform/internal/nodeagent"
 	"platform/internal/registry"
 	"platform/internal/secure"
 	"platform/internal/webmail"
@@ -71,6 +73,8 @@ func main() {
 		err = healthcheck(cfg)
 	case "admin":
 		err = admin(ctx, cfg, os.Args[2:])
+	case "node":
+		err = nodeCommand(ctx, os.Args[2:])
 	default:
 		usage()
 	}
@@ -81,8 +85,35 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: platform api | agent | migrate | webmail | healthcheck | admin <command>")
+	fmt.Fprintln(os.Stderr, "usage: platform api | agent | migrate | webmail | healthcheck | admin <command> | node join|run")
 	os.Exit(2)
+}
+
+// nodeCommand runs the node agent of a customer-owned server:
+//
+//	platform node join --server https://console.example.com --token plj_... [--state DIR]
+//	platform node run [--state DIR]
+func nodeCommand(ctx context.Context, args []string) error {
+	if len(args) == 0 || (args[0] != "join" && args[0] != "run") {
+		return fmt.Errorf("usage: platform node join --server URL --token plj_... | platform node run")
+	}
+	fs := flag.NewFlagSet("node "+args[0], flag.ContinueOnError)
+	server := fs.String("server", "", "console address")
+	token := fs.String("token", "", "one-time join token (join)")
+	state := fs.String("state", "/var/lib/platform-node", "state directory (credentials)")
+	host := fs.String("host", "", "Host header for the console (development)")
+	socket := fs.String("docker", "/var/run/docker.sock", "Docker socket")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	o := nodeagent.Options{Server: *server, HostHeader: *host, StateDir: *state, Socket: *socket, SelfContainer: os.Getenv("NODE_AGENT_CONTAINER")}
+	if args[0] == "join" {
+		if *server == "" || *token == "" {
+			return fmt.Errorf("--server and --token are required")
+		}
+		return nodeagent.Join(ctx, o, *token)
+	}
+	return nodeagent.Run(ctx, o)
 }
 
 func migrate(ctx context.Context, cfg config.Config) error {

@@ -130,8 +130,14 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if err := s.checkQuota(r, tx, o, "", 250, 256, true); err != nil {
+		own, err := onOwnServer(r.Context(), tx, p.ID)
+		if err != nil {
 			return err
+		}
+		if !own {
+			if err := s.checkQuota(r, tx, o, "", 250, 256, true); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Exec(r.Context(), `INSERT INTO services (org_id, project_id, slug, image) VALUES ($1, $2, $3, $4)`,
 			o.ID, p.ID, slug, image); err != nil {
@@ -372,6 +378,14 @@ func (s *Server) applyServiceSettings(r *http.Request, tx pgx.Tx, o *orgInfo, p 
 		if sv.isPreview() {
 			ports = nil // previews have no public ports
 		}
+		own, err := onOwnServer(r.Context(), tx, p.ID)
+		if err != nil {
+			return err
+		}
+		if own && len(ports) > 0 {
+			formErr = "Public TCP/UDP ports are not available for applications on your own servers yet."
+			return nil
+		}
 		next := model.Spec{
 			Ports:      ports,
 			Image:      strings.TrimSpace(f.Get("image")),
@@ -428,7 +442,7 @@ func (s *Server) applyServiceSettings(r *http.Request, tx pgx.Tx, o *orgInfo, p 
 			formErr = err.Error()
 			return nil
 		}
-		if err := s.checkInstances(r, tx, o, max(next.Count(), autoMax)); err != nil {
+		if err := s.checkInstances(r, tx, o, max(next.Count(), autoMax)); err != nil && !own {
 			var qe quotaError
 			if errors.As(err, &qe) {
 				formErr = qe.Error()
@@ -436,7 +450,7 @@ func (s *Server) applyServiceSettings(r *http.Request, tx pgx.Tx, o *orgInfo, p 
 			}
 			return err
 		}
-		if err := s.checkQuota(r, tx, o, sv.ID, next.CPUMillis*max(next.Count(), autoMax), next.MemoryMB*max(next.Count(), autoMax), false); err != nil {
+		if err := s.checkQuota(r, tx, o, sv.ID, next.CPUMillis*max(next.Count(), autoMax), next.MemoryMB*max(next.Count(), autoMax), false); err != nil && !own {
 			var qe quotaError
 			if errors.As(err, &qe) {
 				formErr = qe.Error()

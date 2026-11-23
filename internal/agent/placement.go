@@ -58,7 +58,7 @@ func (a *Agent) placeProjects(ctx context.Context) {
 		var node string
 		err := a.pool.QueryRow(ctx, `
 			SELECT n.id FROM nodes n
-			WHERE n.last_seen > now() - interval '2 minutes' AND NOT n.cordoned
+			WHERE n.last_seen > now() - interval '2 minutes' AND NOT n.cordoned AND n.role <> 'customer'
 			  AND ($1 = '' OR n.cluster = $1)
 			ORDER BY n.mem_mb * 0.8
 			       - coalesce((SELECT sum(s.memory_mb * s.instances) FROM services s JOIN projects pp ON pp.id = s.project_id WHERE pp.node_id = n.id), 0)

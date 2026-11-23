@@ -133,6 +133,12 @@ func (s *Server) saveJob(r *http.Request, tx pgx.Tx, o *orgInfo, p *projectInfo,
 		return "", err
 	}
 	if !exists {
+		if own, err := onOwnServer(r.Context(), tx, p.ID); err != nil || own {
+			if own {
+				return ownServerOnlyMsg, nil
+			}
+			return "", err
+		}
 		var n int
 		if err := tx.QueryRow(r.Context(), `SELECT count(*) FROM jobs WHERE service_id = $1`, sv.ID).Scan(&n); err != nil {
 			return "", err

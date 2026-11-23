@@ -140,6 +140,13 @@ func (c *Client) NetworkCreate(ctx context.Context, name, subnet string, labels 
 	}, nil)
 }
 
+// NetworkCreateAuto creates a bridge network on a subnet Docker chooses.
+func (c *Client) NetworkCreateAuto(ctx context.Context, name string, labels map[string]string) error {
+	return c.call(ctx, http.MethodPost, "/networks/create", nil, map[string]any{
+		"Name": name, "Driver": "bridge", "CheckDuplicate": true, "Labels": labels,
+	}, nil)
+}
+
 func (c *Client) NetworkConnect(ctx context.Context, network, container string) error {
 	err := c.call(ctx, http.MethodPost, "/networks/"+url.PathEscape(network)+"/connect", nil,
 		map[string]any{"Container": container}, nil)
@@ -255,6 +262,7 @@ type NetworkingConfig struct {
 
 type EndpointConfig struct {
 	IPAMConfig *EndpointIPAM `json:"IPAMConfig,omitempty"`
+	Aliases    []string      `json:"Aliases,omitempty"` // extra DNS names on that network
 }
 
 type EndpointIPAM struct {

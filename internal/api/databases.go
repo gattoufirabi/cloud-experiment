@@ -186,6 +186,12 @@ func (s *Server) createDatabaseTx(r *http.Request, tx pgx.Tx, o *orgInfo, p *pro
 		dbName, user = "0", "default" // Redis logical database and ACL user
 	}
 	err = func() error {
+		if own, err := onOwnServer(r.Context(), tx, p.ID); err != nil || own {
+			if own {
+				formErr = ownServerOnlyMsg
+			}
+			return err
+		}
 		plan, err := s.loadPlan(r, tx, o.PlanID)
 		if err != nil {
 			return err

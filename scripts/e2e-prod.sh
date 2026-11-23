@@ -79,6 +79,12 @@ cleanup() {
   local org=$1 jar=$2 csrf p s
   csrf=$(c "$jar" "$BASE/o/$org/compute" | csrf_of)
   [ -n "$csrf" ] || return
+  # Customer-server test leftovers (no customer agent ever runs on this host otherwise).
+  docker ps -aq --filter name=e2e-node- | xargs -r docker rm -f >/dev/null 2>&1
+  docker ps -aq --filter label=staysa.node.managed=true | xargs -r docker rm -f >/dev/null 2>&1
+  docker network ls -q --filter label=staysa.node.managed=true | xargs -r docker network rm >/dev/null 2>&1
+  docker volume ls -q --filter name=e2e-node- | xargs -r docker volume rm >/dev/null 2>&1
+  owner_sql "UPDATE projects SET node_id = NULL WHERE node_id IN (SELECT id FROM nodes WHERE role = 'customer' AND org_id = (SELECT id FROM orgs WHERE slug = '$org')); DELETE FROM nodes WHERE role = 'customer' AND org_id = (SELECT id FROM orgs WHERE slug = '$org')" >/dev/null
   for row in $(owner_sql "SELECT p.slug || '/' || f.slug FROM functions f JOIN projects p ON p.id = f.project_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$org'"); do
     code_of "$jar" -X POST "$BASE/o/$org/p/${row%%/*}/f/${row##*/}/delete" -d csrf=$csrf -d "confirm=${row##*/}" >/dev/null; done
   for row in $(owner_sql "SELECT p.slug || '/' || d.slug FROM databases d JOIN projects p ON p.id = d.project_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$org'"); do
@@ -132,7 +138,7 @@ check "a node reported in the last 2 minutes" "$(owner_sql "SELECT count(*) > 0 
 check "every migration applied" "$(ls ../migrations/*.sql | wc -l | tr -d ' ')" "$(owner_sql "SELECT count(*) FROM schema_migrations")"
 check "deployments are not paused" "$(owner_sql "SELECT deploys_paused FROM platform_settings")" f
 DOC() { curl -sS --resolve "$CONSOLE:443:127.0.0.1" "$BASE$1"; }
-check "docs index lists every topic" "$(DOC /docs | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 33
+check "docs index lists every topic" "$(DOC /docs | grep -o 'class="docs-card"' | wc -l | tr -d ' ')" 34
 check "a topic page has its four parts" "$(DOC /docs/databases | grep -cE 'id="(overview|use-cases|how-to-use-it|technical-reference)"')" 4
 check "old guide links are forwarded" "$(DOC /docs/user | grep -c 'data-legacy=')" 1
 check "unknown topic is 404" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "$CONSOLE:443:127.0.0.1" "$BASE/docs/nope")" 404
@@ -460,6 +466,33 @@ check "[API] a partial change keeps the other settings" "$(api "$TOK_IAC" PATCH 
 check "[API] database created with its connection URL" "$(api "$TOK_IAC" POST /projects/iac/databases -d '{"id": "kv", "engine": "redis"}' | jget 'd["engine"]+":"+str(d["url"].startswith("redis://"))')" "redis:True"
 check "[B->A API] B cannot read A's project (404)" "$(apicode "$TOK_B" GET /projects/iac)" 404
 check "[API] project not deleted while it holds resources (409), then deleted with force" "$(apicode "$TOK_IAC" DELETE /projects/iac):$(apicode "$TOK_IAC" DELETE '/projects/iac?force=true'):$(apicode "$TOK_IAC" GET /projects/iac)" "409:204:404"
+
+fi
+if want "Your own servers"; then
+section "Your own servers"
+# A node agent in a container on this host stands in for a customer's VM: it joins over
+# HTTPS through the public proxy, and visitors reach its application through the tunnel.
+ORG_A=$(owner_sql "SELECT id FROM orgs WHERE slug = '$A'")
+NODE_IMG=$(docker inspect -f '{{.Config.Image}}' "$(dc ps -q api)")
+NODE_C=e2e-node-$RUN
+TOK_OWN=$(c ja -X POST "$BASE/o/$A/api-tokens" -d csrf=$CSRF_A -d name=own-server -d role=admin | grep -o 'pla_[A-Za-z0-9_-]*' | head -1)
+jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
+JOIN=$(c ja -X POST "$BASE/o/$A/servers" -d csrf=$CSRF_A -d name=e2e-own | grep -o 'plj_[A-Za-z0-9_-]*' | head -1)
+check "[A] a one-time join command is shown" "$(echo "$JOIN" | grep -c '^plj_')" 1
+docker volume create "$NODE_C" >/dev/null
+docker run --rm --user 0:0 --add-host "$CONSOLE:host-gateway" -v /var/run/docker.sock:/var/run/docker.sock -v "$NODE_C:/state" "$NODE_IMG" node join --server "$BASE" --token "$JOIN" --state /state >/dev/null 2>&1
+docker run -d --name "$NODE_C" --user 0:0 --add-host "$CONSOLE:host-gateway" -e NODE_AGENT_CONTAINER="$NODE_C" -v /var/run/docker.sock:/var/run/docker.sock -v "$NODE_C:/state" "$NODE_IMG" node run --state /state >/dev/null
+NID=$(owner_sql "SELECT id FROM nodes WHERE org_id = '$ORG_A' AND role = 'customer'")
+check "the server joined over HTTPS and reports in" "$(echo "$NID" | grep -c '^c-'):$(for _ in $(seq 1 40); do [ "$(owner_sql "SELECT last_seen > now() - interval '90 seconds' AND cpus > 0 FROM nodes WHERE id = '$NID'")" = t ] && { echo t; break; }; sleep 2; done)" "1:t"
+apicode "$TOK_OWN" POST /projects -d '{"id": "onprem", "name": "On premises"}' >/dev/null
+check "[A] project moved to the server" "$(code_of ja -X POST "$BASE/o/$A/servers/place" -d csrf=$CSRF_A -d project=onprem -d server=$NID):$(owner_sql "SELECT node_id FROM projects WHERE org_id = '$ORG_A' AND slug = 'onprem'")" "303:$NID"
+apicode "$TOK_OWN" POST /projects/onprem/services -d '{"id": "web", "image": "nginx:1.27-alpine", "port": 80, "health_path": "/", "cpu_millis": 100, "memory_mb": 64, "deploy": true}' >/dev/null
+check "the application goes live on the customer server" "$(for _ in $(seq 1 90); do [ "$(api "$TOK_OWN" GET /projects/onprem/services/web | jget 'd["status"]')" = live ] && break; sleep 2; done; api "$TOK_OWN" GET /projects/onprem/services/web | jget 'd["status"]'):$(owner_sql "SELECT count(*) FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'onprem' AND d.status = 'live' AND d.upstream LIKE 'tunnel:%'")" "live:1"
+OWN_HOST=web-onprem-$A.$APPS
+check "visitors reach it over HTTPS through the proxy and the tunnel" "$(for _ in $(seq 1 30); do app_get "$OWN_HOST" | grep -q '<h1>Welcome to nginx' && { echo yes; break; }; sleep 2; done)" yes
+apicode "$TOK_OWN" DELETE '/projects/onprem?force=true' >/dev/null
+check "[A] server removed once it runs nothing" "$(code_of ja -X POST "$BASE/o/$A/servers/$NID/delete" -d csrf=$CSRF_A):$(owner_sql "SELECT count(*) FROM nodes WHERE id = '$NID'")" "303:0"
+docker rm -f "$NODE_C" >/dev/null 2>&1; docker volume rm "$NODE_C" >/dev/null 2>&1
 
 fi
 if want "Operator and admin panel"; then

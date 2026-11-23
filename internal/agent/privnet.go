@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"sort"
+	"strings"
 )
 
 // Private names between services: every web service is <service>.<project>.internal on
@@ -80,7 +81,8 @@ func (a *Agent) internalNames(ctx context.Context, projectID string) []string {
 func internalRoutes(routes []route) []any {
 	var out []any
 	for _, r := range routes {
-		if r.InternalHost == "" || len(r.AllowFrom) == 0 || len(r.Dials) == 0 {
+		// (applications on a customer's own server have no private name on the platform)
+		if r.InternalHost == "" || len(r.AllowFrom) == 0 || len(r.Dials) == 0 || strings.HasPrefix(r.Dials[0], tunnelPrefix) {
 			continue
 		}
 		ups := make([]any, 0, len(r.Dials))

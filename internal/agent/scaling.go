@@ -146,7 +146,7 @@ func (a *Agent) failover(ctx context.Context) {
 	}
 	rows, err := a.pool.Query(ctx, `
 		SELECT id FROM nodes
-		WHERE id <> $1 AND last_seen < now() - make_interval(mins => $2)
+		WHERE id <> $1 AND role <> 'customer' AND last_seen < now() - make_interval(mins => $2)
 		  AND (failed_over_at IS NULL OR failed_over_at < last_seen)
 		  AND EXISTS (SELECT 1 FROM projects p WHERE p.node_id = nodes.id)`, a.selfID, a.cfg.NodeFailoverMinutes)
 	if err != nil {

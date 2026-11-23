@@ -476,7 +476,11 @@ func (s *Server) apiCreateService(w http.ResponseWriter, r *http.Request, o *org
 		if err != nil {
 			return err
 		}
-		if err := s.checkQuota(r, tx, o, "", 250, 256, true); err != nil {
+		own, err := onOwnServer(r.Context(), tx, p.ID)
+		if err != nil {
+			return err
+		}
+		if err := s.checkQuota(r, tx, o, "", 250, 256, true); err != nil && !own {
 			var qe quotaError
 			if errors.As(err, &qe) {
 				return apiErr{http.StatusUnprocessableEntity, qe.Error()}

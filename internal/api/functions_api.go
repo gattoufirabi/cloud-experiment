@@ -259,6 +259,12 @@ func (s *Server) apiPutFunction(w http.ResponseWriter, r *http.Request, o *orgIn
 		f.CodeSHA = hex.EncodeToString(sum[:])
 		envJSON, _ := json.Marshal(f.Env)
 		if created {
+			if own, err := onOwnServer(r.Context(), tx, p.ID); err != nil || own {
+				if own {
+					return apiErr{http.StatusConflict, ownServerOnlyMsg}
+				}
+				return err
+			}
 			err = tx.QueryRow(r.Context(), `
 				INSERT INTO functions (org_id, project_id, slug, runtime, handler, code, code_sha256, memory_mb, timeout_seconds, concurrency, env,
 				                       url_enabled, url_auth, schedule, schedule_enabled, web_command, web_port)

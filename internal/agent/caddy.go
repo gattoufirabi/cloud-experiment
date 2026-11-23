@@ -179,6 +179,12 @@ func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
 			insts = []instance{{Name: name, Upstream: upstream}}
 		}
 		for _, in := range insts {
+			if strings.HasPrefix(in.Upstream, tunnelPrefix) { // on the customer's own server: one tunnel, the server spreads requests
+				if len(rt.Dials) == 0 {
+					rt.Dials = append(rt.Dials, in.Upstream)
+				}
+				continue
+			}
 			if in.Upstream != "" { // runs on another node: reached on its private address
 				rt.Dials = append(rt.Dials, in.Upstream)
 			} else {
@@ -240,6 +246,28 @@ func (a *Agent) syncCaddy(ctx context.Context, force bool) {
 
 type obj = map[string]any
 
+// An application on a customer's own server is reached through the API's tunnel
+// listener: its instances record the upstream "tunnel:<deployment ID>", and the proxy
+// sends the request to the listener with the deployment in a header it sets itself
+// (overwriting anything the visitor sent). The listener is never reachable from outside.
+const (
+	tunnelPrefix = "tunnel:"
+	tunnelHeader = "X-Platform-Tunnel"
+)
+
+// proxyTo is the reverse_proxy handler for a route's upstreams.
+func proxyTo(cfg config.Config, dials []string) obj {
+	if len(dials) == 1 && strings.HasPrefix(dials[0], tunnelPrefix) {
+		return obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.TunnelUpstream}},
+			"headers": obj{"request": obj{"set": obj{tunnelHeader: []string{strings.TrimPrefix(dials[0], tunnelPrefix)}}}}}
+	}
+	ups := make([]any, 0, len(dials))
+	for _, d := range dials {
+		ups = append(ups, obj{"dial": d})
+	}
+	return obj{"handler": "reverse_proxy", "upstreams": ups}
+}
+
 // BuildCaddyConfig renders the complete Caddy JSON config (the agent pushes its "apps"
 // part; the admin block documents what Caddy's startup config must contain).
 func BuildCaddyConfig(cfg config.Config, routes []route) obj {
@@ -248,7 +276,9 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 		"handle": []any{obj{"handler": "subroute", "routes": []any{
 			obj{"match": []any{obj{"path": []string{"/internal/*"}}},
 				"handle": []any{obj{"handler": "static_response", "status_code": 404}}},
-			obj{"handle": []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.APIUpstream}}}}},
+			// Long-lived streams (customer server tunnels, event streams) survive a config
+			// reload for a while instead of being cut at once.
+			obj{"handle": []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.APIUpstream}}, "stream_close_delay": "5m"}}},
 		}}},
 		"terminal": true,
 	}}
@@ -329,12 +359,8 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 				}},
 			}}})
 		}
-		ups := make([]any, 0, len(r.Dials))
-		for _, d := range r.Dials {
-			ups = append(ups, obj{"dial": d})
-		}
-		rp := obj{"handler": "reverse_proxy", "upstreams": ups}
-		if len(ups) > 1 { // spread requests; skip an instance that stops answering, retry elsewhere
+		rp := proxyTo(cfg, r.Dials)
+		if len(r.Dials) > 1 { // spread requests; skip an instance that stops answering, retry elsewhere
 			rp["load_balancing"] = obj{"selection_policy": obj{"policy": "round_robin"}, "try_duration": "3s", "try_interval": "250ms"}
 			// An instance that fails a request (no answer, or a gateway error from the app's own
 			// proxy) is skipped for 20 s and the request is retried on another one; a whole node
@@ -354,12 +380,8 @@ func BuildCaddyConfig(cfg config.Config, routes []route) obj {
 			if pr.Strip {
 				h = append(h, obj{"handler": "rewrite", "strip_path_prefix": pr.Prefix})
 			}
-			pups := make([]any, 0, len(pr.Dials))
-			for _, d := range pr.Dials {
-				pups = append(pups, obj{"dial": d})
-			}
-			prp := obj{"handler": "reverse_proxy", "upstreams": pups}
-			if len(pups) > 1 {
+			prp := proxyTo(cfg, pr.Dials)
+			if len(pr.Dials) > 1 {
 				prp["load_balancing"] = obj{"selection_policy": obj{"policy": "round_robin"}, "try_duration": "3s", "try_interval": "250ms"}
 			}
 			sub = append(sub, obj{"match": []any{obj{"path": []string{pr.Prefix, pr.Prefix + "/*"}}}, "handle": append(h, prp)})

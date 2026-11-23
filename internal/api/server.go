@@ -61,6 +61,7 @@ type Server struct {
 	fnWait        fnWaiters // requests waiting for a function's result
 	oidc          *oidc.Client
 	oidcOnce      sync.Once
+	tunnels       *tunnelPool // idle tunnel connections of customer servers
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -98,6 +99,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		dummyHash: dummy, hc: &http.Client{Timeout: 10 * time.Second}, regKey: regKey,
 		assetV: assetVersion(), docs: docs,
 		wa: wa, ceremonies: &ceremonyStore{m: map[string]ceremony{}}, pow: newPowStore(),
+		tunnels: newTunnelPool(),
 	}
 
 	public := &http.Server{
@@ -106,13 +108,16 @@ func Run(ctx context.Context, cfg config.Config) error {
 		WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 64 << 10,
 	}
 	internal := &http.Server{Addr: cfg.InternalAddr, Handler: s.internalRoutes(), ReadHeaderTimeout: 5 * time.Second}
+	// Requests for applications on customer servers, from the proxy only (never published).
+	tunnel := &http.Server{Addr: cfg.TunnelAddr, Handler: s.tunnelRoutes(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 
 	go s.housekeeping(ctx)
 	go s.listenFnDone(ctx)
 	go s.serveSMTP(ctx)
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
 	go func() { errc <- public.ListenAndServe() }()
 	go func() { errc <- internal.ListenAndServe() }()
+	go func() { errc <- tunnel.ListenAndServe() }()
 	s.log.Info("listening", "public", cfg.ListenAddr, "internal", cfg.InternalAddr)
 	select {
 	case <-ctx.Done():
@@ -125,6 +130,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	defer cancel()
 	_ = public.Shutdown(sctx)
 	_ = internal.Shutdown(sctx)
+	_ = tunnel.Shutdown(sctx)
 	return nil
 }
 
@@ -313,6 +319,21 @@ func (s *Server) routes() http.Handler {
 
 	// Registry token endpoint (Docker registry auth). Caddy exposes it on the registry host.
 	m.HandleFunc("GET /token", s.registryToken)
+
+	// Customer-owned servers: console, and the node agent's API (node token, see servers.go).
+	m.HandleFunc("GET /o/{org}/servers", s.auth(authFull, s.serversPage))
+	m.HandleFunc("POST /o/{org}/servers", s.auth(authFull, s.createServerJoin))
+	m.HandleFunc("POST /o/{org}/servers/place", s.auth(authFull, s.placeProject))
+	m.HandleFunc("POST /o/{org}/servers/{id}/delete", s.auth(authFull, s.deleteServer))
+	m.HandleFunc("GET /node/install.sh", s.nodeInstallScript)
+	m.HandleFunc("GET /node/v1/agent/{platform}", s.nodeAgentBinary)
+	m.HandleFunc("POST /node/v1/join", s.nodeJoin)
+	m.HandleFunc("POST /node/v1/heartbeat", s.nodeAuth(s.nodeHeartbeat))
+	m.HandleFunc("GET /node/v1/desired", s.nodeAuth(s.nodeDesired))
+	m.HandleFunc("POST /node/v1/deployments/{id}/status", s.nodeAuth(s.nodeDeploymentStatus))
+	m.HandleFunc("POST /node/v1/logs", s.nodeAuth(s.nodeLogs))
+	m.HandleFunc("POST /node/v1/stats", s.nodeAuth(s.nodeStats))
+	m.HandleFunc("GET /node/v1/tunnel", s.nodeAuth(s.nodeTunnel))
 
 	m.HandleFunc("GET /o/{org}/p/{project}", s.auth(authFull, s.projectPage))
 	m.HandleFunc("GET /o/{org}/p/{project}/settings", s.auth(authFull, settingsView(s.projectPage)))

@@ -65,6 +65,7 @@ Each row names what runs the feature and the path a request or change takes thro
 | [Preview environments](/docs/previews) | A service linked to its parent, one instance | API or git webhook → agent → preview container → own address |
 | [Scheduled jobs](/docs/scheduled-jobs) | Agent scheduler, a fresh container per run | agent → one-off container from the current deployment → run history |
 | [Variables and secrets](/docs/variables) | XChaCha20-Poly1305 with the master key | API encrypts → PostgreSQL → agent decrypts → container environment |
+| [Your own servers](/docs/servers) | A node agent on your machine, with no database access or master key | API → desired state over HTTPS → your server's Docker; visitors → proxy → tunnel your server opened → instance |
 | [Functions](/docs/functions) | Invocation queue in PostgreSQL, warm containers | URL or trigger → queue → agent → warm container (cold start on the first call) |
 | [Managed databases](/docs/databases) | One container per database, on the project network | API → agent → database container → daily backup |
 | [Object storage](/docs/object-storage) | Garage (S3-compatible), kept in line by the agent | application → Garage → bucket events → functions |
@@ -92,7 +93,7 @@ Each row names what runs the feature and the path a request or change takes thro
 
 ### Several servers
 
-Each project is placed on one server, with all its services and databases. Every server runs an agent that only runs the projects placed on it; the first server also runs the control plane and the proxy, which routes to the others. Draining a server moves its projects, restoring their data from a snapshot, and a server that stops reporting is failed over.
+Each project is placed on one server, with all its services and databases. A project can also run on one of [your own servers](/docs/servers): its agent talks to the API only, never to the database, and the proxy reaches it through tunnels the server opens. Every server runs an agent that only runs the projects placed on it; the first server also runs the control plane and the proxy, which routes to the others. Draining a server moves its projects, restoring their data from a snapshot, and a server that stops reporting is failed over.
 
 ### Isolation between customers
 

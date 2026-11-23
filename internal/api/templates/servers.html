@@ -1,0 +1,91 @@
+{{define "title"}}Your servers · {{.Org.Name}}{{end}}
+{{define "content"}}
+<div class="head">
+  <h1>Your servers</h1>
+  {{if .CanAdmin}}<a class="button-link right" href="#add">Add a server</a>{{end}}
+</div>
+<p class="lede">Run your applications on your own machines: a VM at AWS, Azure or any provider, or hardware of your own. Visitors still reach them at their usual addresses, through the platform's proxy, with HTTPS, custom domains, traffic protection and logs. Your server only connects out to the platform; it needs no open port.</p>
+<p class="help"><a href="/docs/servers" target="_blank" rel="noopener">Guide: your own servers ↗</a></p>
+
+{{with .JoinToken}}
+<div class="section" id="join">
+  <h2>Install the agent on {{$.JoinName}}</h2>
+  <p>Run this on the server as root. It needs Docker and works on Linux (x86-64). The join code works once, within one hour, and is shown only now.</p>
+  <pre class="doc-code"><code>curl -fsSL {{$.BaseURL}}/node/install.sh | sudo sh -s -- {{.}}</code></pre>
+  <p class="small muted">The server then appears below as online within a minute.</p>
+</div>
+{{end}}
+
+<div class="section">
+  <div class="table-tools">
+    <h2>Servers <span class="count">{{len .Servers}}</span></h2>
+  </div>
+  {{if .Servers}}
+  <div class="scroll-x">
+  <table class="resources" id="servers-table">
+    <thead><tr><th>Name</th><th>Status</th><th class="num">CPUs</th><th class="num">Memory free</th><th class="num">Disk free</th><th>System</th><th>Projects</th>{{if .CanAdmin}}<th></th>{{end}}</tr></thead>
+    <tbody>
+    {{range .Servers}}
+      <tr>
+        <td><strong>{{.Name}}</strong><br><span class="small muted"><code>{{.ID}}</code></span></td>
+        <td>{{if .Online}}<span class="st st-live">online</span>{{if not .Connected}} <span class="small muted">(tunnel reconnecting)</span>{{end}}{{else}}<span class="st st-failed">offline · last seen {{ago .LastSeen}}</span>{{end}}</td>
+        <td class="num">{{.CPUs}}</td>
+        <td class="num">{{.MemAvailMB}} / {{.MemMB}} MB</td>
+        <td class="num">{{.DiskFreeMB}} MB</td>
+        <td class="small">{{.OS}} {{.Arch}}<br><span class="muted">Docker {{.DockerVersion}} · agent {{.AgentVersion}}</span></td>
+        <td>{{range $i, $p := .Projects}}{{if $i}}, {{end}}<a href="{{$.Org.Path}}/p/{{$p}}">{{$p}}</a>{{else}}<span class="muted">none</span>{{end}}</td>
+        {{if $.CanAdmin}}<td>
+          <form method="post" action="{{$.Org.Path}}/servers/{{.ID}}/delete" class="inline flush" data-confirm="Remove server {{.Name}}? Its token stops working at once.">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <button type="submit" class="danger small">Remove</button>
+          </form>
+        </td>{{end}}
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{else}}<p class="small muted">No servers yet.</p>{{end}}
+  {{if .PendingJoins}}
+  <p class="small muted">Waiting to join: {{range $i, $j := .PendingJoins}}{{if $i}}, {{end}}{{$j.Name}} (code valid until {{$j.Expires.Format "15:04"}} UTC){{end}}</p>
+  {{end}}
+</div>
+
+<div class="section" id="placement">
+  <h2>Where each project runs</h2>
+  <p class="small muted">All the applications of a project run in the same place. Moving a project deploys its running applications again there; expect a short interruption. Projects with managed databases, functions, scheduled jobs or public TCP/UDP ports stay on the platform.</p>
+  {{if .Placements}}
+  <div class="scroll-x">
+  <table class="resources">
+    <thead><tr><th>Project</th><th>Runs on</th></tr></thead>
+    <tbody>
+    {{range .Placements}}
+      <tr><td><a href="{{$.Org.Path}}/p/{{.Slug}}"><strong>{{.Name}}</strong></a></td>
+        <td>{{if .NodeID}}{{$id := .NodeID}}{{range $.Servers}}{{if eq .ID $id}}server <strong>{{.Name}}</strong>{{end}}{{end}}{{else}}the platform{{end}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  {{if and .CanAdmin .Servers}}
+  <form method="post" action="{{.Org.Path}}/servers/place" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Project <select name="project" required>{{range .Placements}}<option value="{{.Slug}}">{{.Name}}</option>{{end}}</select></label>
+    <label>Run on <select name="server"><option value="">the platform</option>{{range .Servers}}<option value="{{.ID}}">server {{.Name}}</option>{{end}}</select></label>
+    <button type="submit" class="arrow">Move project</button>
+  </form>
+  {{end}}
+  {{else}}<p class="small muted">No projects yet.</p>{{end}}
+</div>
+
+{{if .CanAdmin}}
+<div class="section" id="add">
+  <h2>Add a server</h2>
+  <form method="post" action="{{.Org.Path}}/servers" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input name="name" placeholder="name, e.g. aws-eu-1" maxlength="60" required aria-label="Server name">
+    <button type="submit" class="arrow">Create join command</button>
+  </form>
+  <p class="small muted">You get a one-line command to run on the server. Applications there use your server's CPU and memory: they do not count against your plan's limits and are not billed as platform compute.</p>
+</div>
+{{end}}
+{{end}}

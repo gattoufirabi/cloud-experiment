@@ -548,6 +548,12 @@ func (s *Server) createFunction(w http.ResponseWriter, r *http.Request) {
 			formErr = "Choose a project."
 			return nil
 		}
+		if own, err := onOwnServer(r.Context(), tx, projectID); err != nil || own {
+			if own {
+				formErr = ownServerOnlyMsg
+			}
+			return err
+		}
 		var n, max int
 		if err := tx.QueryRow(r.Context(), `SELECT (SELECT count(*) FROM functions), max_functions FROM plans WHERE id = $1`, o.PlanID).Scan(&n, &max); err != nil {
 			return err

@@ -658,11 +658,14 @@ func (s *Server) checkQuota(r *http.Request, tx pgx.Tx, o *orgInfo, excludeID st
 	var n, usedCPU, usedMem int
 	// Services and managed databases share the plan's CPU and memory; excludeID skips
 	// the service or database being edited.
+	// Applications on the organization's own servers use its hardware, not the plan's.
 	if err := tx.QueryRow(r.Context(), `
-		SELECT (SELECT count(*) FROM services WHERE id::text <> $1 AND preview_of IS NULL),
-		       (SELECT coalesce(sum(cpu_millis * instances), 0) FROM services WHERE id::text <> $1) +
+		WITH own AS (SELECT p.id FROM projects p JOIN nodes n ON n.id = p.node_id WHERE n.role = 'customer'),
+		     svc AS (SELECT * FROM services WHERE project_id NOT IN (SELECT id FROM own))
+		SELECT (SELECT count(*) FROM svc WHERE id::text <> $1 AND preview_of IS NULL),
+		       (SELECT coalesce(sum(cpu_millis * instances), 0) FROM svc WHERE id::text <> $1) +
 		       (SELECT coalesce(sum(cpu_millis), 0) FROM databases WHERE id::text <> $1),
-		       (SELECT coalesce(sum(memory_mb * instances), 0) FROM services WHERE id::text <> $1) +
+		       (SELECT coalesce(sum(memory_mb * instances), 0) FROM svc WHERE id::text <> $1) +
 		       (SELECT coalesce(sum(memory_mb), 0) FROM databases WHERE id::text <> $1)`, excludeID).Scan(&n, &usedCPU, &usedMem); err != nil {
 		return err
 	}

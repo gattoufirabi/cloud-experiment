@@ -49,6 +49,7 @@ var docGroups = []docGroup{
 		{Slug: "scheduled-jobs", Title: "Scheduled jobs", Summary: "Run commands on a schedule: reports, clean-ups, imports."},
 		{Slug: "variables", Title: "Variables and secrets", Summary: "Configure services with shared variables and encrypted secrets."},
 		{Slug: "functions", Title: "Functions", Summary: "Run code on demand without a server: HTTP endpoints, schedules and queue consumers."},
+		{Slug: "servers", Title: "Your own servers", Summary: "Run applications on your own machines at AWS, Azure or anywhere, behind the platform's proxy."},
 	}},
 	{"Data and messaging", []docTopic{
 		{Slug: "databases", Title: "Managed databases", Summary: "PostgreSQL, MySQL, Redis and more, with backups, users and connection details handled for you."},
