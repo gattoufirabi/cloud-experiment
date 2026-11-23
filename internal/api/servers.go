@@ -49,7 +49,12 @@ type serverView struct {
 	Online, Connected                               bool
 	LastSeen, Created                               time.Time
 	Projects                                        []string
+	Builds                                          bool     // runs the organization's builds (069)
+	Labels                                          []string // matched against a service's build labels
+	Building                                        int      // number of the build running now, 0 when idle
 }
+
+func (v serverView) LabelText() string { return strings.Join(v.Labels, ", ") }
 
 type joinTokenView struct {
 	Name    string
@@ -74,7 +79,8 @@ func (s *Server) renderServers(w http.ResponseWriter, r *http.Request, o *orgInf
 		rows, err := tx.Query(r.Context(), `
 			SELECT n.id, n.name, n.os, n.arch, n.docker_version, n.agent_version, n.cpus, n.mem_mb, n.mem_avail_mb, n.disk_free_mb,
 			       n.load1::float8, `+serverOnlineSQL+`, n.last_seen, n.created_at,
-			       coalesce((SELECT array_agg(p.slug ORDER BY p.slug) FROM projects p WHERE p.node_id = n.id), '{}')
+			       coalesce((SELECT array_agg(p.slug ORDER BY p.slug) FROM projects p WHERE p.node_id = n.id), '{}'),
+			       n.builds, n.labels, coalesce((SELECT b.number FROM builds b WHERE b.node_id = n.id AND b.status = 'running' LIMIT 1), 0)
 			FROM nodes n WHERE n.role = 'customer' ORDER BY n.name, n.id`)
 		if err != nil {
 			return err
@@ -82,7 +88,7 @@ func (s *Server) renderServers(w http.ResponseWriter, r *http.Request, o *orgInf
 		for rows.Next() {
 			var v serverView
 			if err := rows.Scan(&v.ID, &v.Name, &v.OS, &v.Arch, &v.DockerVersion, &v.AgentVersion, &v.CPUs, &v.MemMB, &v.MemAvailMB,
-				&v.DiskFreeMB, &v.Load1, &v.Online, &v.LastSeen, &v.Created, &v.Projects); err != nil {
+				&v.DiskFreeMB, &v.Load1, &v.Online, &v.LastSeen, &v.Created, &v.Projects, &v.Builds, &v.Labels, &v.Building); err != nil {
 				rows.Close()
 				return err
 			}
@@ -187,6 +193,11 @@ func (s *Server) deleteServer(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if err := tx.QueryRow(r.Context(), `SELECT EXISTS (SELECT 1 FROM projects WHERE node_id = $1)`, id).Scan(&inUse); err != nil || inUse {
+			return err
+		}
+		if _, err := tx.Exec(r.Context(), `
+			UPDATE builds SET status = 'failed', error = 'the build server was removed', finished_at = now(), push_token_hash = NULL, source_zip = NULL
+			WHERE node_id = $1 AND status = 'running'`, id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(r.Context(), `DELETE FROM nodes WHERE id = $1`, id); err != nil {

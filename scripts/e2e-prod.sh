@@ -84,6 +84,9 @@ cleanup() {
   docker ps -aq --filter label=staysa.node.managed=true | xargs -r docker rm -f >/dev/null 2>&1
   docker network ls -q --filter label=staysa.node.managed=true | xargs -r docker network rm >/dev/null 2>&1
   docker volume ls -q --filter name=e2e-node- | xargs -r docker volume rm >/dev/null 2>&1
+  docker ps -aq --filter label=staysa.node.build | xargs -r docker rm -f >/dev/null 2>&1
+  docker volume ls -q --filter label=staysa.node.build | xargs -r docker volume rm >/dev/null 2>&1
+  docker volume ls -q --filter label=staysa.node.build-cache | xargs -r docker volume rm >/dev/null 2>&1
   owner_sql "UPDATE projects SET node_id = NULL WHERE node_id IN (SELECT id FROM nodes WHERE role = 'customer' AND org_id = (SELECT id FROM orgs WHERE slug = '$org')); DELETE FROM nodes WHERE role = 'customer' AND org_id = (SELECT id FROM orgs WHERE slug = '$org')" >/dev/null
   for row in $(owner_sql "SELECT p.slug || '/' || f.slug FROM functions f JOIN projects p ON p.id = f.project_id JOIN orgs o ON o.id = f.org_id WHERE o.slug = '$org'"); do
     code_of "$jar" -X POST "$BASE/o/$org/p/${row%%/*}/f/${row##*/}/delete" -d csrf=$csrf -d "confirm=${row##*/}" >/dev/null; done
@@ -490,9 +493,28 @@ apicode "$TOK_OWN" POST /projects/onprem/services -d '{"id": "web", "image": "ng
 check "the application goes live on the customer server" "$(for _ in $(seq 1 90); do [ "$(api "$TOK_OWN" GET /projects/onprem/services/web | jget 'd["status"]')" = live ] && break; sleep 2; done; api "$TOK_OWN" GET /projects/onprem/services/web | jget 'd["status"]'):$(owner_sql "SELECT count(*) FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'onprem' AND d.status = 'live' AND d.upstream LIKE 'tunnel:%'")" "live:1"
 OWN_HOST=web-onprem-$A.$APPS
 check "visitors reach it over HTTPS through the proxy and the tunnel" "$(for _ in $(seq 1 30); do app_get "$OWN_HOST" | grep -q '<h1>Welcome to nginx' && { echo yes; break; }; sleep 2; done)" yes
+# The same server runs the organization's builds: a zip build, pushed over HTTPS with the build's own token.
+check "[A] the server runs builds" "$(code_of ja -X POST "$BASE/o/$A/servers/$NID/builds" -d csrf=$CSRF_A -d builds=1 -d labels=e2e):$(owner_sql "SELECT builds FROM nodes WHERE id = '$NID'")" "303:t"
+apicode "$TOK_OWN" POST /projects/onprem/services -d '{"id": "app", "image": "nginx:1.27-alpine", "port": 80, "health_path": "/", "cpu_millis": 100, "memory_mb": 64, "deploy": false}' >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/onprem/s/app/source" -d csrf=$CSRF_A -d repo= -d branch=main -d build_on=servers -d build_labels=e2e >/dev/null
+python3 -c 'import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1], "w")
+z.writestr("Dockerfile", "FROM nginx:1.27-alpine
+COPY index.html /usr/share/nginx/html/index.html
+")
+z.writestr("index.html", "<h1>built-on-own-server-" + sys.argv[2] + "</h1>")
+z.close()' "$TMP/own.zip" "$RUN"
+own_b() { owner_sql "SELECT $1 FROM builds b JOIN services s ON s.id = b.service_id JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'onprem' AND s.slug = 'app' ORDER BY b.number DESC LIMIT 1"; }
+ZCODE=$(curl -sS --resolve "$CONSOLE:443:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_OWN" -H 'Content-Type: application/zip' --data-binary "@$TMP/own.zip" "$BASE/api/v1/projects/onprem/services/app/zip")
+for _ in $(seq 1 150); do st=$(own_b b.status); [ "$st" = done ] || [ "$st" = failed ] && break; sleep 2; done
+check "a zip build runs on the customer server and its image is pushed to the registry" "$ZCODE:$st:$(own_b b.node_id):$(own_b b.image | grep -c "/$A/app:zip-")" "202:done:$NID:1"
+[ "$st" = done ] || echo "$(own_b "b.error || E'
+' || right(b.log, 1500)")"
+check "the built image is deployed on the server and served over HTTPS" "$(for _ in $(seq 1 60); do app_get "app-onprem-$A.$APPS" | grep -q "built-on-own-server-$RUN" && { echo yes; break; }; sleep 2; done)" yes
 apicode "$TOK_OWN" DELETE '/projects/onprem?force=true' >/dev/null
 check "[A] server removed once it runs nothing" "$(code_of ja -X POST "$BASE/o/$A/servers/$NID/delete" -d csrf=$CSRF_A):$(owner_sql "SELECT count(*) FROM nodes WHERE id = '$NID'")" "303:0"
 docker rm -f "$NODE_C" >/dev/null 2>&1; docker volume rm "$NODE_C" >/dev/null 2>&1
+docker volume ls -q --filter label=staysa.node.build-cache | xargs -r docker volume rm >/dev/null 2>&1; docker network rm pn-build >/dev/null 2>&1
 
 fi
 if want "Operator and admin panel"; then

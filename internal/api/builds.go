@@ -29,7 +29,11 @@ var (
 
 const maxActiveBuildsPerOrg = 5
 
-func (s *Server) validRepo(raw string) error {
+func (s *Server) validRepo(raw string) error { return s.validRepoFor(raw, false) }
+
+// validRepoFor checks a repository address. Builds on the organization's own servers
+// may use private addresses: an on-premises git server is reached from those servers.
+func (s *Server) validRepoFor(raw string, onServers bool) error {
 	u, err := url.Parse(raw)
 	if err != nil || !repoRe.MatchString(raw) || len(raw) > 300 {
 		return errors.New("Repository: an https address such as https://github.com/acme/web.git (no credentials in it).")
@@ -37,7 +41,7 @@ func (s *Server) validRepo(raw string) error {
 	if u.Scheme != "https" && !s.cfg.BuildAllowInsecure {
 		return errors.New("Repository: the address must use https.")
 	}
-	if !s.cfg.BuildAllowInsecure {
+	if !s.cfg.BuildAllowInsecure && !onServers {
 		h := u.Hostname()
 		if ip, err := netip.ParseAddr(h); (err == nil && isPrivate(ip)) || strings.EqualFold(h, "localhost") || strings.HasSuffix(h, ".localhost") {
 			return errors.New("Repository: private and internal addresses are not allowed.")
@@ -54,13 +58,17 @@ func isPrivate(ip netip.Addr) bool {
 type sourceInfo struct {
 	Repo, Branch, Dir             string
 	HasToken, HasHook, PRPreviews bool
+	BuildOn                       string   // platform or servers
+	BuildLabels                   []string // labels a build server must have
 }
+
+func (si sourceInfo) LabelText() string { return strings.Join(si.BuildLabels, ", ") }
 
 func loadSource(r *http.Request, tx pgx.Tx, serviceID string) (sourceInfo, error) {
 	var si sourceInfo
 	err := tx.QueryRow(r.Context(), `
-		SELECT source_repo, source_branch, source_dir, source_token_enc IS NOT NULL, build_hook_hash IS NOT NULL, pr_previews
-		FROM services WHERE id = $1`, serviceID).Scan(&si.Repo, &si.Branch, &si.Dir, &si.HasToken, &si.HasHook, &si.PRPreviews)
+		SELECT source_repo, source_branch, source_dir, source_token_enc IS NOT NULL, build_hook_hash IS NOT NULL, pr_previews, build_on, build_labels
+		FROM services WHERE id = $1`, serviceID).Scan(&si.Repo, &si.Branch, &si.Dir, &si.HasToken, &si.HasHook, &si.PRPreviews, &si.BuildOn, &si.BuildLabels)
 	return si, err
 }
 
@@ -73,6 +81,7 @@ type buildView struct {
 	PR                      *int
 	Created                 time.Time
 	Started, Finished       *time.Time
+	Runner, Server          string // where it runs: platform, or servers (and which one)
 }
 
 func (b buildView) Duration() string {
@@ -93,7 +102,7 @@ func (b buildView) ShortCommit() string {
 	return b.Commit
 }
 
-const buildCols = `b.number, b.status, b.trigger, b.commit, b.image, b.error, b.log, coalesce(u.email, ''), b.deploy, b.branch, b.pr_number, b.created_at, b.started_at, b.finished_at`
+const buildCols = `b.number, b.status, b.trigger, b.commit, b.image, b.error, b.log, coalesce(u.email, ''), b.deploy, b.branch, b.pr_number, b.created_at, b.started_at, b.finished_at, b.runner, coalesce((SELECT n.name FROM nodes n WHERE n.id = b.node_id), '')`
 
 func loadBuilds(r *http.Request, tx pgx.Tx, serviceID string, limit int) ([]buildView, error) {
 	rows, err := tx.Query(r.Context(), `SELECT `+buildCols+` FROM builds b LEFT JOIN users u ON u.id = b.created_by
@@ -155,13 +164,20 @@ func (s *Server) saveSource(w http.ResponseWriter, r *http.Request) {
 	dir := strings.Trim(strings.TrimSpace(r.PostFormValue("dir")), "/")
 	token := strings.TrimSpace(r.PostFormValue("token"))
 	clearToken := r.PostFormValue("clear_token") == "1"
+	buildOn := "platform"
+	if r.PostFormValue("build_on") == "servers" {
+		buildOn = "servers"
+	}
+	buildLabels, labelErr := parseLabels(r.PostFormValue("build_labels"))
 	if branch == "" {
 		branch = "main"
 	}
 	var formErr string
 	switch {
-	case repo != "" && s.validRepo(repo) != nil:
-		formErr = s.validRepo(repo).Error()
+	case repo != "" && s.validRepoFor(repo, buildOn == "servers") != nil:
+		formErr = s.validRepoFor(repo, buildOn == "servers").Error()
+	case labelErr != nil:
+		formErr = labelErr.Error()
 	case !branchRe.MatchString(branch) || strings.Contains(branch, ".."):
 		formErr = "Branch: letters, digits, dots, dashes, underscores and slashes."
 	case !dirRe.MatchString(dir) || strings.Contains(dir, ".."):
@@ -177,8 +193,13 @@ func (s *Server) saveSource(w http.ResponseWriter, r *http.Request) {
 			formErr = "Previews are deployed from images; set the repository on the service."
 			return nil
 		}
-		if _, err := tx.Exec(r.Context(), `UPDATE services SET source_repo = $2, source_branch = $3, source_dir = $4, pr_previews = $5 WHERE id = $1`,
-			sv.ID, repo, branch, dir, r.PostFormValue("pr_previews") == "1" && repo != ""); err != nil {
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET source_repo = $2, source_branch = $3, source_dir = $4, pr_previews = $5, build_on = $6, build_labels = $7 WHERE id = $1`,
+			sv.ID, repo, branch, dir, r.PostFormValue("pr_previews") == "1" && repo != "", buildOn, buildLabels); err != nil {
+			return err
+		}
+		// A build still waiting goes where the service now builds.
+		if _, err := tx.Exec(r.Context(), `UPDATE builds SET runner = $2, runner_labels = $3 WHERE service_id = $1 AND status = 'queued'`,
+			sv.ID, buildOn, buildLabels); err != nil {
 			return err
 		}
 		switch {
@@ -195,7 +216,7 @@ func (s *Server) saveSource(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		s.audit(r, tx, o.ID, "service.source", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"repo": repo, "branch": branch, "dir": dir, "token_set": token != "", "pr_previews": r.PostFormValue("pr_previews") == "1"})
+		s.audit(r, tx, o.ID, "service.source", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"repo": repo, "branch": branch, "dir": dir, "token_set": token != "", "pr_previews": r.PostFormValue("pr_previews") == "1", "build_on": buildOn, "build_labels": buildLabels})
 		return nil
 	})
 	if !ok {
@@ -251,7 +272,7 @@ func (s *Server) buildPage(w http.ResponseWriter, r *http.Request) {
 		var id string
 		if err := tx.QueryRow(r.Context(), `SELECT b.id, `+buildCols+` FROM builds b LEFT JOIN users u ON u.id = b.created_by
 			WHERE b.service_id = $1 AND b.number = $2`, sv.ID, atoi(r.PathValue("n"))).
-			Scan(&id, &b.Number, &b.Status, &b.Trigger, &b.Commit, &b.Image, &b.Error, &b.Log, &b.By, &b.Deploy, &b.Branch, &b.PR, &b.Created, &b.Started, &b.Finished); err != nil {
+			Scan(&id, &b.Number, &b.Status, &b.Trigger, &b.Commit, &b.Image, &b.Error, &b.Log, &b.By, &b.Deploy, &b.Branch, &b.PR, &b.Created, &b.Started, &b.Finished, &b.Runner, &b.Server); err != nil {
 			return err
 		}
 		if b.Status == "queued" { // builds run one at a time: say how many are before this one
@@ -376,6 +397,8 @@ type apiBuild struct {
 	Log      string     `json:"log,omitempty"`
 	Created  time.Time  `json:"created_at"`
 	Finished *time.Time `json:"finished_at,omitempty"`
+	Runner   string     `json:"runs_on"`          // platform or servers
+	Server   string     `json:"server,omitempty"` // the build server that took it
 }
 
 // apiStartBuild: POST .../builds {"deploy": true}
@@ -411,9 +434,9 @@ func (s *Server) apiBuild(w http.ResponseWriter, r *http.Request, o *orgInfo) {
 	if !s.apiService(w, r, o, func(tx pgx.Tx, p *projectInfo, sv *serviceInfo) error {
 		return tx.QueryRow(r.Context(), `SELECT `+buildCols+` FROM builds b LEFT JOIN users u ON u.id = b.created_by
 			WHERE b.service_id = $1 AND b.number = $2`, sv.ID, atoi(r.PathValue("n"))).
-			Scan(&b.Number, &b.Status, &b.Trigger, &b.Commit, &b.Image, &b.Error, &b.Log, &b.By, &b.Deploy, &b.Branch, &b.PR, &b.Created, &b.Started, &b.Finished)
+			Scan(&b.Number, &b.Status, &b.Trigger, &b.Commit, &b.Image, &b.Error, &b.Log, &b.By, &b.Deploy, &b.Branch, &b.PR, &b.Created, &b.Started, &b.Finished, &b.Runner, &b.Server)
 	}) {
 		return
 	}
-	writeJSON(w, apiBuild{b.Number, b.Status, b.Commit, b.Image, b.Error, b.Log, b.Created, b.Finished})
+	writeJSON(w, apiBuild{b.Number, b.Status, b.Commit, b.Image, b.Error, b.Log, b.Created, b.Finished, b.Runner, b.Server})
 }

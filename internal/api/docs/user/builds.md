@@ -84,6 +84,15 @@ Content-Type: application/zip
 
 Add `?deploy=false` to only build, and `?filename=app.zip` to name it in the log. The answer gives the build's `status_url`. On the command line, `--no-deploy` only builds and pushes the image.
 
+### Build on your own servers
+
+Builds can run on your own machines instead of the platform's, like self-hosted CI agents: a VM at AWS or Azure, or hardware of your own, attached as described in [Your own servers](/docs/servers#run-builds-on-your-servers).
+
+1. On **Your servers**, tick **runs builds** for one or more servers. Give them labels if they differ, for example `gpu` or `arm64`.
+2. On the service's **Builds** tab, under **Source**, set **Build on** to **your build servers**. To pick particular servers, enter the labels they must have under **Server labels**.
+
+Builds from git, from the webhook, from pull requests and from zip archives then wait for one of those servers, which takes them one at a time. The builds list shows which server ran each build. The image goes to your registry space and is deployed as usual, whether the service runs on the platform or on a server.
+
 ## Technical reference
 
 ### Limits and plans
@@ -98,6 +107,7 @@ Add `?deploy=false` to only build, and `?filename=app.zip` to name it in the log
 | Builds at a time per service | 1 | Starting a build while one is waiting reuses the waiting one. |
 | Builds waiting or running per organization | 5 | |
 | Zip archive upload | 100 MB | May unpack to 500 MB and 20,000 files. |
+| Builds on your own servers | no CPU or memory limit, not billed | One build at a time per server; same time and image size limits. A build no server takes within an hour fails. |
 
 ### API
 
@@ -107,7 +117,7 @@ Add `?deploy=false` to only build, and `?filename=app.zip` to name it in the log
 | GET | `/api/v1/projects/PROJECT/services/SERVICE/builds/N` | viewer | Status and log of build N. |
 | POST | `/api/v1/projects/PROJECT/services/SERVICE/zip` | developer | Build (and deploy) a zip archive sent as the body. |
 
-Starting a build or uploading a zip answers `202` with `number`, `status` (`queued`) and `status_url` (also in the `Location` header). `GET …/builds/N` returns `number`, `status`, `commit`, `image`, `error`, `log`, `created_at` and `finished_at`. Errors: `403` when the plan does not include builds, `409` when builds are not enabled on the platform or no repository is set, `429` when 5 builds of the organization are already waiting or running, `413` when a zip is over 100 MB.
+Starting a build or uploading a zip answers `202` with `number`, `status` (`queued`) and `status_url` (also in the `Location` header). `GET …/builds/N` returns `number`, `status`, `commit`, `image`, `error`, `log`, `created_at`, `finished_at`, `runs_on` (`platform` or `servers`) and `server` (the build server that took it). Errors: `403` when the plan does not include builds, `409` when builds are not enabled on the platform or no repository is set, `429` when 5 builds of the organization are already waiting or running, `413` when a zip is over 100 MB.
 
 Zip query parameters:
 
@@ -160,6 +170,8 @@ Check that the webhook sends push events with content type JSON, and that you pu
 ### My build stays queued
 
 Only one build runs at a time per service, and at most 5 are waiting or running per organization. The activity indicator shows its place in the queue.
+
+If the service builds on your servers, the builds list shows "waiting for a build server": check on **Your servers** that a server is online, has **runs builds** ticked, and has every label the service asks for.
 
 ### There is no Builds tab
 

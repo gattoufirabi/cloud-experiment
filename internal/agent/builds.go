@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"platform/internal/buildsrc"
 	"platform/internal/docker"
 	"platform/internal/model"
 	"platform/internal/netguard"
@@ -62,12 +63,13 @@ func (a *Agent) buildLoop(ctx context.Context) {
 	}
 	if _, err := a.pool.Exec(ctx, `
 		UPDATE builds SET status = 'failed', error = 'interrupted by a platform restart; start the build again', finished_at = now()
-		WHERE status = 'running'`); err != nil {
+		WHERE status = 'running' AND runner = 'platform'`); err != nil {
 		a.log.Warn("reset interrupted builds", "err", err)
 	}
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
 	for {
+		a.sweepServerBuilds(ctx)
 		for ctx.Err() == nil {
 			b, ok := a.claimBuild(ctx)
 			if !ok {
@@ -84,11 +86,24 @@ func (a *Agent) buildLoop(ctx context.Context) {
 	}
 }
 
+// sweepServerBuilds ends builds meant for an organization's own servers (migration 069)
+// that a server stopped reporting on, or that no server took in time.
+func (a *Agent) sweepServerBuilds(ctx context.Context) {
+	if _, err := a.pool.Exec(ctx, `
+		UPDATE builds SET status = 'failed', finished_at = now(), push_token_hash = NULL, source_zip = NULL,
+		       error = CASE WHEN status = 'running' THEN 'the build server stopped responding; start the build again'
+		                    ELSE 'no build server took this build within an hour: check that one of your servers is online, runs builds and has the labels the service asks for' END
+		WHERE runner = 'servers' AND ((status = 'running' AND heartbeat_at < now() - interval '3 minutes')
+		                           OR (status = 'queued' AND created_at < now() - interval '1 hour'))`); err != nil {
+		a.log.Warn("sweep server builds", "err", err)
+	}
+}
+
 func (a *Agent) claimBuild(ctx context.Context) (buildJob, bool) {
 	var b buildJob
 	err := a.pool.QueryRow(ctx, `
 		WITH next AS (
-			SELECT id FROM builds WHERE status = 'queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
+			SELECT id FROM builds WHERE status = 'queued' AND runner = 'platform' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
 		)
 		UPDATE builds bu SET status = 'running', started_at = now()
 		FROM next, services s, orgs o
@@ -208,7 +223,7 @@ func (a *Agent) runBuild(parent context.Context, b buildJob) {
 		}
 		var n int
 		var err error
-		if tarball, n, err = zipToTar(zipData); err != nil {
+		if tarball, n, err = buildsrc.ZipToTar(zipData); err != nil {
 			fail("archive: " + err.Error())
 			return
 		}
@@ -216,45 +231,9 @@ func (a *Agent) runBuild(parent context.Context, b buildJob) {
 	} else {
 		log.step("cloning")
 	}
-	gitScript := `set -eu
-cd /src
-URL="$REPO"
-if [ -n "${TOKEN:-}" ]; then URL="${REPO%%://*}://x-access-token:${TOKEN}@${REPO#*://}"; fi
-clone() { git clone --quiet --single-branch --branch "$BRANCH" "$@" -- "$URL" repo; }
-if ! clone --depth 1 2>/tmp/err; then
-  rm -rf repo
-  if ! clone 2>>/tmp/err; then
-    if [ -n "${TOKEN:-}" ]; then sed "s|${TOKEN}|***|g" /tmp/err >&2; else cat /tmp/err >&2; fi
-    exit 1
-  fi
-fi
-echo "COMMIT=$(git -C repo rev-parse HEAD)"
-rm -rf repo/.git
-`
-	zipScript := `set -eu
-cd /src
-echo "COMMIT=$SHA"
-`
-	commonScript := `D="repo/${DIR:-.}"
-if [ ! -d "$D" ]; then echo "Folder ${DIR} not found in the repository." >&2; exit 2; fi
-mkdir -p out plan && chmod 777 out
-if [ -f "$D/Dockerfile" ]; then
-  echo "MODE=dockerfile"
-else
-  # No Dockerfile: Railpack detects the language and writes a build plan.
-  cp -a /opt/railpack-tmp/. /tmp/ 2>/dev/null || true
-  if ! railpack prepare "$D" --plan-out plan/railpack-plan.json --info-out plan/info.json >/tmp/prepare.out 2>&1; then
-    cat /tmp/prepare.out >&2
-    exit 3
-  fi
-  tail -n 30 /tmp/prepare.out
-  echo "MODE=railpack"
-fi
-chmod -R a+rX repo plan
-chown 1000:1000 /cache`
-	script := gitScript + commonScript
+	script := buildsrc.Git + buildsrc.Common
 	if b.IsZip {
-		script = zipScript + commonScript
+		script = buildsrc.Zip + buildsrc.Common
 	}
 	cloneID, code, out, err := a.runOnceFiles(ctx, "build-clone-"+short, docker.ContainerConfig{
 		Image:      a.cfg.GitImage,
@@ -286,16 +265,7 @@ chown 1000:1000 /cache`
 		}
 	}
 	if err != nil || code != 0 || len(commit) < 12 {
-		msg := "could not clone the repository (check the address, branch and token)"
-		if b.IsZip {
-			msg = "could not unpack the archive"
-		}
-		switch code {
-		case 2:
-			msg = "folder " + b.Dir + " not found in the repository"
-		case 3:
-			msg = "no Dockerfile, and Railpack could not detect how to build this project (see the log above); add a Dockerfile"
-		}
+		msg := buildsrc.FailureMessage(code, b.IsZip, b.Dir)
 		if err != nil {
 			msg += ": " + err.Error()
 		}

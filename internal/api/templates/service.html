@@ -483,6 +483,9 @@
     <p class="small muted">The platform clones the branch and builds it in an isolated sandbox: with its Dockerfile if there is one, otherwise with Railpack, which detects Node, Python, Go, PHP, Ruby, Java, Rust, Elixir and static sites. The image is stored in your registry space, scanned and, if you choose, deployed with this service's settings.</p>
     {{if .Source.Repo}}
     <p><code>{{.Source.Repo}}</code> · branch <code>{{.Source.Branch}}</code>{{with .Source.Dir}} · folder <code>{{.}}</code>{{end}}{{if .Source.HasToken}} · token saved{{end}}</p>
+    {{end}}
+    {{if eq .Source.BuildOn "servers"}}<p class="small">Builds run on <a href="{{.Org.Path}}/servers">your build servers</a>{{with .Source.BuildLabels}} with the labels {{range $i, $l := .}}{{if $i}}, {{end}}<code>{{$l}}</code>{{end}}{{end}}.</p>{{end}}
+    {{if .Source.Repo}}
     {{if .CanEdit}}
     <form method="post" action="{{.Path}}/builds" class="inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -512,7 +515,7 @@
       <tbody>
       {{range .Builds}}
         <tr><td><span class="st st-{{buildStatus .Status}}">{{.Status}}</span> <a href="{{$.Path}}/builds/{{.Number}}">#{{.Number}}</a></td>
-          <td><code>{{.ShortCommit}}</code></td><td>{{with .PR}}pull request #{{.}}{{else}}{{if .By}}{{.By}}{{else}}{{.Trigger}}{{end}}{{end}}{{if eq .Trigger "zip"}} · zip{{end}}</td><td class="nowrap">{{ago .Created}}{{with .Duration}} · {{.}}{{end}}</td></tr>
+          <td><code>{{.ShortCommit}}</code></td><td>{{with .PR}}pull request #{{.}}{{else}}{{if .By}}{{.By}}{{else}}{{.Trigger}}{{end}}{{end}}{{if eq .Trigger "zip"}} · zip{{end}}{{if eq .Runner "servers"}}<br><span class="small muted">{{with .Server}}on server {{.}}{{else}}waiting for a build server{{end}}</span>{{end}}</td><td class="nowrap">{{ago .Created}}{{with .Duration}} · {{.}}{{end}}</td></tr>
       {{end}}
       </tbody>
     </table>
@@ -530,6 +533,9 @@
       {{if .Source.HasToken}}<label class="check"><input type="checkbox" name="clear_token" value="1"> remove the saved token</label>{{end}}
       <label class="check"><input type="checkbox" name="pr_previews" value="1"{{if .Source.PRPreviews}} checked{{end}}> Preview every pull request
         <span class="hint">builds each pull request's branch and deploys it as preview pr-&lt;number&gt;, deleted when the pull request closes; needs the webhook below with pull request events; pull requests from forks are ignored</span></label>
+      <label>Build on <span class="hint">your build servers run builds on your own machines, like self-hosted CI agents, and can reach git servers on your network</span>
+        <select name="build_on"><option value="platform"{{if ne .Source.BuildOn "servers"}} selected{{end}}>the platform</option><option value="servers"{{if eq .Source.BuildOn "servers"}} selected{{end}}>your build servers</option></select></label>
+      <label>Server labels <span class="hint">only for your build servers: a server must have all of them, e.g. <code>gpu</code> or <code>arm64</code>; empty = any build server</span><input name="build_labels" value="{{.Source.LabelText}}" placeholder="gpu, large" maxlength="330"></label>
       <div><button type="submit" class="secondary">Save source</button></div>
     </form>
   </div>

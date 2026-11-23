@@ -264,6 +264,6 @@ func BuildSeconds(ctx context.Context, q Querier, orgID string, start, end time.
 	var s int64
 	err := q.QueryRow(ctx, `
 		SELECT coalesce(sum(extract(epoch FROM finished_at - started_at)), 0)::bigint FROM builds
-		WHERE org_id = $1 AND started_at IS NOT NULL AND finished_at >= $2 AND finished_at < $3`, orgID, start, end).Scan(&s)
+		WHERE org_id = $1 AND runner = 'platform' AND started_at IS NOT NULL AND finished_at >= $2 AND finished_at < $3`, orgID, start, end).Scan(&s)
 	return s, err
 }

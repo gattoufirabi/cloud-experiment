@@ -1,4 +1,4 @@
-package agent
+package buildsrc
 
 import (
 	"archive/tar"
@@ -44,24 +44,24 @@ func tarNames(t *testing.T, data []byte) []string {
 }
 
 func TestZipToTar(t *testing.T) {
-	tb, n, err := zipToTar(makeZip(t, map[string]string{"Dockerfile": "FROM x", "src/app.js": "x"}))
+	tb, n, err := ZipToTar(makeZip(t, map[string]string{"Dockerfile": "FROM x", "src/app.js": "x"}))
 	if err != nil || n != 2 || strings.Join(tarNames(t, tb), ",") != "repo/Dockerfile,repo/src/app.js" {
 		t.Fatalf("plain: %v %d %v", err, n, tarNames(t, tb))
 	}
 	// One top-level folder becomes the root (GitHub "Download ZIP").
-	tb, _, err = zipToTar(makeZip(t, map[string]string{"app-main/package.json": "{}", "app-main/server.js": "x", "__MACOSX/app-main/._x": "junk"}))
+	tb, _, err = ZipToTar(makeZip(t, map[string]string{"app-main/package.json": "{}", "app-main/server.js": "x", "__MACOSX/app-main/._x": "junk"}))
 	if err != nil || strings.Join(tarNames(t, tb), ",") != "repo/package.json,repo/server.js" {
 		t.Fatalf("folder: %v %v", err, tarNames(t, tb))
 	}
 	for _, bad := range []string{"../evil", "/etc/passwd", "a/../../evil"} {
-		if _, _, err := zipToTar(makeZip(t, map[string]string{bad: "x"})); err == nil {
+		if _, _, err := ZipToTar(makeZip(t, map[string]string{bad: "x"})); err == nil {
 			t.Fatalf("unsafe path %q accepted", bad)
 		}
 	}
-	if _, _, err := zipToTar([]byte("not a zip")); err == nil {
+	if _, _, err := ZipToTar([]byte("not a zip")); err == nil {
 		t.Fatal("garbage accepted")
 	}
-	if _, _, err := zipToTar(makeZip(t, map[string]string{})); err == nil {
+	if _, _, err := ZipToTar(makeZip(t, map[string]string{})); err == nil {
 		t.Fatal("empty archive accepted")
 	}
 }

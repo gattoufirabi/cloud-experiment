@@ -2,6 +2,7 @@ package docker
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -200,4 +201,31 @@ func (c *Client) ImagePruneDangling(ctx context.Context) (int64, error) {
 	}
 	err := c.call(ctx, http.MethodPost, "/images/prune", url.Values{"filters": {string(f)}}, nil, &out)
 	return out.SpaceReclaimed, err
+}
+
+// ImageBuild builds a Dockerfile with the engine's builder and tags it. Used by build
+// servers for the small helper image only (tenant code is built in rootless BuildKit).
+func (c *Client) ImageBuild(ctx context.Context, tag, dockerfile string) error {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "Dockerfile", Mode: 0o644, Size: int64(len(dockerfile))}); err != nil {
+		return err
+	}
+	if _, err := tw.Write([]byte(dockerfile)); err != nil {
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/build?"+url.Values{"t": {tag}, "rm": {"1"}, "forcerm": {"1"}}.Encode(), &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-tar")
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return streamError(resp)
 }

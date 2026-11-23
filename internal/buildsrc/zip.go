@@ -1,4 +1,4 @@
-package agent
+package buildsrc
 
 import (
 	"archive/tar"
@@ -19,10 +19,10 @@ const (
 	zipMaxUnpacked = 500 << 20
 )
 
-// zipToTar converts a source archive into a tar of repo/<files>, refusing unsafe paths,
+// ZipToTar converts a source archive into a tar of repo/<files>, refusing unsafe paths,
 // links and oversized content. When every file sits in one top-level folder (an archive
 // of a folder, such as GitHub's "Download ZIP"), that folder becomes the root.
-func zipToTar(data []byte) ([]byte, int, error) {
+func ZipToTar(data []byte) ([]byte, int, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, 0, errors.New("not a valid zip archive")

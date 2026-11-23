@@ -122,6 +122,7 @@ func Run(ctx context.Context, o Options) error {
 	}
 	a.log.Info("node agent starting", "node", a.st.NodeID, "server", a.st.Server)
 	go a.deployWorker(ctx)
+	go a.buildWorker(ctx)
 	go a.shipLogs(ctx)
 	for i := 0; i < 4; i++ {
 		go a.tunnelWorker(ctx, i)
@@ -187,7 +188,7 @@ func (a *Agent) call(ctx context.Context, method, path string, in, out any) erro
 		}
 		return fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, e.Error)
 	}
-	if out != nil {
+	if out != nil && len(bytes.TrimSpace(raw)) > 0 { // 204: nothing
 		return json.Unmarshal(raw, out)
 	}
 	return nil

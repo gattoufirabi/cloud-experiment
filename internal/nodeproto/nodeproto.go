@@ -115,3 +115,43 @@ type DeploymentStats struct {
 	CPUPct     float64 `json:"cpu_pct"`
 	MemMB      int     `json:"mem_mb"`
 }
+
+// ---------- builds ----------
+
+// BuildJob is a build a server claimed (POST /node/v1/builds/claim; 204 when none).
+type BuildJob struct {
+	ID         string `json:"id"`
+	Number     int    `json:"number"`
+	ServiceID  string `json:"service_id"`
+	Repo       string `json:"repo,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	Dir        string `json:"dir,omitempty"`
+	Token      string `json:"token,omitempty"` // read token of a private repository
+	Zip        bool   `json:"zip,omitempty"`   // the source is an uploaded archive: GET /node/v1/builds/{id}/source
+	SourceName string `json:"source_name,omitempty"`
+	SourceSHA  string `json:"source_sha256,omitempty"`
+	// ImageRepo is where the image goes (<registry>/<org>/<service>); the server picks
+	// the tag (git-<commit12> or zip-<sha12>) and pushes with PushToken (user "build").
+	ImageRepo        string `json:"image_repo"`
+	PushToken        string `json:"push_token"`
+	BuilderImage     string `json:"builder_image"` // git + Railpack helper, built on the server when missing
+	BuildkitImage    string `json:"buildkit_image"`
+	RailpackFrontend string `json:"railpack_frontend"`
+	TimeoutSec       int    `json:"timeout_sec"`
+	MaxImageMB       int    `json:"max_image_mb"`
+}
+
+// BuildLogReport carries the whole log so far (POST /node/v1/builds/{id}/log). The API
+// answers 409 when the build is no longer running on this server: the server stops.
+type BuildLogReport struct {
+	Log string `json:"log"`
+}
+
+// BuildResult ends a build (POST /node/v1/builds/{id}/finish).
+type BuildResult struct {
+	Status string `json:"status"` // done or failed
+	Commit string `json:"commit,omitempty"`
+	Image  string `json:"image,omitempty"`
+	Error  string `json:"error,omitempty"`
+	Log    string `json:"log"`
+}

@@ -44,7 +44,7 @@ func (s *Server) registryToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var slug, subject string
+	var slug, subject, onlyRepo string
 	canPush, canDelete := false, false
 	if strings.HasPrefix(user, registry.AgentUserPrefix) {
 		// Platform-side pull (agent, scanner): org-scoped, pull only.
@@ -64,6 +64,19 @@ func (s *Server) registryToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		subject, canPush, canDelete = user, true, true // the agent's daily cleanup deletes old tags
+	} else if user == registry.BuildServerUser {
+		// A build server pushing the image of the build it runs: that repository only.
+		err := s.pool.QueryRow(r.Context(), `SELECT org_slug, repository FROM build_push_check($1)`,
+			secure.HashToken(pass)).Scan(&slug, &onlyRepo)
+		if err != nil {
+			if !s.limiter.allow("registry-fail:"+ip, 20, 10*time.Minute) {
+				http.Error(w, "too many failed attempts", http.StatusTooManyRequests)
+				return
+			}
+			deny()
+			return
+		}
+		subject, canPush = "build:"+onlyRepo, true
 	} else {
 		var orgID string
 		err := s.pool.QueryRow(r.Context(), `SELECT org_id, org_slug, can_push FROM registry_token_check($1)`,
@@ -83,7 +96,7 @@ func (s *Server) registryToken(w http.ResponseWriter, r *http.Request) {
 	for _, raw := range r.URL.Query()["scope"] {
 		for _, sc := range strings.Fields(raw) {
 			typ, name, actions, ok := registry.ParseScope(sc)
-			if !ok || typ != "repository" || !strings.HasPrefix(name, slug+"/") {
+			if !ok || typ != "repository" || !strings.HasPrefix(name, slug+"/") || (onlyRepo != "" && name != onlyRepo) {
 				continue // other namespaces, catalog listing, etc. are never granted
 			}
 			var granted []string

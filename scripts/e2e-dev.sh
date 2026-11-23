@@ -2144,12 +2144,53 @@ for _ in 1 2 3; do curl -sS --resolve "$OWN_HOST:$PORT:127.0.0.1" -o /dev/null "
 check "its logs reach the log store, filed under the organization by the API" "$(until_is 1 40 vl_has "e2e-own-$RUN org_id:$ORG_A")" 1
 check "a managed database cannot be created in a project on the server; nor a public port" "$(own POST /projects/onprem/databases -d '{"id": "kv", "engine": "redis"}' -o /dev/null -w '%{http_code}'):$(own PATCH /projects/onprem/services/web -d '{"public_ports": ["25565/tcp"]}' -o /dev/null -w '%{http_code}')" "422:422"
 check "its applications are not metered as platform compute" "$(owner_sql "SELECT count(*) FROM usage_hourly WHERE resource_id = (SELECT service_id FROM deployments WHERE id = '$OWN_DEP') AND cpu_milli_minutes > 0")" 0
+# Build servers: the same server also runs the organization's builds, like a self-hosted CI agent.
+OWNGIT="$TMP/owngit"; mkdir -p "$OWNGIT/src" "$OWNGIT/srv"
+printf '%s\n' 'FROM nginx:1.27-alpine' 'RUN echo BUILT-ON-CUSTOMER-SERVER' 'COPY index.html /usr/share/nginx/html/index.html' > "$OWNGIT/src/Dockerfile"
+echo "<h1>built-on-own-server-$RUN</h1>" > "$OWNGIT/src/index.html"
+(cd "$OWNGIT/src" && git init -q -b main && git config core.autocrlf false && git add . && git -c user.email=e2e@example.test -c user.name=e2e commit -qm app) >/dev/null
+git clone -q --bare "$OWNGIT/src" "$OWNGIT/srv/own.git" && (cd "$OWNGIT/srv/own.git" && git update-server-info)
+docker rm -f e2e-owngit >/dev/null 2>&1
+MSYS_NO_PATHCONV=1 docker run -d --name e2e-owngit -p 8098:80 -v "$(cygpath -w "$OWNGIT/srv"):/usr/share/nginx/html:ro" nginx:1.27-alpine >/dev/null
+for _ in $(seq 1 30); do curl -s -o /dev/null -f http://127.0.0.1:8098/own.git/HEAD && break; sleep 1; done
+APP_SVC="$BASE/o/$A/p/onprem/s/app"
+own_b() { owner_sql "SELECT $1 FROM builds b JOIN services s ON s.id = b.service_id JOIN projects p ON p.id = s.project_id WHERE p.slug = 'onprem' AND p.org_id = '$ORG_A' AND s.slug = 'app' ORDER BY b.number DESC LIMIT 1"; }
+own_built() { for _ in $(seq 1 150); do st=$(own_b b.status); [ "$st" = done ] || [ "$st" = failed ] && break; sleep 2; done; echo "$st"; }
+check "[A] the server runs builds, with labels" "$(code_of ja -X POST "$BASE/o/$A/servers/$NID/builds" -d csrf=$CSRF_A -d builds=1 -d 'labels=Linux, e2e'):$(owner_sql "SELECT builds::text || array_to_string(labels, ',') FROM nodes WHERE id = '$NID'")" "303:truee2e,linux"
+own POST /projects/onprem/services -d '{"id": "app", "image": "nginx:1.27-alpine", "port": 80, "health_path": "/", "cpu_millis": 100, "memory_mb": 64, "deploy": false}' >/dev/null
+check "[A] the service builds on the build servers that have label gpu" "$(code_of ja -X POST "$APP_SVC/source" -d csrf=$CSRF_A --data-urlencode "repo=http://host.docker.internal:8098/own.git" -d branch=main -d build_on=servers -d build_labels=gpu):$(owner_sql "SELECT build_on || ':' || array_to_string(build_labels, ',') FROM services s JOIN projects p ON p.id = s.project_id WHERE p.slug = 'onprem' AND p.org_id = '$ORG_A' AND s.slug = 'app'")" "303:servers:gpu"
+code_of ja -X POST "$APP_SVC/builds" -d csrf=$CSRF_A -d deploy=1 >/dev/null
+sleep 15
+check "a server without the label does not take the build; the platform's builder does not either" "$(own_b "b.status || ':' || b.runner || ':' || coalesce(b.node_id, '-')")" "queued:servers:-"
+check "[A] the Builds tab says it waits for a build server" "$(c ja "$APP_SVC" | grep -c 'waiting for a build server')" 1
+# A fresh server has no helper image: untag the platform's copy (same Docker here) so the agent builds its own.
+BUILDER_IMG=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$API_C" | sed -n 's/^GIT_IMAGE=//p'); BUILDER_IMG=${BUILDER_IMG:-platform-builder:0.43.0}
+docker tag "$BUILDER_IMG" e2e-builder-keep:1 && docker rmi "$BUILDER_IMG" >/dev/null
+code_of ja -X POST "$APP_SVC/source" -d csrf=$CSRF_A --data-urlencode "repo=http://host.docker.internal:8098/own.git" -d branch=main -d build_on=servers -d build_labels=e2e >/dev/null   # the waiting build follows
+check "with a matching label, the server claims the build, clones, builds and pushes it" "$(own_built):$(own_b "b.node_id"):$(own_b "b.image" | grep -c "/$A/app:git-")" "done:$NID:1"
+check "the build ran on the server (its log), which built its own helper image, then the Dockerfile's steps" "$(own_b b.log | grep -c -e 'on this server' -e 'preparing the build helper image' -e 'BUILT-ON-CUSTOMER-SERVER' | awk '{print ($1>=3)}'):$(docker image inspect -f ok "$BUILDER_IMG" 2>/dev/null)" "1:ok"
+docker image inspect "$BUILDER_IMG" >/dev/null 2>&1 || docker tag e2e-builder-keep:1 "$BUILDER_IMG"; docker rmi e2e-builder-keep:1 >/dev/null 2>&1
+check "the push token was dropped when the build finished; a made-up one is refused" "$(own_b "b.push_token_hash IS NULL"):$(curl -sS -o /dev/null -w '%{http_code}' -u build:plb_nope "http://localhost:$PORT/token?service=platform-registry&scope=repository:$A/app:push")" "t:401"
+check "the built image is deployed on the customer server and served through the tunnel" "$(for _ in $(seq 1 60); do curl -s --resolve "app-onprem-$A.apps.localhost:$PORT:127.0.0.1" "http://app-onprem-$A.apps.localhost:$PORT/" | grep -q "built-on-own-server-$RUN" && { echo yes; break; }; sleep 2; done)" yes
+check "the builds list names the server; server builds are not billed as build minutes" "$(c ja "$APP_SVC" | grep -c 'on server e2e-own'):$(owner_sql "SELECT count(*) FROM builds WHERE org_id = '$ORG_A' AND runner = 'servers' AND status = 'done'" | awk '{print ($1>=1)}')" "1:1"
+python -c 'import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1], "w")
+z.writestr("Dockerfile", "FROM nginx:1.27-alpine\nCOPY index.html /usr/share/nginx/html/index.html\n")
+z.writestr("index.html", "<h1>zip-on-own-server-" + sys.argv[2] + "</h1>")
+z.close()' "$(cygpath -w "$TMP/own.zip")" "$RUN"
+check "[API] a zip build also runs on the server" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_OWN" -H 'Content-Type: application/zip' --data-binary "@$(cygpath -w "$TMP/own.zip")" "$BASE/api/v1/projects/onprem/services/app/zip"):$(own_built):$(own_b "b.node_id"):$(own_b "b.image" | grep -c "/$A/app:zip-"):$(own_b "b.source_zip IS NULL")" "202:done:$NID:1:t"
+check "the zip-built image is served" "$(for _ in $(seq 1 60); do curl -s --resolve "app-onprem-$A.apps.localhost:$PORT:127.0.0.1" "http://app-onprem-$A.apps.localhost:$PORT/" | grep -q "zip-on-own-server-$RUN" && { echo yes; break; }; sleep 2; done)" yes
+check "[API] the build says where it ran" "$(own GET "/projects/onprem/services/app/builds/$(own_b b.number)" | ownj 'd["runs_on"] + ":" + d["server"]')" "servers:e2e-own"
+check "[B] cannot change A's server's build settings" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/servers/$NID/builds" -d csrf=$CSRF_B -d builds=0 | grep -c 'err='):$(owner_sql "SELECT builds FROM nodes WHERE id = '$NID'")" "0:t"
+check "builds on the server are audited" "$(owner_sql "SELECT count(DISTINCT action) FROM audit_events WHERE org_id = '$ORG_A' AND action IN ('server.builds','build.claimed','build.done') AND (action <> 'build.claimed' OR detail->>'server' = '$NID')")" 3
+docker rm -f e2e-owngit >/dev/null 2>&1
 check "a server still running projects cannot be removed" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/servers/$NID/delete" -d csrf=$CSRF_A | grep -c 'err=')" 1
 OWN_PID=$(owner_sql "SELECT id FROM projects WHERE org_id = '$ORG_A' AND slug = 'onprem'")
 check "[A] project moved back to the platform: deployed there, then removed from the server" "$(code_of ja -X POST "$BASE/o/$A/servers/place" -d csrf=$CSRF_A -d project=onprem -d server=):$(until_is 1 120 own_q "d.status = 'live' AND d.upstream NOT LIKE 'tunnel:%'"):$(until_is 0 60 node_ps "$OWN_PID"):$(until_is 200 30 own_http)" "303:1:0:200"
 check "[A] server removed: its node token and registry token stop working" "$(code_of ja -X POST "$BASE/o/$A/servers/$NID/delete" -d csrf=$CSRF_A):$(owner_sql "SELECT count(*) FROM nodes WHERE id = '$NID'"):$(owner_sql "SELECT count(*) FROM registry_tokens WHERE org_id = '$ORG_A' AND name = 'server e2e-own'"):$(until_is 1 40 sh -c "docker logs '$NODE_C' 2>&1 | grep -c 'unknown or removed server' | awk '{print (\$1>0)}'")" "303:0:0:1"
 check "the audit log records the server's life" "$(owner_sql "SELECT count(DISTINCT action) FROM audit_events WHERE org_id = '$ORG_A' AND action IN ('server.join_created','server.joined','project.placed','server.removed')")" 4
 dx rm -f "$NODE_C" >/dev/null 2>&1; dx volume rm "$NODE_C" >/dev/null 2>&1
+docker volume ls -q --filter label=staysa.node.build-cache | xargs -r docker volume rm >/dev/null 2>&1; docker network rm pn-build >/dev/null 2>&1
 own DELETE '/projects/onprem?force=true' >/dev/null; own DELETE '/projects/withdb?force=true' >/dev/null
 
 fi

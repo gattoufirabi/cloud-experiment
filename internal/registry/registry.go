@@ -36,6 +36,9 @@ const (
 	// BuilderUserPrefix: the agent pushes images it built as "builder/<org-slug>",
 	// allowed to push (and pull) only inside that organization's namespace.
 	BuilderUserPrefix = "builder/"
+	// BuildServerUser: a build server pushes the image of the build it runs as "build",
+	// with that build's push token (one repository, while the build runs).
+	BuildServerUser = "build"
 )
 
 // ---------- signing key ----------

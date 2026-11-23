@@ -5,6 +5,7 @@
   {{if .CanAdmin}}<a class="button-link right" href="#add">Add a server</a>{{end}}
 </div>
 <p class="lede">Run your applications on your own machines: a VM at AWS, Azure or any provider, or hardware of your own. Visitors still reach them at their usual addresses, through the platform's proxy, with HTTPS, custom domains, traffic protection and logs. Your server only connects out to the platform; it needs no open port.</p>
+<p class="lede">They can also run your builds, like self-hosted CI agents: turn on <strong>runs builds</strong> for a server, then set a service's <strong>Build on</strong> to your build servers in its Builds tab.</p>
 <p class="help"><a href="/docs/servers" target="_blank" rel="noopener">Guide: your own servers ↗</a></p>
 
 {{with .JoinToken}}
@@ -23,7 +24,7 @@
   {{if .Servers}}
   <div class="scroll-x">
   <table class="resources" id="servers-table">
-    <thead><tr><th>Name</th><th>Status</th><th class="num">CPUs</th><th class="num">Memory free</th><th class="num">Disk free</th><th>System</th><th>Projects</th>{{if .CanAdmin}}<th></th>{{end}}</tr></thead>
+    <thead><tr><th>Name</th><th>Status</th><th class="num">CPUs</th><th class="num">Memory free</th><th class="num">Disk free</th><th>System</th><th>Projects</th><th>Builds</th>{{if .CanAdmin}}<th></th>{{end}}</tr></thead>
     <tbody>
     {{range .Servers}}
       <tr>
@@ -34,6 +35,15 @@
         <td class="num">{{.DiskFreeMB}} MB</td>
         <td class="small">{{.OS}} {{.Arch}}<br><span class="muted">Docker {{.DockerVersion}} · agent {{.AgentVersion}}</span></td>
         <td>{{range $i, $p := .Projects}}{{if $i}}, {{end}}<a href="{{$.Org.Path}}/p/{{$p}}">{{$p}}</a>{{else}}<span class="muted">none</span>{{end}}</td>
+        <td>{{if $.CanAdmin}}
+          <form method="post" action="{{$.Org.Path}}/servers/{{.ID}}/builds" class="stack flush">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <label class="check"><input type="checkbox" name="builds" value="1"{{if .Builds}} checked{{end}}> runs builds</label>
+            <input name="labels" value="{{.LabelText}}" placeholder="labels, e.g. gpu, arm64" maxlength="330" aria-label="Labels of server {{.Name}}">
+            <button type="submit" class="secondary small">Save</button>
+          </form>
+          {{else}}{{if .Builds}}runs builds{{range $i, $l := .Labels}}{{if not $i}} · {{else}}, {{end}}<code>{{$l}}</code>{{end}}{{else}}<span class="muted">off</span>{{end}}{{end}}
+          {{with .Building}}<span class="small">building #{{.}}</span>{{end}}</td>
         {{if $.CanAdmin}}<td>
           <form method="post" action="{{$.Org.Path}}/servers/{{.ID}}/delete" class="inline flush" data-confirm="Remove server {{.Name}}? Its token stops working at once.">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">

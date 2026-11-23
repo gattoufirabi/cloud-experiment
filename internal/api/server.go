@@ -325,6 +325,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /o/{org}/servers", s.auth(authFull, s.createServerJoin))
 	m.HandleFunc("POST /o/{org}/servers/place", s.auth(authFull, s.placeProject))
 	m.HandleFunc("POST /o/{org}/servers/{id}/delete", s.auth(authFull, s.deleteServer))
+	m.HandleFunc("POST /o/{org}/servers/{id}/builds", s.auth(authFull, s.serverBuildSettings))
 	m.HandleFunc("GET /node/install.sh", s.nodeInstallScript)
 	m.HandleFunc("GET /node/v1/agent/{platform}", s.nodeAgentBinary)
 	m.HandleFunc("POST /node/v1/join", s.nodeJoin)
@@ -334,6 +335,10 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /node/v1/logs", s.nodeAuth(s.nodeLogs))
 	m.HandleFunc("POST /node/v1/stats", s.nodeAuth(s.nodeStats))
 	m.HandleFunc("GET /node/v1/tunnel", s.nodeAuth(s.nodeTunnel))
+	m.HandleFunc("POST /node/v1/builds/claim", s.nodeAuth(s.nodeBuildClaim))
+	m.HandleFunc("POST /node/v1/builds/{id}/log", s.nodeAuth(s.nodeBuildLog))
+	m.HandleFunc("GET /node/v1/builds/{id}/source", s.nodeAuth(s.nodeBuildSource))
+	m.HandleFunc("POST /node/v1/builds/{id}/finish", s.nodeAuth(s.nodeBuildFinish))
 
 	m.HandleFunc("GET /o/{org}/p/{project}", s.auth(authFull, s.projectPage))
 	m.HandleFunc("GET /o/{org}/p/{project}/settings", s.auth(authFull, settingsView(s.projectPage)))

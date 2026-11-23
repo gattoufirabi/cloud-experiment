@@ -79,7 +79,7 @@ func CostByProject(ctx context.Context, q Rows, orgID string, p Prices, start, e
 	rows, err = q.Query(ctx, `
 		SELECT coalesce(p.slug, ''), coalesce(sum(extract(epoch FROM b.finished_at - b.started_at)), 0)::bigint
 		FROM builds b LEFT JOIN services s ON s.id = b.service_id LEFT JOIN projects p ON p.id = s.project_id
-		WHERE b.org_id = $1 AND b.started_at IS NOT NULL AND b.finished_at >= $2 AND b.finished_at < $3
+		WHERE b.org_id = $1 AND b.runner = 'platform' AND b.started_at IS NOT NULL AND b.finished_at >= $2 AND b.finished_at < $3
 		GROUP BY 1`, orgID, start, end)
 	if err != nil {
 		return nil, err
