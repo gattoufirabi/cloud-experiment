@@ -71,7 +71,7 @@ curl -H "Authorization: Bearer $TOKEN" "{{.BaseURL}}/api/v1/prometheus/api/v1/qu
       <label>Create a managed Grafana in <select name="project">{{range .Projects}}<option value="{{.Slug}}">{{.Name}}</option>{{end}}</select></label>
       <button type="submit">Create Grafana</button>
     </form>
-    <p class="small muted">A <code>grafana</code> service with the data source and a services dashboard already set up, its data kept in a persistent folder. It counts as one service (250 millicores, 256 MB).</p>
+    <p class="small muted">A <code>grafana</code> service with the data source and a services dashboard already set up, its data kept in a persistent folder. It counts as one service (250 millicores, 256 MB). In a project that already has one, the button rebuilds it with the latest image and keeps its data.</p>
     {{end}}
   </div>
 

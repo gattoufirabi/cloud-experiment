@@ -1082,6 +1082,14 @@ check "Grafana built and live" "$(for _ in $(seq 1 100); do st=$(owner_sql "SELE
 check "Grafana signs in with the admin password" "$(curl -sS -o /dev/null -w '%{http_code}' --resolve "$GH:$PORT:127.0.0.1" -H 'Content-Type: application/json' -d "{\"user\":\"admin\",\"password\":\"$GPW\"}" "http://$GH:$PORT/login")" 200
 check "the platform data source and dashboard are provisioned" "$(curl -sS --resolve "$GH:$PORT:127.0.0.1" -u "admin:$GPW" "http://$GH:$PORT/api/datasources/uid/platform" | grep -o '"type":"prometheus"'):$(curl -sS --resolve "$GH:$PORT:127.0.0.1" -u "admin:$GPW" "http://$GH:$PORT/api/dashboards/uid/platform-services" | grep -o '"title":"Services"' | head -1)" '"type":"prometheus":"title":"Services"'
 check "[activity] nothing in progress once Grafana is live" "$(c ja "$BASE/o/$A/activity.json" | grep -c 'shop/grafana')" 0
+# the admin password follows the GF_SECURITY_ADMIN_PASSWORD secret at each start
+glive() { for _ in $(seq 1 100); do st=$(owner_sql "SELECT d.status FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id WHERE o.slug = '$A' AND s.slug = 'grafana' ORDER BY d.revision DESC LIMIT 1"); [ "$st" = live ] || [ "$st" = failed ] && { echo "$st"; break; }; sleep 4; done; }
+glogin() { curl -sS -o /dev/null -w '%{http_code}' --resolve "$GH:$PORT:127.0.0.1" -H 'Content-Type: application/json' -d "{\"user\":\"admin\",\"password\":\"$1\"}" "http://$GH:$PORT/login"; }
+GPW2=newpass-$RUN-grafana
+code_of ja -X POST "$BASE/o/$A/p/shop/s/grafana/secrets" -d csrf=$CSRF_A -d name=GF_SECURITY_ADMIN_PASSWORD -d "value=$GPW2" >/dev/null
+code_of ja -X POST "$BASE/o/$A/p/shop/s/grafana/deploy" -d csrf=$CSRF_A >/dev/null
+check "a changed password secret applies after a redeploy (new accepted, old refused)" "$(sleep 3; glive):$(for _ in $(seq 1 20); do [ "$(glogin "$GPW2")" = 200 ] && { echo 200; break; }; sleep 2; done):$(glogin "$GPW")" "live:200:401"
+check "Create Grafana on a live Grafana rebuilds it (data and secrets kept)" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/monitoring/grafana" -d csrf=$CSRF_A -d project=shop | grep -c '/s/grafana/builds/'):$(owner_sql "SELECT count(*) FROM secrets x JOIN services s ON s.id = x.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'grafana'")" "1:2"
 code_of ja -X POST "$BASE/o/$A/compute/actions" -d csrf=$CSRF_A -d action=delete -d confirm=delete -d sel=shop/grafana >/dev/null
 owner_sql "DELETE FROM api_tokens WHERE name = 'grafana in shop' AND org_id = '$ORG_A'" >/dev/null
 admin set-plan --slug "$A" --plan starter >/dev/null

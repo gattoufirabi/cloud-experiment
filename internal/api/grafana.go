@@ -28,6 +28,9 @@ func grafanaArchive() []byte {
 USER root
 COPY provisioning /etc/grafana/provisioning
 COPY dashboards /var/lib/platform-dashboards
+COPY apply-admin-password.sh /apply-admin-password.sh
+RUN chmod 755 /apply-admin-password.sh
+ENTRYPOINT ["/apply-admin-password.sh"]
 ENV GF_USERS_ALLOW_SIGN_UP=false GF_AUTH_ANONYMOUS_ENABLED=false GF_ANALYTICS_REPORTING_ENABLED=false \
     GF_ANALYTICS_CHECK_FOR_UPDATES=false GF_SERVER_HTTP_PORT=3000 GF_PATHS_DATA=/var/lib/grafana
 `,
@@ -57,6 +60,20 @@ providers:
       path: /var/lib/platform-dashboards
 `,
 		"dashboards/services.json": grafanaDashboard(),
+		// Grafana reads GF_SECURITY_ADMIN_PASSWORD only when it creates its database; the
+		// database lives in the persistent folder, so later changes would be ignored. On
+		// every start after the first, the password is set from the secret, which stays
+		// the reference: change the secret, redeploy, and the new password applies.
+		"apply-admin-password.sh": `#!/bin/sh
+if [ -n "$GF_SECURITY_ADMIN_PASSWORD" ] && [ -f "${GF_PATHS_DATA:-/var/lib/grafana}/grafana.db" ]; then
+  if grafana cli --homepath "${GF_PATHS_HOME:-/usr/share/grafana}" admin reset-admin-password "$GF_SECURITY_ADMIN_PASSWORD" >/dev/null 2>&1; then
+    echo "admin password set from GF_SECURITY_ADMIN_PASSWORD"
+  else
+    echo "could not set the admin password from GF_SECURITY_ADMIN_PASSWORD" >&2
+  fi
+fi
+exec /run.sh "$@"
+`,
 	}
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -99,11 +116,33 @@ func (s *Server) createGrafana(w http.ResponseWriter, r *http.Request) {
 	project := r.PostFormValue("project")
 	var formErr, password, host string
 	var buildN int
+	var updated bool
 	err := db.WithOrg(r.Context(), s.pool, o.ID, func(tx pgx.Tx) error {
 		var projectID string
 		if err := tx.QueryRow(r.Context(), `SELECT id FROM projects WHERE slug = $1`, project).Scan(&projectID); err != nil {
 			formErr = "Choose a project."
 			return nil
+		}
+		// A live grafana is rebuilt from the current image (data, secrets and settings
+		// kept), so older installations get fixes such as the password one.
+		var liveID string
+		err := tx.QueryRow(r.Context(), `
+			SELECT s.id FROM services s WHERE s.project_id = $1 AND s.slug = 'grafana' AND s.preview_of IS NULL
+			  AND EXISTS (SELECT 1 FROM deployments d WHERE d.service_id = s.id AND d.status = 'live')`, projectID).Scan(&liveID)
+		if err == nil {
+			buildN, err = s.queueZipBuild(r, tx, o, liveID, grafanaArchive(), "grafana.zip", true, sessionFrom(r).UserID)
+			var ae apiErr
+			if errors.As(err, &ae) {
+				formErr = "Grafana is built from a small image: " + ae.msg
+				return nil
+			}
+			if err == nil {
+				s.audit(r, tx, o.ID, "service.updated", "service:"+project+"/grafana", map[string]any{"grafana_rebuilt": true})
+				updated = true
+			}
+			return err
+		} else if !isNoRows(err) {
+			return err
 		}
 		// A grafana service that never went live (a failed first build or deploy) is
 		// replaced, so "Create Grafana" also repairs a failed attempt.
@@ -161,7 +200,6 @@ func (s *Server) createGrafana(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.audit(r, tx, o.ID, "service.created", "service:"+project+"/grafana", map[string]any{"grafana": true})
-		var err error
 		buildN, err = s.queueZipBuild(r, tx, o, serviceID, grafanaArchive(), "grafana.zip", true, sessionFrom(r).UserID)
 		var ae apiErr
 		if errors.As(err, &ae) {
@@ -175,6 +213,8 @@ func (s *Server) createGrafana(w http.ResponseWriter, r *http.Request) {
 		back(w, r, o.Path()+"/monitoring#grafana", "", formErr)
 	case err != nil:
 		s.serverError(w, r, err)
+	case updated:
+		back(w, r, o.Path()+"/p/"+project+"/s/grafana/builds/"+itoa(buildN), "Grafana is being rebuilt with the latest image; its data, password secret and settings are kept.", "")
 	default:
 		w.Header().Set("Cache-Control", "no-store")
 		s.render(w, r, "grafana_created", http.StatusOK, data{"Org": o, "Project": project, "Host": host, "Password": password, "Build": buildN})

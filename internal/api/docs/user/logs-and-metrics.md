@@ -185,10 +185,15 @@ When you set a signing secret, each request to an endpoint carries `X-Platform-S
 - Pausing an export and resuming it continues where it stopped, as long as the lines are still within your retention.
 - The managed Grafana is a service named `grafana`, built then deployed on its own, usually within a few minutes. A project can have only one service named `grafana`.
 - It comes with the Prometheus data source (using a read-only token of your organization) and a **Services** dashboard. Its data is kept in a persistent folder, so it is backed up every night.
-- The admin password is also stored as the service's secret `GF_SECURITY_ADMIN_PASSWORD`.
+- The admin password is stored as the service's secret `GF_SECURITY_ADMIN_PASSWORD`, and that secret is the reference: at every start, Grafana's admin password is set from it. To change the password, change the secret on the service's **Settings** page, then redeploy. A password changed inside Grafana itself is replaced by the secret at the next start.
+- **Create Grafana** in a project that already has a working Grafana rebuilds it with the latest image, keeping its data, secrets and settings. A Grafana created before November 2026 needs this once for the password secret to apply.
 - Its build counts as build minutes.
 
 ## Troubleshooting
+
+### A new Grafana password is not accepted
+
+The password follows the service's `GF_SECURITY_ADMIN_PASSWORD` secret at each start, so change the secret, then redeploy the `grafana` service. If your Grafana was created before November 2026, click **Create Grafana** in its project once first: that rebuilds it with the image that applies the secret, keeping your dashboards and data.
 
 ### No metrics after a deployment
 
