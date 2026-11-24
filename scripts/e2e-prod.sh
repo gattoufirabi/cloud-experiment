@@ -499,17 +499,14 @@ apicode "$TOK_OWN" POST /projects/onprem/services -d '{"id": "app", "image": "ng
 code_of ja -X POST "$BASE/o/$A/p/onprem/s/app/source" -d csrf=$CSRF_A -d repo= -d branch=main -d build_on=servers -d build_labels=e2e >/dev/null
 python3 -c 'import sys, zipfile
 z = zipfile.ZipFile(sys.argv[1], "w")
-z.writestr("Dockerfile", "FROM nginx:1.27-alpine
-COPY index.html /usr/share/nginx/html/index.html
-")
+z.writestr("Dockerfile", "FROM nginx:1.27-alpine" + chr(10) + "COPY index.html /usr/share/nginx/html/index.html" + chr(10))
 z.writestr("index.html", "<h1>built-on-own-server-" + sys.argv[2] + "</h1>")
 z.close()' "$TMP/own.zip" "$RUN"
 own_b() { owner_sql "SELECT $1 FROM builds b JOIN services s ON s.id = b.service_id JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'onprem' AND s.slug = 'app' ORDER BY b.number DESC LIMIT 1"; }
 ZCODE=$(curl -sS --resolve "$CONSOLE:443:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_OWN" -H 'Content-Type: application/zip' --data-binary "@$TMP/own.zip" "$BASE/api/v1/projects/onprem/services/app/zip")
 for _ in $(seq 1 150); do st=$(own_b b.status); [ "$st" = done ] || [ "$st" = failed ] && break; sleep 2; done
 check "a zip build runs on the customer server and its image is pushed to the registry" "$ZCODE:$st:$(own_b b.node_id):$(own_b b.image | grep -c "/$A/app:zip-")" "202:done:$NID:1"
-[ "$st" = done ] || echo "$(own_b "b.error || E'
-' || right(b.log, 1500)")"
+[ "$st" = done ] || echo "$(own_b "b.error || ' / ' || right(b.log, 1500)")"
 check "the built image is deployed on the server and served over HTTPS" "$(for _ in $(seq 1 60); do app_get "app-onprem-$A.$APPS" | grep -q "built-on-own-server-$RUN" && { echo yes; break; }; sleep 2; done)" yes
 apicode "$TOK_OWN" DELETE '/projects/onprem?force=true' >/dev/null
 check "[A] server removed once it runs nothing" "$(code_of ja -X POST "$BASE/o/$A/servers/$NID/delete" -d csrf=$CSRF_A):$(owner_sql "SELECT count(*) FROM nodes WHERE id = '$NID'")" "303:0"
