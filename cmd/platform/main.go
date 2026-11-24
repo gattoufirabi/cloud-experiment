@@ -25,15 +25,15 @@ import (
 
 	"platform/internal/agent"
 	"platform/internal/api"
-	"platform/internal/billing"
-	"platform/internal/config"
-	"platform/internal/db"
-	"platform/internal/dbproxy"
-	"platform/internal/model"
-	"platform/internal/nodeagent"
-	"platform/internal/registry"
-	"platform/internal/secure"
-	"platform/internal/webmail"
+	"platform/internal/components/databases/dbproxy"
+	"platform/internal/components/email/webmail"
+	"platform/internal/components/servers/nodeagent"
+	"platform/internal/lib/billing"
+	"platform/internal/lib/config"
+	"platform/internal/lib/db"
+	"platform/internal/lib/model"
+	"platform/internal/lib/registry"
+	"platform/internal/lib/secure"
 )
 
 func main() {

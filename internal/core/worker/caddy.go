@@ -1,0 +1,560 @@
+package worker
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"platform/internal/lib/config"
+	"platform/internal/lib/model"
+)
+
+// caddyClient talks to Caddy's admin API over a Unix socket shared only with the agent.
+type caddyClient struct{ hc *http.Client }
+
+func NewCaddyClient(socket string) *caddyClient {
+	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socket)
+	}}
+	return &caddyClient{hc: &http.Client{Transport: tr, Timeout: 30 * time.Second}}
+}
+
+// load sets (or replaces) only the "apps" subtree. Replacing the whole config (POST /load)
+// makes Caddy restart its admin endpoint mid-request; the admin block comes from Caddy's
+// startup config and is never changed at runtime.
+func (c *caddyClient) load(ctx context.Context, body []byte) error {
+	// Host "caddy" must match admin.origins in Caddy's startup config.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://caddy/config/apps", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("caddy load: HTTP %d: %s", resp.StatusCode, msg)
+	}
+	return nil
+}
+
+// waitDrained waits until the proxy has no request in flight to the given containers
+// (the instances a deployment replaces), for at most max: requests already sent to them
+// finish instead of being cut when the containers stop.
+func (a *Agent) waitDrained(ctx context.Context, names []string, max time.Duration) {
+	if !a.IsPrimary() || len(names) == 0 {
+		return
+	}
+	deadline := time.Now().Add(max)
+	for time.Now().Before(deadline) {
+		body, err := a.Caddy.get(ctx, "/reverse_proxy/upstreams")
+		if err != nil {
+			return
+		}
+		var ups []upstreamLoad
+		if json.Unmarshal(body, &ups) != nil || !busyUpstream(ups, names) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// upstreamLoad is one entry of the proxy's /reverse_proxy/upstreams.
+type upstreamLoad struct {
+	Address     string `json:"address"`
+	NumRequests int    `json:"num_requests"`
+}
+
+// busyUpstream: does one of the named containers still have requests in flight?
+func busyUpstream(ups []upstreamLoad, names []string) bool {
+	for _, u := range ups {
+		for _, n := range names {
+			if u.NumRequests > 0 && strings.HasPrefix(u.Address, n+":") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// get reads a path of the admin API (used by the health check).
+func (c *caddyClient) get(ctx context.Context, path string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://caddy"+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("caddy admin: HTTP %d", resp.StatusCode)
+	}
+	return b, nil
+}
+
+type route struct {
+	OrgID, ProjectID string   // for access logs (Zone is the service ID)
+	Cache            bool     // edge cache: keep responses that allow shared caching
+	InternalHost     string   // <service>.<project>.internal ("" for previews)
+	AllowFrom        []string // subnets allowed to use the private name
+	Hosts            []string
+	BaseHost         string   // the platform address (extra ports hang off it even when it is not served)
+	Dials            []string // one per instance
+	Zone             string   // rate-limit zone name (service ID)
+	WAF              bool     // OWASP Core Rule Set
+	RPM              int      // requests per minute per visitor IP; 0 = no limit
+	MaxInflight      int      // requests in progress per instance before 503; 0 = no limit
+	Blocked          []string // CIDR ranges refused with 403
+	Public           bool     // false: no public address (only the private name)
+	Names            []string // local instance container names (none when it runs on another node)
+	ZoneSuffix       string   // extra port routes: their own rate-limit zone
+	PathRules        []pathRule
+}
+
+func (a *Agent) loadRoutes(ctx context.Context) ([]route, error) {
+	rows, err := a.Pool.Query(ctx, `
+		SELECT d.container_name, (d.spec->>'port')::int, s.slug, p.slug, o.slug,
+		       coalesce(array_agg(dm.hostname ORDER BY dm.hostname) FILTER (WHERE dm.verified_at IS NOT NULL), '{}'),
+		       s.id, s.waf_enabled, coalesce(s.rate_limit_rpm, 0), s.max_inflight, s.blocked_ips::text[],
+		       coalesce(s.preview_name, ''), coalesce(ps.slug, ''), d.upstream, d.instances, o.id, p.id, s.edge_cache, coalesce(ps.public, s.public), s.default_address
+		FROM deployments d
+		JOIN services s ON s.id = d.service_id
+		LEFT JOIN services ps ON ps.id = s.preview_of
+		JOIN projects p ON p.id = s.project_id
+		JOIN orgs o ON o.id = d.org_id
+		LEFT JOIN domains dm ON dm.service_id = s.id
+		WHERE d.status = 'live' AND NOT o.suspended AND d.container_name IS NOT NULL
+		  AND NOT coalesce((d.spec->>'worker')::boolean, false) -- workers have no public address
+		GROUP BY d.id, s.id, ps.slug, ps.public, p.slug, o.slug, d.upstream, d.instances, o.id, p.id
+		ORDER BY o.slug, p.slug, s.slug`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (route, error) {
+		var name, svc, proj, org string
+		var port int
+		var custom, blocked []string
+		var previewName, parentSlug, upstream string
+		var insts []Instance
+		var defaultAddr bool
+		rt := route{}
+		if err := r.Scan(&name, &port, &svc, &proj, &org, &custom, &rt.Zone, &rt.WAF, &rt.RPM, &rt.MaxInflight, &blocked, &previewName, &parentSlug, &upstream, &insts, &rt.OrgID, &rt.ProjectID, &rt.Cache, &rt.Public, &defaultAddr); err != nil {
+			return route{}, err
+		}
+		host := model.DefaultHost(svc, proj, org, a.Cfg.AppsDomain)
+		if previewName != "" { // preview: <name>.<parent>-<project>-<org>.<apps domain>
+			host = previewName + "." + model.DefaultHost(parentSlug, proj, org, a.Cfg.AppsDomain)
+		}
+		rt.BaseHost = host
+		rt.Hosts = append([]string{host}, custom...)
+		if !defaultAddr && previewName == "" && len(custom) > 0 { // only its own domains
+			rt.Hosts = custom
+		}
+		if previewName == "" {
+			rt.InternalHost = svc + "." + proj + internalSuffix
+		}
+		if len(insts) == 0 { // deployed before instances were recorded
+			insts = []Instance{{Name: name, Upstream: upstream}}
+		}
+		for _, in := range insts {
+			if strings.HasPrefix(in.Upstream, tunnelPrefix) { // on the customer's own server: one tunnel, the server spreads requests
+				if len(rt.Dials) == 0 {
+					rt.Dials = append(rt.Dials, in.Upstream)
+				}
+				continue
+			}
+			if in.Upstream != "" { // runs on another node: reached on its private address
+				rt.Dials = append(rt.Dials, in.Upstream)
+			} else {
+				rt.Dials = append(rt.Dials, in.Name+":"+strconv.Itoa(port))
+				rt.Names = append(rt.Names, in.Name)
+			}
+		}
+		rt.Blocked = blocked
+		return rt, nil
+	})
+}
+
+func (a *Agent) SyncCaddy(ctx context.Context, force bool) {
+	if !a.IsPrimary() {
+		return // the proxy runs on the primary node
+	}
+	routes, err := a.loadRoutes(ctx)
+	if err != nil {
+		a.Log.Error("load routes", "err", err)
+		return
+	}
+	a.fillInternal(ctx, routes)
+	routes = a.expandRoutes(ctx, routes)
+	idx := make(map[string]HostRef, len(routes))
+	for _, r := range routes {
+		for _, h := range r.Hosts {
+			idx[strings.ToLower(h)] = HostRef{OrgID: r.OrgID, ProjectID: r.ProjectID, ServiceID: r.Zone}
+		}
+	}
+	a.Mu.Lock()
+	a.HostIndex = idx
+	a.Mu.Unlock()
+	conf := BuildCaddyConfig(a.Cfg, routes)
+	addMailServerNames(conf, a.Cfg, a.LoadMailServerNames(ctx))
+	body, err := json.Marshal(conf["apps"])
+	if err != nil {
+		a.Log.Error("marshal caddy config", "err", err)
+		return
+	}
+	sum := sha256.Sum256(body)
+	hash := hex.EncodeToString(sum[:])
+	a.Mu.Lock()
+	same := hash == a.caddyHash
+	a.Mu.Unlock()
+	if same && !force {
+		return
+	}
+	if err := a.Caddy.load(ctx, body); err != nil {
+		a.Log.Error("push caddy config", "err", err)
+		return
+	}
+	a.Mu.Lock()
+	a.caddyHash = hash
+	a.Mu.Unlock()
+	if !same {
+		a.Log.Info("proxy routes updated", "routes", len(routes))
+	}
+}
+
+type obj = map[string]any
+
+// An application on a customer's own server is reached through the API's tunnel
+// listener: its instances record the upstream "tunnel:<deployment ID>", and the proxy
+// sends the request to the listener with the deployment in a header it sets itself
+// (overwriting anything the visitor sent). The listener is never reachable from outside.
+const (
+	tunnelPrefix = "tunnel:"
+	tunnelHeader = "X-Platform-Tunnel"
+)
+
+// proxyTo is the reverse_proxy handler for a route's upstreams.
+func proxyTo(cfg config.Config, dials []string) obj {
+	if len(dials) == 1 && strings.HasPrefix(dials[0], tunnelPrefix) {
+		return obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.TunnelUpstream}},
+			"headers": obj{"request": obj{"set": obj{tunnelHeader: []string{strings.TrimPrefix(dials[0], tunnelPrefix)}}}}}
+	}
+	ups := make([]any, 0, len(dials))
+	for _, d := range dials {
+		ups = append(ups, obj{"dial": d})
+	}
+	return obj{"handler": "reverse_proxy", "upstreams": ups}
+}
+
+// BuildCaddyConfig renders the complete Caddy JSON config (the agent pushes its "apps"
+// part; the admin block documents what Caddy's startup config must contain).
+func BuildCaddyConfig(cfg config.Config, routes []route) obj {
+	rs := []any{obj{
+		"match": []any{obj{"host": []string{cfg.ConsoleHost}}},
+		"handle": []any{obj{"handler": "subroute", "routes": []any{
+			obj{"match": []any{obj{"path": []string{"/internal/*"}}},
+				"handle": []any{obj{"handler": "static_response", "status_code": 404}}},
+			// Long-lived streams (customer server tunnels, event streams) survive a config
+			// reload for a while instead of being cut at once.
+			obj{"handle": []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.APIUpstream}}, "stream_close_delay": "5m"}}},
+		}}},
+		"terminal": true,
+	}}
+	if cfg.WebmailHost != "" {
+		// Webmail of hosted mailboxes: its own name, outside the console.
+		rs = append(rs, obj{
+			"match":    []any{obj{"host": []string{hostOnly(cfg.WebmailHost)}}},
+			"handle":   []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.WebmailUpstream}}}},
+			"terminal": true,
+		})
+	}
+	if cfg.RegistryHost != "" {
+		// Registry host: /token is the API's token endpoint, everything else the registry.
+		rs = append(rs, obj{
+			"match": []any{obj{"host": []string{hostOnly(cfg.RegistryHost)}}},
+			"handle": []any{obj{"handler": "subroute", "routes": []any{
+				obj{"match": []any{obj{"path": []string{"/token"}}},
+					"handle": []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.APIUpstream}}}}},
+				obj{"handle": []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.RegistryUpstream}}}}},
+			}}},
+			"terminal": true,
+		})
+	}
+	// Function URLs: <function>-<project>-<org>.fn.<apps domain>, answered by the API's
+	// function gateway.
+	rs = append(rs, obj{
+		"match":    []any{obj{"host": []string{"*.fn." + cfg.AppsDomain}}},
+		"handle":   []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.APIUpstream}}}},
+		"terminal": true,
+	})
+	if cfg.StorageEnabled() {
+		// S3 API (path-style requests; no body limit, uploads stream through).
+		rs = append(rs, obj{
+			"match":    []any{obj{"host": storageHosts(cfg)}},
+			"handle":   []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.S3Upstream}}}},
+			"terminal": true,
+		})
+		// Public website buckets: <bucket>.web.<apps domain> is passed to Garage's web
+		// endpoint as "<bucket>.web" (its configured root domain).
+		label := strings.Count(cfg.WebDomain(), ".") + 1 // the bucket's label, counted from the right
+		rs = append(rs, obj{
+			"match": []any{obj{"host": []string{"*." + cfg.WebDomain()}}},
+			"handle": []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.S3WebUpstream}},
+				"headers": obj{"request": obj{"set": obj{"Host": []string{fmt.Sprintf("{http.request.host.labels.%d}.web", label)}}}}}},
+			"terminal": true,
+		})
+	}
+	// One shared WAF route (not terminal) for every service that turned it on: the rule
+	// set is compiled once instead of once per service, which keeps Caddy's memory flat.
+	var wafHosts []string
+	for _, r := range routes {
+		if r.WAF {
+			wafHosts = append(wafHosts, r.Hosts...)
+		}
+	}
+	if len(wafHosts) > 0 {
+		rs = append(rs, obj{
+			"match":  []any{obj{"host": wafHosts}},
+			"handle": []any{obj{"handler": "waf", "load_owasp_crs": true, "directives": wafDirectives}},
+		})
+	}
+	for _, r := range routes {
+		if len(r.Hosts) == 0 { // private: only its .internal name (see internalRoutes)
+			continue
+		}
+		var sub []any
+		if len(r.Blocked) > 0 {
+			sub = append(sub, obj{
+				"match":  []any{obj{"remote_ip": obj{"ranges": r.Blocked}}},
+				"handle": []any{obj{"handler": "static_response", "status_code": 403, "body": "Access denied.\n"}},
+			})
+		}
+		if r.RPM > 0 {
+			sub = append(sub, obj{"handle": []any{obj{
+				"handler": "rate_limit",
+				"rate_limits": obj{"svc-" + r.Zone + r.ZoneSuffix: obj{
+					"key": "{http.request.remote.host}", "window": "1m", "max_events": r.RPM,
+				}},
+			}}})
+		}
+		rp := proxyTo(cfg, r.Dials)
+		if len(r.Dials) > 1 { // spread requests; skip an instance that stops answering, retry elsewhere
+			rp["load_balancing"] = obj{"selection_policy": obj{"policy": "round_robin"}, "try_duration": "3s", "try_interval": "250ms"}
+			// An instance that fails a request (no answer, or a gateway error from the app's own
+			// proxy) is skipped for 20 s and the request is retried on another one; a whole node
+			// going silent is handled by node failover (scaling.go).
+			rp["health_checks"] = obj{"passive": obj{"fail_duration": "20s", "max_fails": 1, "unhealthy_status": []int{502, 503, 504}}}
+		}
+		if r.MaxInflight > 0 { // overload protection: a full instance takes no more; none free = 503 at once
+			hc, _ := rp["health_checks"].(obj)
+			if hc == nil {
+				hc = obj{"passive": obj{}}
+				rp["health_checks"] = hc
+			}
+			hc["passive"].(obj)["unhealthy_request_count"] = r.MaxInflight
+		}
+		for _, pr := range r.PathRules { // a path of this domain served by another service
+			h := []any{}
+			if pr.Strip {
+				h = append(h, obj{"handler": "rewrite", "strip_path_prefix": pr.Prefix})
+			}
+			prp := proxyTo(cfg, pr.Dials)
+			if len(pr.Dials) > 1 {
+				prp["load_balancing"] = obj{"selection_policy": obj{"policy": "round_robin"}, "try_duration": "3s", "try_interval": "250ms"}
+			}
+			sub = append(sub, obj{"match": []any{obj{"path": []string{pr.Prefix, pr.Prefix + "/*"}}}, "handle": append(h, prp)})
+		}
+		if r.Cache { // edge cache in front of the application (keyed by host, so never shared between services)
+			sub = append(sub, obj{"handle": []any{obj{"handler": "cache"}, rp}})
+		} else {
+			sub = append(sub, obj{"handle": []any{rp}})
+		}
+		rs = append(rs, obj{
+			"match":    []any{obj{"host": r.Hosts}},
+			"handle":   []any{obj{"handler": "subroute", "routes": sub}},
+			"terminal": true,
+		})
+	}
+	rs = append(rs, obj{"handle": []any{obj{
+		"handler": "static_response", "status_code": 404, "body": "No application is published at this address.\n",
+	}}})
+
+	server := obj{"routes": rs}
+	// Access logs of the applications' hosts only (logger "tenant", defined in Caddy's
+	// startup config): the agent turns them into per-request analytics.
+	loggers := obj{}
+	for _, r := range routes {
+		for _, h := range r.Hosts {
+			loggers[h] = []string{"tenant"}
+		}
+	}
+	if cfg.StorageEnabled() { // S3 requests: bucket triggers start functions on uploads and deletes
+		for _, h := range storageHosts(cfg) {
+			loggers[h] = []string{"s3"}
+		}
+	}
+	if len(loggers) > 0 {
+		server["logs"] = obj{"logger_names": loggers, "skip_unmapped_hosts": true}
+	}
+	apps := obj{"http": obj{"servers": obj{"main": server}}}
+	for _, r := range routes {
+		if r.Cache {
+			// Only responses that explicitly allow shared caching are kept: a response
+			// without Cache-Control is marked private (browsers behave as before).
+			apps["cache"] = obj{"ttl": "120s", "mode": "strict", "default_cache_control": "private", "max_cacheable_body_bytes": 10 << 20}
+			break
+		}
+	}
+	if cfg.SMTPSubmissionUpstream != "" {
+		// SMTP submission for tenants' apps: port 465, TLS ended here with the console's
+		// certificate (plain SMTP in development), then forwarded to the API.
+		handle := []any{obj{"handler": "proxy", "upstreams": []any{obj{"dial": []string{cfg.SMTPSubmissionUpstream}}}}}
+		if cfg.TLSMode == "acme" {
+			handle = append([]any{obj{"handler": "tls"}}, handle...)
+		}
+		apps["layer4"] = obj{"servers": obj{"smtp": obj{"listen": []string{":465"}, "routes": []any{obj{"handle": handle}}}}}
+	}
+	internal := internalRoutes(routes)
+	if cfg.TLSMode == "acme" {
+		// Private names are plain HTTP on the project networks: their own server on port 80
+		// (Caddy still adds its HTTP->HTTPS redirects for the public hosts after them).
+		if len(internal) > 0 {
+			apps["http"].(obj)["servers"].(obj)["internal"] = obj{"listen": []string{":80"}, "automatic_https": obj{"disable": true}, "routes": internal}
+		}
+		server["listen"] = []string{":443"}
+		issuer := []any{obj{"module": "acme", "ca": cfg.ACMECA}}
+		apps["tls"] = obj{"automation": obj{
+			// A certificate for an unknown host is only requested if the API approves it.
+			"on_demand": obj{"permission": obj{"module": "http", "endpoint": cfg.APIInternalURL + "/internal/tls-ask"}},
+			"policies": []any{
+				obj{"subjects": platformHosts(cfg), "issuers": issuer},
+				obj{"on_demand": true, "issuers": issuer},
+			},
+		}}
+	} else {
+		server["listen"] = []string{":80"}
+		server["automatic_https"] = obj{"disable": true}
+		server["routes"] = append(internal, rs...)
+	}
+	return obj{
+		"admin": obj{"listen": "unix/" + cfg.CaddyAdminSocket, "origins": []string{"caddy"}},
+		"apps":  apps,
+	}
+}
+
+// wafDirectives: OWASP Core Rule Set at paranoia level 1 (the default, few false
+// positives) in blocking mode. Response bodies are not inspected (memory, latency), and
+// large uploads are inspected partially instead of refused.
+const wafDirectives = `Include @coraza.conf-recommended
+Include @crs-setup.conf.example
+Include @owasp_crs/*.conf
+SecRuleEngine On
+SecResponseBodyAccess Off
+SecRequestBodyLimitAction ProcessPartial
+SecAuditEngine Off`
+
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
+}
+
+func platformHosts(cfg config.Config) []string {
+	hosts := []string{cfg.ConsoleHost}
+	if cfg.RegistryHost != "" {
+		hosts = append(hosts, hostOnly(cfg.RegistryHost))
+	}
+	if cfg.StorageEnabled() {
+		hosts = append(hosts, hostOnly(cfg.S3Host))
+	}
+	if cfg.WebmailHost != "" {
+		hosts = append(hosts, hostOnly(cfg.WebmailHost))
+	}
+	return hosts
+}
+
+// storageHosts are the names the S3 API answers to: the public host, and the one given
+// to services when it differs (development).
+func storageHosts(cfg config.Config) []string {
+	hosts := []string{hostOnly(cfg.S3Host)}
+	if h := hostOnly(s3ServiceHost(cfg)); h != hosts[0] {
+		hosts = append(hosts, h)
+	}
+	return hosts
+}
+
+// s3ServiceHost is the host[:port] of the endpoint given to services.
+func s3ServiceHost(cfg config.Config) string {
+	u := cfg.S3Endpoint()
+	if i := strings.Index(u, "://"); i >= 0 {
+		u = u[i+3:]
+	}
+	return strings.TrimRight(u, "/")
+}
+
+// loadMailServerNames returns the own server names of active mail domains.
+func (a *Agent) LoadMailServerNames(ctx context.Context) []string {
+	if a.Cfg.WebmailHost == "" && a.Cfg.StalwartURL == "" {
+		return nil
+	}
+	rows, err := a.Pool.Query(ctx, `SELECT server_name FROM mail_server_names() ORDER BY 1`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if rows.Scan(&n) == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// addMailServerNames serves mail domains' own names: the webmail answers there, and the
+// proxy keeps a certificate for each (the agent also installs it on the mail server, for
+// IMAP, POP3 and SMTP under the same name).
+func addMailServerNames(conf obj, cfg config.Config, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	apps := conf["apps"].(obj)
+	server := apps["http"].(obj)["servers"].(obj)["main"].(obj)
+	rs, _ := server["routes"].([]any)
+	route := obj{
+		"match":    []any{obj{"host": names}},
+		"handle":   []any{obj{"handler": "reverse_proxy", "upstreams": []any{obj{"dial": cfg.WebmailUpstream}}}},
+		"terminal": true,
+	}
+	server["routes"] = append([]any{route}, rs...)
+	if tlsApp, ok := apps["tls"].(obj); ok {
+		auto := tlsApp["automation"].(obj)
+		pols := auto["policies"].([]any)
+		issuer := pols[0].(obj)["issuers"]
+		auto["policies"] = append([]any{obj{"subjects": names, "issuers": issuer}}, pols...)
+	}
+}
