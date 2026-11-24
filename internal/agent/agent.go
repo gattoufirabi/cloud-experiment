@@ -28,6 +28,7 @@ import (
 	"platform/internal/config"
 	"platform/internal/db"
 	"platform/internal/docker"
+	"platform/internal/kube"
 	"platform/internal/model"
 	"platform/internal/registry"
 	"platform/internal/secure"
@@ -41,6 +42,8 @@ type Agent struct {
 	hostIndex  map[string]hostRef // application host -> organization/service (access logs)
 	bucketTrig bucketTriggers     // bucket -> function triggers (S3 requests seen by the proxy)
 	caddy      *caddyClient
+	kube       *kube.Client // set when AUTOSCALE_BACKEND=kubernetes on the primary (kube.go)
+	kubeNodes  []string     // the cluster nodes' addresses (denied to tenant pods)
 	logs       *logShipper
 	wake       chan struct{}
 	log        *slog.Logger
@@ -104,6 +107,10 @@ type job struct {
 	Revision                        int
 	Spec                            model.Spec
 	Suspended                       bool
+	// Autoscaling settings of the service (AutoMin 0 = not autoscaled) and whether it is
+	// a preview environment: they decide whether the revision runs on Kubernetes.
+	AutoMin, AutoMax, AutoCPU int
+	Preview                   bool
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -153,6 +160,11 @@ func Run(ctx context.Context, cfg config.Config) error {
 		attached:      map[string]bool{},
 		restoringDB:   map[string]bool{},
 	}
+
+	if err := a.initKube(ctx); err != nil {
+		return err
+	}
+	a.logs.kube = a.kube
 
 	a.resolveSelf(ctx)
 	a.heartbeat(ctx) // register the node before anything is placed on it
@@ -309,7 +321,8 @@ func (a *Agent) claim(ctx context.Context) (job, bool, error) {
 	err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 		var spec []byte
 		err := tx.QueryRow(ctx, `
-			SELECT d.id, d.org_id, d.service_id, s.project_id, d.revision, d.spec, o.suspended, o.slug, o.scan_policy
+			SELECT d.id, d.org_id, d.service_id, s.project_id, d.revision, d.spec, o.suspended, o.slug, o.scan_policy,
+			       s.autoscale_min, s.autoscale_max, s.autoscale_cpu, s.preview_of IS NOT NULL
 			FROM deployments d
 			JOIN services s ON s.id = d.service_id
 			JOIN projects p ON p.id = s.project_id
@@ -318,7 +331,8 @@ func (a *Agent) claim(ctx context.Context) (job, bool, error) {
 			  AND NOT coalesce((SELECT deploys_paused FROM platform_settings WHERE id = 1), false)
 			ORDER BY d.created_at
 			LIMIT 1
-			FOR UPDATE OF d SKIP LOCKED`, a.mineArgs()...).Scan(&j.ID, &j.OrgID, &j.ServiceID, &j.ProjectID, &j.Revision, &spec, &j.Suspended, &j.OrgSlug, &j.ScanPolicy)
+			FOR UPDATE OF d SKIP LOCKED`, a.mineArgs()...).Scan(&j.ID, &j.OrgID, &j.ServiceID, &j.ProjectID, &j.Revision, &spec, &j.Suspended, &j.OrgSlug, &j.ScanPolicy,
+			&j.AutoMin, &j.AutoMax, &j.AutoCPU, &j.Preview)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -372,6 +386,9 @@ func (a *Agent) deploy(ctx context.Context, j job) error {
 	netName, err := a.ensureNetwork(ctx, j)
 	if err != nil {
 		return err
+	}
+	if a.useKube(j) { // autoscaled web service, AUTOSCALE_BACKEND=kubernetes (kube.go)
+		return a.deployKube(ctx, j, netName)
 	}
 
 	a.setMessage(ctx, j.ID, "pulling image "+j.Spec.Image)
@@ -839,10 +856,11 @@ func (a *Agent) reconcile(ctx context.Context) {
 		DepID, ContainerID, OrgID, ProjectID, ServiceID, Upstream, NodeID string
 		Suspended                                                         bool
 		Count                                                             int
+		FirstInstance                                                     string // "k8s:<ns>/<name>" on Kubernetes
 	}
 	rows, err := a.pool.Query(ctx, `
 		SELECT d.id, coalesce(d.container_id, ''), d.org_id, s.project_id, d.service_id, d.upstream, coalesce(d.node_id, ''), o.suspended,
-		       greatest(1, jsonb_array_length(d.instances))
+		       greatest(1, jsonb_array_length(d.instances)), coalesce(d.instances->0->>'id', '')
 		FROM deployments d JOIN services s ON s.id = d.service_id JOIN orgs o ON o.id = d.org_id
 		JOIN projects p ON p.id = s.project_id
 		WHERE d.status = 'live' AND `+mineSQL, a.mineArgs()...)
@@ -852,7 +870,7 @@ func (a *Agent) reconcile(ctx context.Context) {
 	}
 	lives, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (live, error) {
 		var l live
-		err := r.Scan(&l.DepID, &l.ContainerID, &l.OrgID, &l.ProjectID, &l.ServiceID, &l.Upstream, &l.NodeID, &l.Suspended, &l.Count)
+		err := r.Scan(&l.DepID, &l.ContainerID, &l.OrgID, &l.ProjectID, &l.ServiceID, &l.Upstream, &l.NodeID, &l.Suspended, &l.Count, &l.FirstInstance)
 		return l, err
 	})
 	if err != nil {
@@ -949,7 +967,13 @@ func (a *Agent) reconcile(ctx context.Context) {
 	}
 
 	var running []target
+	var onKube []kubeLive
 	for _, l := range lives {
+		if ns, name, ok := parseKubeInstance(l.FirstInstance); ok { // no containers: see reconcileKube
+			onKube = append(onKube, kubeLive{DepID: l.DepID, OrgID: l.OrgID, ProjectID: l.ProjectID, ServiceID: l.ServiceID,
+				Namespace: ns, Name: name, Suspended: l.Suspended})
+			continue
+		}
 		cs := byDep[l.DepID]
 		ok := len(cs) >= l.Count
 		if l.Suspended {
@@ -964,21 +988,11 @@ func (a *Agent) reconcile(ctx context.Context) {
 		if !ok && (len(cs) > 0 || a.ranElsewhere(l.NodeID, l.Upstream)) {
 			// The project was moved here (drain, placement), or some instances were lost:
 			// start a new revision; what still runs keeps serving until it is live.
-			tag, err := a.pool.Exec(ctx, `
-				INSERT INTO deployments (org_id, service_id, revision, spec)
-				SELECT d.org_id, d.service_id, (SELECT max(revision) + 1 FROM deployments WHERE service_id = d.service_id), d.spec
-				FROM deployments d WHERE d.id = $1
-				  AND NOT EXISTS (SELECT 1 FROM deployments x WHERE x.service_id = d.service_id AND (x.status IN ('pending', 'deploying')
-				      OR (x.status = 'failed' AND x.revision > d.revision AND x.updated_at > now() - interval '5 minutes')))`, l.DepID)
-			if err == nil && tag.RowsAffected() > 0 {
-				reason := "project moved to node " + a.selfID
-				if len(cs) > 0 {
-					reason = fmt.Sprintf("%d of %d instances were lost", l.Count-len(cs), l.Count)
-				}
-				_ = auditAgent(ctx, a, l.OrgID, "deployment.redeployed", "service:"+l.ServiceID, map[string]string{"reason": reason})
-				a.log.Info("redeploying", "service", l.ServiceID, "node", a.selfID, "reason", reason)
-				a.poke()
+			reason := "project moved to node " + a.selfID
+			if len(cs) > 0 {
+				reason = fmt.Sprintf("%d of %d instances were lost", l.Count-len(cs), l.Count)
 			}
+			a.redeploy(ctx, l.DepID, l.OrgID, l.ServiceID, reason)
 			continue
 		}
 		if !ok {
@@ -999,14 +1013,32 @@ func (a *Agent) reconcile(ctx context.Context) {
 	}
 
 	a.mu.Lock()
-	a.targets = running
+	a.targets = running // Docker containers only: stats, restarts and probes use the Docker API
 	a.mu.Unlock()
 
-	a.logs.ensure(ctx, running)
+	pods := a.reconcileKube(ctx, onKube, keep, force)
+	a.logs.ensure(ctx, append(append([]target(nil), running...), pods...))
 	a.reconcileDatabases(ctx)
 	a.syncCaddy(ctx, force)
 	if force {
 		a.collectNetworks(ctx)
+	}
+}
+
+// redeploy starts a new revision of a live deployment's spec (unless one is already on
+// its way, or one failed in the last 5 minutes); what still runs keeps serving until it
+// is live.
+func (a *Agent) redeploy(ctx context.Context, depID, orgID, serviceID, reason string) {
+	tag, err := a.pool.Exec(ctx, `
+		INSERT INTO deployments (org_id, service_id, revision, spec)
+		SELECT d.org_id, d.service_id, (SELECT max(revision) + 1 FROM deployments WHERE service_id = d.service_id), d.spec
+		FROM deployments d WHERE d.id = $1
+		  AND NOT EXISTS (SELECT 1 FROM deployments x WHERE x.service_id = d.service_id AND (x.status IN ('pending', 'deploying')
+		      OR (x.status = 'failed' AND x.revision > d.revision AND x.updated_at > now() - interval '5 minutes')))`, depID)
+	if err == nil && tag.RowsAffected() > 0 {
+		_ = auditAgent(ctx, a, orgID, "deployment.redeployed", "service:"+serviceID, map[string]string{"reason": reason})
+		a.log.Info("redeploying", "service", serviceID, "node", a.selfID, "reason", reason)
+		a.poke()
 	}
 }
 

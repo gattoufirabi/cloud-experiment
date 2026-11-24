@@ -88,6 +88,7 @@ func (a *Agent) autoscale(ctx context.Context) {
 		FROM services s JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = s.org_id
 		JOIN deployments d ON d.service_id = s.id AND d.status = 'live'
 		WHERE s.autoscale_min > 0 AND NOT o.suspended AND s.preview_of IS NULL
+		  AND coalesce(d.instances->0->>'id', '') NOT LIKE 'k8s:%' -- scaled by its HorizontalPodAutoscaler (kube.go)
 		  AND NOT EXISTS (SELECT 1 FROM deployments x WHERE x.service_id = s.id AND x.status IN ('pending', 'deploying'))`)
 	if err != nil {
 		return

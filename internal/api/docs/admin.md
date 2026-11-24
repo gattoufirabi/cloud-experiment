@@ -95,6 +95,21 @@ One server runs everything (the **primary**). Add **worker nodes** for capacity:
 - **Moving projects with data:** tick **also move projects with data** when draining. For each such project the node stops it, snapshots every persistent folder and database data volume into the organization's encrypted backup repository, and hands it to the least loaded node of its cluster, which restores the volumes and starts it. The project is down while its data is copied (seconds to minutes, depending on size); the **Moves** list on the Nodes tab shows each step. A move that fails five times gives the project back to its source node, whose volumes were never changed. Moves need a backup repository every node reaches: set `BACKUP_REST_URL` (the local backup volume only works for nodes on one Docker host). The source node keeps its copy of the volumes until you clean them up.
 - Apps on workers are published only on the worker's WireGuard address; the proxy on the primary reaches them there. Builds, scans, billing and alert delivery run on the primary.
 
+## Autoscaling with Kubernetes (optional)
+
+By default the agent scales services itself. On the primary you can hand **autoscaled web services** to a single-node k3s instead (Deployments and HorizontalPodAutoscalers); databases, workers, functions, jobs, previews and services with a persistent folder or public ports stay containers. Plan about 500 MB of extra memory.
+
+1. Make sure gVisor is installed (`host/install-gvisor.sh`) and the platform is running.
+2. `sudo bash /opt/platform/host/k3s-install.sh`. It installs k3s without Traefik or ServiceLB, registers gVisor as the containerd runtime `runsc` and a RuntimeClass of that name, turns on secrets encryption, creates a ServiceAccount limited to what the agent manages and writes its kubeconfig to `/srv/platform/kube/agent.yaml`, and adds the pod network to the tenant firewall.
+3. Add `AUTOSCALE_BACKEND=kubernetes` to `deploy/.env` and run `docker compose -f compose.prod.yml up -d agent`.
+4. The agent checks the RuntimeClass at startup and refuses to start if its handler is not `runsc`. Autoscaled services move to the cluster on their next deployment (**Redeploy** to move one now).
+
+- Each project gets a namespace `sp-<project id>` with Pod Security "baseline" and a NetworkPolicy `staysa-isolation`: pods reach their own project's pods, its databases and the proxy's address on its network, DNS and the internet, but not other projects, private ranges, other nodes or cloud metadata. Only the proxy and agent containers (their platform-network addresses, which the agent reads from Docker) and the project's own pods may open connections to them.
+- The proxy reaches each service at its Service's cluster address (no NodePort is ever opened).
+- A pod can always reach its own node (NetworkPolicy does not cover that): the host firewall rule from k3s-install.sh limits it to the API server and kubelet ports, which refuse requests without credentials.
+- Going back: set `AUTOSCALE_BACKEND=docker` and restart the agent. It redeploys those services as containers, then deletes what it created in the cluster within a few minutes. Uninstall k3s afterwards with `/usr/local/bin/k3s-uninstall.sh`.
+- Check the objects with `sudo k3s kubectl get deploy,hpa,svc,netpol -A -l staysa.io/managed=true`.
+
 ## Operator console
 
 Operators can manage the platform from the browser at `/operator`: a live overview (organizations, users, live services, trials, suspensions, open incidents and invoices, builds, storage), every organization with its owner, plan, services and disk use (change the plan, suspend or restore), all invoices (mark paid or cancel) and the global audit log.
@@ -236,11 +251,17 @@ Clients' alerts cover their applications; watch the server and the platform serv
 | STALWART_URL | http://stalwart:8080 | The mail server's admin API. Empty turns hosted mailboxes off. |
 | ORPHAN_VOLUME_DAYS | 7 | Days the data volumes of a deleted service or database are kept before the agent removes them (a deletion can be undone by an operator until then). |
 | WEBMAIL_HOST | — | Public name of the webmail (for example webmail.example.com). Empty turns it off. |
+| AUTOSCALE_BACKEND | docker | `kubernetes` runs autoscaled web services of the primary on k3s (see [Autoscaling with Kubernetes](#autoscaling-with-kubernetes-optional)). |
+| KUBECONFIG, KUBE_SERVER | /etc/rancher/k3s/k3s.yaml (compose: /run/kube/agent.yaml), empty | The agent's kubeconfig; KUBE_SERVER replaces its server address. |
+| KUBE_RUNTIME_CLASS | runsc | RuntimeClass of tenant pods; its handler must be runsc unless ALLOW_INSECURE_RUNTIME=true. |
+| KUBE_INGRESS_FROM | empty | Extra CIDRs allowed into tenant pods, besides the proxy and agent containers (found automatically). |
 
 ## Admin troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
+| Agent refuses to start: RuntimeClass … must run under gVisor | Run host/k3s-install.sh after install-gvisor.sh, or check `k3s kubectl get runtimeclass runsc -o yaml` (handler: runsc). |
+| Autoscaled deploy fails with ImagePullBackOff | k3s must reach REGISTRY_HOST over HTTPS; check `k3s kubectl -n sp-<project> describe pod`. |
 | Agent refuses to start: RUNTIME must be runsc | Run host/install-gvisor.sh, or set ALLOW_INSECURE_RUNTIME=true on a development machine only. |
 | Deployments stay pending | Check `docker compose -f compose.prod.yml logs agent` and restart it; pending deployments resume. |
 | "No application is published at this address" | The service has no live deployment, its organization is suspended, or the address is misspelled. |
@@ -256,4 +277,5 @@ Clients' alerts cover their applications; watch the server and the platform serv
 - **One server:** a hardware failure or a large traffic attack takes every client down until it is repaired or restored.
 - **Backups are crash-consistent:** databases inside client containers need their own dumps.
 - **Verify on the real server:** gVisor, the tenant firewall and Let's Encrypt were tested only by scripts on a development machine.
+- **Kubernetes autoscaling** was tested on a throwaway k3s in Docker (blue/green revisions, NetworkPolicy isolation between projects, proxy access through the node, HorizontalPodAutoscaler scaling up under load), without gVisor. Still to verify on a Linux server before turning it on: `runsc` under k3s, pods reaching their project's databases across the host, and the tenant firewall rules for the pod network alongside k3s's own rules.
 - **Not built yet:** operator dashboard, two-step reset command and passkeys, API tokens and CLI for clients, email notifications, managed databases, disk quotas, builds from source, billing, several servers.

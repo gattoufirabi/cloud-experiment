@@ -60,7 +60,7 @@ Each row names what runs the feature and the path a request or change takes thro
 | Feature | What runs it | Path |
 | --- | --- | --- |
 | [Applications](/docs/applications) | Agent, Docker with gVisor, Caddy | API → PostgreSQL → agent → containers → proxy route |
-| Autoscaling | Agent, every 15 seconds, using CPU from VictoriaMetrics | at least doubles instances above 90 % CPU, removes them after 5 quiet minutes |
+| Autoscaling | Agent, every 15 seconds, using CPU from VictoriaMetrics; or, when the operator turned it on, a Kubernetes HorizontalPodAutoscaler on k3s (pods still under gVisor) | at least doubles instances above 90 % CPU, removes them after 5 quiet minutes; on Kubernetes: API → PostgreSQL → agent → Deployment + autoscaler → Service address → proxy route |
 | [Builds from git](/docs/builds) | A git container, then a rootless BuildKit container | webhook or API → agent → build → registry → deployment |
 | [Preview environments](/docs/previews) | A service linked to its parent, one instance | API or git webhook → agent → preview container → own address |
 | [Scheduled jobs](/docs/scheduled-jobs) | Agent scheduler, a fresh container per run | agent → one-off container from the current deployment → run history |

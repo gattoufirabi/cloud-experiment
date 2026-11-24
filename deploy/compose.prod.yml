@@ -157,8 +157,12 @@ services:
       MAX_CPU_MILLIS: ${MAX_CPU_MILLIS:-4000}
       MAX_MEMORY_MB: ${MAX_MEMORY_MB:-8192}
       MAIL_CERT_DIR: /run/caddy-certs
+      # Autoscaled web services on k3s instead of containers (host/k3s-install.sh): docker | kubernetes.
+      AUTOSCALE_BACKEND: ${AUTOSCALE_BACKEND:-docker}
+      KUBECONFIG: /run/kube/agent.yaml
     volumes:
       - ./secrets/master.key:/run/secrets/master.key:ro
+      - /srv/platform/kube:/run/kube:ro # the agent's least-privilege kubeconfig (only with k3s)
       - /var/run/docker.sock:/var/run/docker.sock
       - caddy-admin:/run/caddy
       - /srv/platform/caddy/caddy/certificates:/run/caddy-certs:ro # the mail host's certificate, for the mail server
