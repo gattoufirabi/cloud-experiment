@@ -150,6 +150,7 @@ func (s *Server) queueBuild(r *http.Request, tx pgx.Tx, o *orgInfo, serviceID, t
 		return 0, false, err
 	}
 	s.audit(r, tx, o.ID, "build.queued", "service:"+serviceID, map[string]any{"build": n, "trigger": trigger})
+	s.buildWake.signal() // a build server may take it
 	if _, err := tx.Exec(r.Context(), `SELECT pg_notify('deployments', 'build')`); err != nil {
 		return 0, false, err
 	}
@@ -158,66 +159,96 @@ func (s *Server) queueBuild(r *http.Request, tx pgx.Tx, o *orgInfo, serviceID, t
 
 // ---------- console ----------
 
-func (s *Server) saveSource(w http.ResponseWriter, r *http.Request) {
-	repo := strings.TrimSpace(r.PostFormValue("repo"))
-	branch := strings.TrimSpace(r.PostFormValue("branch"))
-	dir := strings.Trim(strings.TrimSpace(r.PostFormValue("dir")), "/")
-	token := strings.TrimSpace(r.PostFormValue("token"))
-	clearToken := r.PostFormValue("clear_token") == "1"
-	buildOn := "platform"
-	if r.PostFormValue("build_on") == "servers" {
-		buildOn = "servers"
+// sourceInput is a service's git source and where its builds run.
+type sourceInput struct {
+	Repo, Branch, Dir, Token string
+	ClearToken, PRPreviews   bool
+	BuildOn                  string
+	BuildLabels              []string
+}
+
+// check normalizes the input and returns what is wrong with it, or "".
+func (s *Server) checkSource(in *sourceInput) string {
+	in.Repo, in.Branch, in.Token = strings.TrimSpace(in.Repo), strings.TrimSpace(in.Branch), strings.TrimSpace(in.Token)
+	in.Dir = strings.Trim(strings.TrimSpace(in.Dir), "/")
+	if in.Branch == "" {
+		in.Branch = "main"
 	}
-	buildLabels, labelErr := parseLabels(r.PostFormValue("build_labels"))
-	if branch == "" {
-		branch = "main"
+	if in.BuildOn == "" {
+		in.BuildOn = "platform"
 	}
-	var formErr string
+	if in.BuildLabels == nil {
+		in.BuildLabels = []string{}
+	}
 	switch {
-	case repo != "" && s.validRepoFor(repo, buildOn == "servers") != nil:
-		formErr = s.validRepoFor(repo, buildOn == "servers").Error()
-	case labelErr != nil:
+	case in.BuildOn != "platform" && in.BuildOn != "servers":
+		return "Build on: platform or servers."
+	case in.Repo != "" && s.validRepoFor(in.Repo, in.BuildOn == "servers") != nil:
+		return s.validRepoFor(in.Repo, in.BuildOn == "servers").Error()
+	case !branchRe.MatchString(in.Branch) || strings.Contains(in.Branch, ".."):
+		return "Branch: letters, digits, dots, dashes, underscores and slashes."
+	case !dirRe.MatchString(in.Dir) || strings.Contains(in.Dir, ".."):
+		return "Folder: a path inside the repository such as services/web, or empty for the root."
+	case len(in.Token) > 500:
+		return "The token is too long."
+	}
+	return ""
+}
+
+// storeSource saves a checked source; "" or why it cannot be saved.
+func (s *Server) storeSource(r *http.Request, tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo, in sourceInput) (string, error) {
+	if sv.isPreview() {
+		return "Previews are deployed from images; set the repository on the service.", nil
+	}
+	prPreviews := in.PRPreviews && in.Repo != ""
+	if _, err := tx.Exec(r.Context(), `UPDATE services SET source_repo = $2, source_branch = $3, source_dir = $4, pr_previews = $5, build_on = $6, build_labels = $7 WHERE id = $1`,
+		sv.ID, in.Repo, in.Branch, in.Dir, prPreviews, in.BuildOn, in.BuildLabels); err != nil {
+		return "", err
+	}
+	// A build still waiting goes where the service now builds.
+	if _, err := tx.Exec(r.Context(), `UPDATE builds SET runner = $2, runner_labels = $3 WHERE service_id = $1 AND status = 'queued'`,
+		sv.ID, in.BuildOn, in.BuildLabels); err != nil {
+		return "", err
+	}
+	s.buildWake.signal()
+	switch {
+	case in.Token != "":
+		enc, err := s.box.Seal([]byte(in.Token), "source:"+sv.ID)
+		if err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET source_token_enc = $2 WHERE id = $1`, sv.ID, enc); err != nil {
+			return "", err
+		}
+	case in.ClearToken || in.Repo == "":
+		if _, err := tx.Exec(r.Context(), `UPDATE services SET source_token_enc = NULL WHERE id = $1`, sv.ID); err != nil {
+			return "", err
+		}
+	}
+	s.audit(r, tx, o.ID, "service.source", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"repo": in.Repo, "branch": in.Branch, "dir": in.Dir, "token_set": in.Token != "", "pr_previews": prPreviews, "build_on": in.BuildOn, "build_labels": in.BuildLabels})
+	return "", nil
+}
+
+func (s *Server) saveSource(w http.ResponseWriter, r *http.Request) {
+	in := sourceInput{Repo: r.PostFormValue("repo"), Branch: r.PostFormValue("branch"), Dir: r.PostFormValue("dir"),
+		Token: r.PostFormValue("token"), ClearToken: r.PostFormValue("clear_token") == "1", PRPreviews: r.PostFormValue("pr_previews") == "1",
+		BuildOn: "platform"}
+	if r.PostFormValue("build_on") == "servers" {
+		in.BuildOn = "servers"
+	}
+	labels, labelErr := parseLabels(r.PostFormValue("build_labels"))
+	in.BuildLabels = labels
+	formErr := s.checkSource(&in)
+	if labelErr != nil && formErr == "" {
 		formErr = labelErr.Error()
-	case !branchRe.MatchString(branch) || strings.Contains(branch, ".."):
-		formErr = "Branch: letters, digits, dots, dashes, underscores and slashes."
-	case !dirRe.MatchString(dir) || strings.Contains(dir, ".."):
-		formErr = "Folder: a path inside the repository such as services/web, or empty for the root."
-	case len(token) > 500:
-		formErr = "The token is too long."
 	}
 	o, p, sv, err, ok := s.withService(w, r, "developer", func(tx pgx.Tx, o *orgInfo, p *projectInfo, sv *serviceInfo) error {
 		if formErr != "" {
 			return nil
 		}
-		if sv.isPreview() {
-			formErr = "Previews are deployed from images; set the repository on the service."
-			return nil
-		}
-		if _, err := tx.Exec(r.Context(), `UPDATE services SET source_repo = $2, source_branch = $3, source_dir = $4, pr_previews = $5, build_on = $6, build_labels = $7 WHERE id = $1`,
-			sv.ID, repo, branch, dir, r.PostFormValue("pr_previews") == "1" && repo != "", buildOn, buildLabels); err != nil {
-			return err
-		}
-		// A build still waiting goes where the service now builds.
-		if _, err := tx.Exec(r.Context(), `UPDATE builds SET runner = $2, runner_labels = $3 WHERE service_id = $1 AND status = 'queued'`,
-			sv.ID, buildOn, buildLabels); err != nil {
-			return err
-		}
-		switch {
-		case token != "":
-			enc, err := s.box.Seal([]byte(token), "source:"+sv.ID)
-			if err != nil {
-				return err
-			}
-			if _, err := tx.Exec(r.Context(), `UPDATE services SET source_token_enc = $2 WHERE id = $1`, sv.ID, enc); err != nil {
-				return err
-			}
-		case clearToken || repo == "":
-			if _, err := tx.Exec(r.Context(), `UPDATE services SET source_token_enc = NULL WHERE id = $1`, sv.ID); err != nil {
-				return err
-			}
-		}
-		s.audit(r, tx, o.ID, "service.source", "service:"+p.Slug+"/"+sv.Slug, map[string]any{"repo": repo, "branch": branch, "dir": dir, "token_set": token != "", "pr_previews": r.PostFormValue("pr_previews") == "1", "build_on": buildOn, "build_labels": buildLabels})
-		return nil
+		var err error
+		formErr, err = s.storeSource(r, tx, o, p, sv, in)
+		return err
 	})
 	if !ok {
 		return

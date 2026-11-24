@@ -192,6 +192,7 @@ func (s *Server) queuePRBuild(r *http.Request, tx pgx.Tx, o *orgInfo, serviceID,
 		return 0, err
 	}
 	s.audit(r, tx, o.ID, "build.queued", "service:"+serviceID, map[string]any{"build": n, "trigger": "pull_request", "pull_request": pr, "branch": branch})
+	s.buildWake.signal() // a build server may take it
 	_, err = tx.Exec(r.Context(), `SELECT pg_notify('deployments', 'build')`)
 	return n, err
 }

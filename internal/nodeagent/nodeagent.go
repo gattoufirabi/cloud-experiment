@@ -150,6 +150,9 @@ func (a *Agent) every(ctx context.Context, d time.Duration, f func(context.Conte
 
 // ---------- API ----------
 
+// longPollKey marks a request the API may hold for a while.
+type longPollKey struct{}
+
 func (a *Agent) call(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
@@ -172,7 +175,11 @@ func (a *Agent) call(ctx context.Context, method, path string, in, out any) erro
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := a.hc.Do(req)
+	hc := a.hc
+	if ctx.Value(longPollKey{}) != nil { // the API holds the request (build claims)
+		hc = &http.Client{Timeout: 60 * time.Second, Transport: a.hc.Transport}
+	}
+	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}

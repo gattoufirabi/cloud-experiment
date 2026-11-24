@@ -875,3 +875,4 @@ dialog.modal .stack, dialog.modal .form-grid { max-width: none; }
 .dg .dg-zone-tenant { fill: color-mix(in srgb, var(--ok) 8%, transparent); stroke: var(--ok); }
 .dg .dg-zt-edge { fill: var(--warn); } .dg .dg-zt-ctrl { fill: var(--primary-text); }
 .dg .dg-zt-agent { fill: var(--dg-agent); } .dg .dg-zt-tenant { fill: var(--ok); }
+input.num-in { width: 4.5em; display: inline-block; }

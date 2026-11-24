@@ -51,7 +51,21 @@ type serverView struct {
 	Projects                                        []string
 	Builds                                          bool     // runs the organization's builds (069)
 	Labels                                          []string // matched against a service's build labels
-	Building                                        int      // number of the build running now, 0 when idle
+	Building                                        []int    // numbers of the builds running now
+	MaxBuilds                                       int      // builds at once (070)
+	Clean                                           bool     // each build starts from an empty cache
+}
+
+// AutoLabels are the labels the server has without anyone typing them: its operating
+// system and architecture, as its agent reports them.
+func (v serverView) AutoLabels() []string {
+	var out []string
+	for _, l := range []string{strings.ToLower(v.OS), strings.ToLower(v.Arch)} {
+		if l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func (v serverView) LabelText() string { return strings.Join(v.Labels, ", ") }
@@ -80,7 +94,8 @@ func (s *Server) renderServers(w http.ResponseWriter, r *http.Request, o *orgInf
 			SELECT n.id, n.name, n.os, n.arch, n.docker_version, n.agent_version, n.cpus, n.mem_mb, n.mem_avail_mb, n.disk_free_mb,
 			       n.load1::float8, `+serverOnlineSQL+`, n.last_seen, n.created_at,
 			       coalesce((SELECT array_agg(p.slug ORDER BY p.slug) FROM projects p WHERE p.node_id = n.id), '{}'),
-			       n.builds, n.labels, coalesce((SELECT b.number FROM builds b WHERE b.node_id = n.id AND b.status = 'running' LIMIT 1), 0)
+			       n.builds, n.labels, coalesce((SELECT array_agg(b.number ORDER BY b.number) FROM builds b WHERE b.node_id = n.id AND b.status = 'running'), '{}'),
+			       n.max_builds, n.clean_builds
 			FROM nodes n WHERE n.role = 'customer' ORDER BY n.name, n.id`)
 		if err != nil {
 			return err
@@ -88,7 +103,7 @@ func (s *Server) renderServers(w http.ResponseWriter, r *http.Request, o *orgInf
 		for rows.Next() {
 			var v serverView
 			if err := rows.Scan(&v.ID, &v.Name, &v.OS, &v.Arch, &v.DockerVersion, &v.AgentVersion, &v.CPUs, &v.MemMB, &v.MemAvailMB,
-				&v.DiskFreeMB, &v.Load1, &v.Online, &v.LastSeen, &v.Created, &v.Projects, &v.Builds, &v.Labels, &v.Building); err != nil {
+				&v.DiskFreeMB, &v.Load1, &v.Online, &v.LastSeen, &v.Created, &v.Projects, &v.Builds, &v.Labels, &v.Building, &v.MaxBuilds, &v.Clean); err != nil {
 				rows.Close()
 				return err
 			}

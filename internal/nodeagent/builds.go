@@ -15,33 +15,84 @@ import (
 	"platform/internal/nodeproto"
 )
 
-// Builds on this server (migration 069): when the organization turned builds on for
-// it, the agent claims waiting builds one at a time and runs the same steps as the
-// platform's builder: the helper image clones the repository (or unpacks the uploaded
-// archive) into a fresh volume, rootless BuildKit builds it into an image tarball, and
-// the agent loads and pushes it with the build's push token. The API records the
-// result and queues the deployment.
+// Builds on this server (migrations 069, 070): when the organization turned builds on
+// for it, the agent claims waiting builds (as many at once as the organization allows,
+// up to maxBuildsHere) and runs the same steps as the platform's builder: the helper
+// image clones the repository (or unpacks the uploaded archive) into a fresh volume,
+// rootless BuildKit builds it into an image tarball, and the agent loads and pushes it
+// with the build's push token. The API records the result and queues the deployment.
+// The claim request is held by the API until a build comes (long polling), so a build
+// starts about a second after it is queued.
 
-const buildNetwork = "pn-build"
+const (
+	buildNetwork  = "pn-build"
+	maxBuildsHere = 8 // the API never hands more (nodes.max_builds)
+	claimWait     = 20 * time.Second
+)
 
 func (a *Agent) buildWorker(ctx context.Context) {
-	t := time.NewTicker(5 * time.Second)
-	defer t.Stop()
-	for {
-		var job nodeproto.BuildJob
-		if err := a.call(ctx, http.MethodPost, "/node/v1/builds/claim", struct{}{}, &job); err != nil {
-			if ctx.Err() == nil && !strings.Contains(err.Error(), "HTTP 401") {
-				a.log.Warn("claim build", "err", err)
-			}
-		} else if job.ID != "" {
-			a.log.Info("build claimed", "build", job.ID, "number", job.Number)
-			a.runBuild(ctx, job)
-			continue // look for the next one at once
-		}
+	var mu sync.Mutex
+	running := map[string]bool{}
+	finished := make(chan struct{}, maxBuildsHere)
+	pause := func(d time.Duration) bool { // until a build ends or d passes
+		t := time.NewTimer(d)
+		defer t.Stop()
 		select {
 		case <-ctx.Done():
-			return
+			return false
+		case <-finished:
 		case <-t.C:
+		}
+		return true
+	}
+	for {
+		mu.Lock()
+		ids := make([]string, 0, len(running))
+		for id := range running {
+			ids = append(ids, id)
+		}
+		mu.Unlock()
+		if len(ids) >= maxBuildsHere {
+			if !pause(time.Minute) {
+				return
+			}
+			continue
+		}
+		var job nodeproto.BuildJob
+		start := time.Now()
+		cctx := context.WithValue(ctx, longPollKey{}, true)
+		err := a.call(cctx, http.MethodPost, "/node/v1/builds/claim", nodeproto.BuildClaim{Running: ids, WaitSec: int(claimWait.Seconds())}, &job)
+		switch {
+		case err != nil:
+			if ctx.Err() != nil {
+				return
+			}
+			if !strings.Contains(err.Error(), "HTTP 401") {
+				a.log.Warn("claim build", "err", err)
+			}
+			if !pause(5 * time.Second) {
+				return
+			}
+		case job.ID != "":
+			a.log.Info("build claimed", "build", job.ID, "number", job.Number)
+			mu.Lock()
+			running[job.ID] = true
+			mu.Unlock()
+			go func() {
+				a.runBuild(ctx, job)
+				mu.Lock()
+				delete(running, job.ID)
+				mu.Unlock()
+				select {
+				case finished <- struct{}{}:
+				default:
+				}
+			}()
+		case time.Since(start) < 2*time.Second:
+			// Answered at once: builds are off here, or as many run as allowed.
+			if !pause(10 * time.Second) {
+				return
+			}
 		}
 	}
 }
@@ -167,7 +218,16 @@ func (a *Agent) build(ctx context.Context, b *buildRun, timeout time.Duration) (
 		return "", "", fmt.Errorf("create build volume: %w", err)
 	}
 	defer a.dk.VolumeRemove(context.Background(), vol)
-	if err := a.dk.VolumeCreate(ctx, cache, map[string]string{"staysa.node.build-cache": job.ServiceID}); err != nil {
+	if job.Clean {
+		// A clean build starts from nothing and leaves nothing: its own cache volume,
+		// removed with the build.
+		cache = "pn-bcache-clean-" + id
+		b.step("clean build: no cache from earlier builds, none kept")
+		if err := a.dk.VolumeCreate(ctx, cache, labels); err != nil {
+			return "", "", fmt.Errorf("create cache volume: %w", err)
+		}
+		defer a.dk.VolumeRemove(context.Background(), cache)
+	} else if err := a.dk.VolumeCreate(ctx, cache, map[string]string{"staysa.node.build-cache": job.ServiceID}); err != nil {
 		return "", "", fmt.Errorf("create cache volume: %w", err)
 	}
 
@@ -255,10 +315,12 @@ func (a *Agent) build(ctx context.Context, b *buildRun, timeout time.Duration) (
 		HostConfig: docker.HostConfig{
 			NetworkMode: buildNetwork, PidsLimit: 4096,
 			// Rootless BuildKit maps its user namespace with newuidmap/newgidmap (setuid);
-			// every other capability is dropped. The default seccomp and AppArmor
-			// profiles block the mounts it needs, as on most Docker hosts.
+			// every other capability is dropped. Docker's default seccomp and AppArmor
+			// profiles block the mounts it needs; buildSeccomp allows those and still
+			// refuses the system calls a build never needs (see seccomp.go). AppArmor
+			// profiles must be loaded on the host, which the agent cannot do.
 			CapDrop: []string{"ALL"}, CapAdd: []string{"SETUID", "SETGID"},
-			SecurityOpt: []string{"seccomp=unconfined", "apparmor=unconfined"},
+			SecurityOpt: []string{"seccomp=" + buildSeccomp, "apparmor=unconfined"},
 			Mounts: []docker.Mount{{Type: "volume", Source: vol, Target: "/src"},
 				{Type: "volume", Source: cache, Target: "/home/user/.local/share/buildkit"}},
 			LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "16m"}},

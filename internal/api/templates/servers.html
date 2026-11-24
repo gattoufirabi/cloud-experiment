@@ -39,11 +39,14 @@
           <form method="post" action="{{$.Org.Path}}/servers/{{.ID}}/builds" class="stack flush">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
             <label class="check"><input type="checkbox" name="builds" value="1"{{if .Builds}} checked{{end}}> runs builds</label>
-            <input name="labels" value="{{.LabelText}}" placeholder="labels, e.g. gpu, arm64" maxlength="330" aria-label="Labels of server {{.Name}}">
+            <input name="labels" value="{{.LabelText}}" placeholder="labels, e.g. gpu, large" maxlength="330" aria-label="Labels of server {{.Name}}">
+            <label class="small">builds at once <input type="number" name="max_builds" value="{{.MaxBuilds}}" min="1" max="8" class="num-in" aria-label="Builds at once on server {{.Name}}"></label>
+            <label class="check small"><input type="checkbox" name="clean" value="1"{{if .Clean}} checked{{end}}> clean builds (no cache kept)</label>
             <button type="submit" class="secondary small">Save</button>
           </form>
-          {{else}}{{if .Builds}}runs builds{{range $i, $l := .Labels}}{{if not $i}} · {{else}}, {{end}}<code>{{$l}}</code>{{end}}{{else}}<span class="muted">off</span>{{end}}{{end}}
-          {{with .Building}}<span class="small">building #{{.}}</span>{{end}}</td>
+          {{else}}{{if .Builds}}runs builds, {{.MaxBuilds}} at once{{if .Clean}}, clean{{end}}{{range $i, $l := .Labels}}{{if not $i}} · {{else}}, {{end}}<code>{{$l}}</code>{{end}}{{else}}<span class="muted">off</span>{{end}}{{end}}
+          {{with .AutoLabels}}<span class="small muted">also labelled {{range $i, $l := .}}{{if $i}}, {{end}}<code>{{$l}}</code>{{end}} (automatic)</span>{{end}}
+          {{with .Building}}<span class="small">building {{range $i, $n := .}}{{if $i}}, {{end}}#{{$n}}{{end}}</span>{{end}}</td>
         {{if $.CanAdmin}}<td>
           <form method="post" action="{{$.Org.Path}}/servers/{{.ID}}/delete" class="inline flush" data-confirm="Remove server {{.Name}}? Its token stops working at once.">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">

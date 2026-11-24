@@ -80,6 +80,7 @@ func (s *Server) queueZipBuild(r *http.Request, tx pgx.Tx, o *orgInfo, serviceID
 		return 0, err
 	}
 	s.audit(r, tx, o.ID, "build.queued", "service:"+serviceID, map[string]any{"build": n, "trigger": "zip", "archive": name, "bytes": len(archive)})
+	s.buildWake.signal() // a build server may take it
 	if _, err := tx.Exec(r.Context(), `SELECT pg_notify('deployments', 'build')`); err != nil {
 		return 0, err
 	}

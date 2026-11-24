@@ -52,10 +52,12 @@ To bring a project back, move it to **the platform**. A move deploys the applica
 
 Your servers can also run your builds from git and zip archives, like self-hosted agents in Azure Pipelines or GitHub Actions. Builds then use your hardware, are not billed as build minutes, and can reach git servers on your own network, such as an on-premises GitLab.
 
-1. In the **Servers** table, tick **runs builds** for the server and select **Save**. Optionally give it labels, such as `gpu`, `arm64` or `large`, separated by commas.
-2. On a service's **Builds** tab, under **Source**, set **Build on** to **your build servers**. Under **Server labels**, list the labels a server must have to take this service's builds; leave it empty for any build server.
+1. In the **Servers** table, tick **runs builds** for the server and select **Save**. Optionally give it labels, such as `gpu` or `large`, separated by commas. Its operating system and architecture, such as `linux` and `amd64` or `arm64`, are labels already: the table shows them as automatic.
+2. Set **builds at once** to how many builds the server may run at the same time, from 1 to 8. Count about 2 CPU cores and 2 GB of memory per build.
+3. Tick **clean builds** to start every build from an empty cache and keep nothing after it, like a throwaway CI agent. Builds are slower, but nothing from one build can reach the next.
+4. On a service's **Builds** tab, under **Source**, set **Build on** to **your build servers**. Under **Server labels**, list the labels a server must have to take this service's builds; leave it empty for any build server.
 
-A server takes one build at a time. To run several builds at once, attach more servers. A server does not need to run any project to run builds.
+A server does not need to run any project to run builds. You can also set all of this with the [API](/docs/builds#api) or [Terraform](/docs/terraform) (`staysa_server_builds` and `staysa_service_source`).
 
 ### Remove a server
 
@@ -100,12 +102,12 @@ Containers are created with the application's CPU and memory limits, without swa
 
 ### How a build runs on your server
 
-1. The agent asks every 5 seconds for a waiting build of your organization that it may run: the service builds on your servers, and the server has every label the service asks for.
+1. The agent keeps a request open to the platform, which answers as soon as a build of your organization is waiting that the server may run: the service builds on your servers, the server has every label the service asks for, and it runs fewer builds than its **builds at once**. A build usually starts within a second or two.
 2. It gets the source settings, the repository's read token if there is one, and a push token. The push token only works for that service's repository in your registry space, and only while the build runs.
 3. It runs the same steps as the platform: a helper container clones the branch (or unpacks the archive), then rootless BuildKit builds the Dockerfile, or uses Railpack when there is none. The helper image is built on your server at the first build.
 4. It pushes the image, sends the log as it goes, and reports the result. The platform records the image and starts the deployment.
 
-Build containers drop all capabilities except the few rootless BuildKit needs, and run on their own Docker network. On your server, BuildKit runs without the default seccomp and AppArmor profiles, which block the mounts it needs; it still runs as a non-root user. If a server stops reporting for 3 minutes, its build fails and can be started again.
+Build containers drop all capabilities except the few rootless BuildKit needs, and run on their own Docker network. BuildKit runs as a non-root user. Docker's default seccomp profile blocks the mounts rootless BuildKit needs, so it runs with its own profile instead: it allows those mounts and refuses the system calls a build never needs, such as loading kernel modules, eBPF, io_uring, `userfaultfd`, kernel tracing, rebooting and changing the clock. AppArmor is off for BuildKit, because a profile has to be loaded on the host. With **clean builds**, each build also gets its own cache, removed afterwards. If a server stops reporting for 3 minutes, its builds fail and can be started again.
 
 ### Billing and limits
 
@@ -135,7 +137,7 @@ The server must reach the registry over HTTPS. Images from Docker Hub or other p
 
 ### Builds stay "waiting for a build server"
 
-No server can take them. Check that a server is online, has **runs builds** ticked, and has every label listed under the service's **Server labels**. A build no server takes within an hour fails.
+No server can take them. Check that a server is online, has **runs builds** ticked, and has every label listed under the service's **Server labels** (its own labels or its automatic ones). If the servers are busy, raise **builds at once** or attach another server. A build no server takes within an hour fails.
 
 ### A build on my server fails at "build helper image" or with "operation not permitted"
 

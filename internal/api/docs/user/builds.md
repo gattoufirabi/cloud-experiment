@@ -88,10 +88,10 @@ Add `?deploy=false` to only build, and `?filename=app.zip` to name it in the log
 
 Builds can run on your own machines instead of the platform's, like self-hosted CI agents: a VM at AWS or Azure, or hardware of your own, attached as described in [Your own servers](/docs/servers#run-builds-on-your-servers).
 
-1. On **Your servers**, tick **runs builds** for one or more servers. Give them labels if they differ, for example `gpu` or `arm64`.
+1. On **Your servers**, tick **runs builds** for one or more servers. Give them labels if they differ, for example `gpu` or `large`; their operating system and architecture (`linux`, `amd64`, `arm64`) are labels already. Set how many builds each runs at once, and whether every build starts clean.
 2. On the service's **Builds** tab, under **Source**, set **Build on** to **your build servers**. To pick particular servers, enter the labels they must have under **Server labels**.
 
-Builds from git, from the webhook, from pull requests and from zip archives then wait for one of those servers, which takes them one at a time. The builds list shows which server ran each build. The image goes to your registry space and is deployed as usual, whether the service runs on the platform or on a server.
+Builds from git, from the webhook, from pull requests and from zip archives then wait for one of those servers, which takes them within a second or two. The builds list shows which server ran each build. The image goes to your registry space and is deployed as usual, whether the service runs on the platform or on a server.
 
 ## Technical reference
 
@@ -107,7 +107,7 @@ Builds from git, from the webhook, from pull requests and from zip archives then
 | Builds at a time per service | 1 | Starting a build while one is waiting reuses the waiting one. |
 | Builds waiting or running per organization | 5 | |
 | Zip archive upload | 100 MB | May unpack to 500 MB and 20,000 files. |
-| Builds on your own servers | no CPU or memory limit, not billed | One build at a time per server; same time and image size limits. A build no server takes within an hour fails. |
+| Builds on your own servers | no CPU or memory limit, not billed | 1 to 8 builds at once per server (**builds at once**); same time and image size limits. A build no server takes within an hour fails. |
 
 ### API
 
@@ -116,8 +116,14 @@ Builds from git, from the webhook, from pull requests and from zip archives then
 | POST | `/api/v1/projects/PROJECT/services/SERVICE/builds` | developer | Start a build of the configured repository. Optional body `{"deploy": false}` to only build. |
 | GET | `/api/v1/projects/PROJECT/services/SERVICE/builds/N` | viewer | Status and log of build N. |
 | POST | `/api/v1/projects/PROJECT/services/SERVICE/zip` | developer | Build (and deploy) a zip archive sent as the body. |
+| GET | `/api/v1/projects/PROJECT/services/SERVICE/source` | viewer | Repository, branch, folder, pull request previews and where builds run. |
+| PUT | `/api/v1/projects/PROJECT/services/SERVICE/source` | developer | Replace them, for example `{"repo": "https://gitlab.internal.example/shop/web", "build_on": "servers", "build_labels": ["large"]}`. |
+| GET | `/api/v1/servers` | viewer | Your servers and their build settings. |
+| PUT | `/api/v1/servers/ID/builds` | admin | `{"enabled": true, "labels": ["large"], "max_builds": 2, "clean": false}`. |
 
 Starting a build or uploading a zip answers `202` with `number`, `status` (`queued`) and `status_url` (also in the `Location` header). `GET …/builds/N` returns `number`, `status`, `commit`, `image`, `error`, `log`, `created_at`, `finished_at`, `runs_on` (`platform` or `servers`) and `server` (the build server that took it). Errors: `403` when the plan does not include builds, `409` when builds are not enabled on the platform or no repository is set, `429` when 5 builds of the organization are already waiting or running, `413` when a zip is over 100 MB.
+
+The source body takes `repo`, `branch` (default `main`), `dir`, `pr_previews`, `build_on` (`platform` or `servers`), `build_labels` and `token`. Fields left out take their defaults, except `token`: it is kept unless given, and `""` removes it. The answer never includes the token, only `has_token`. A server answers `id`, `name`, `online`, `os`, `arch`, `builds`, `labels`, `auto_labels`, `max_builds`, `clean_builds` and `running_builds`. The server endpoints need a token for the whole organization, not one limited to a project.
 
 Zip query parameters:
 

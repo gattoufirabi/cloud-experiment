@@ -61,6 +61,7 @@ type Server struct {
 	fnWait        fnWaiters // requests waiting for a function's result
 	oidc          *oidc.Client
 	oidcOnce      sync.Once
+	buildWake     *buildWake  // wakes build servers waiting for a build (serverbuilds.go)
 	tunnels       *tunnelPool // idle tunnel connections of customer servers
 }
 
@@ -99,7 +100,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 		dummyHash: dummy, hc: &http.Client{Timeout: 10 * time.Second}, regKey: regKey,
 		assetV: assetVersion(), docs: docs,
 		wa: wa, ceremonies: &ceremonyStore{m: map[string]ceremony{}}, pow: newPowStore(),
-		tunnels: newTunnelPool(),
+		tunnels:   newTunnelPool(),
+		buildWake: newBuildWake(),
 	}
 
 	public := &http.Server{

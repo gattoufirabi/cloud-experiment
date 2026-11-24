@@ -139,6 +139,16 @@ type BuildJob struct {
 	RailpackFrontend string `json:"railpack_frontend"`
 	TimeoutSec       int    `json:"timeout_sec"`
 	MaxImageMB       int    `json:"max_image_mb"`
+	// Clean: the server starts the build from an empty cache and keeps nothing after.
+	Clean bool `json:"clean,omitempty"`
+}
+
+// BuildClaim asks for a build (POST /node/v1/builds/claim). Running lists the builds
+// the server is running now; the API holds the request up to WaitSec seconds (at most
+// 25) until a build comes.
+type BuildClaim struct {
+	Running []string `json:"running"`
+	WaitSec int      `json:"wait_sec,omitempty"`
 }
 
 // BuildLogReport carries the whole log so far (POST /node/v1/builds/{id}/log). The API

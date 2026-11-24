@@ -20,6 +20,8 @@ The provider can manage:
 | `staysa_domain` | A custom domain of an application, with the DNS records to create. |
 | `staysa_dns_zone`, `staysa_dns_record` | A zone hosted on the platform and its records. |
 | `staysa_bucket` | An object storage bucket. |
+| `staysa_service_source` | The git repository an application is built from, and where its builds run. |
+| `staysa_server_builds` | One of your own servers running builds, like a self-hosted CI agent. |
 
 Data sources `staysa_project`, `staysa_service` and `staysa_database` read existing objects without managing them.
 
@@ -149,6 +151,8 @@ tofu import staysa_project_variable.region shop/REGION
 tofu import staysa_dns_zone.main example.com
 tofu import staysa_dns_record.www example.com/RECORD-ID
 tofu import staysa_bucket.uploads uploads
+tofu import staysa_service_source.web shop/web
+tofu import staysa_server_builds.builder1 SERVER-ID
 ```
 
 Write the matching `resource` block first, then run `tofu plan` to see what still differs.
@@ -216,6 +220,8 @@ Deleting a database needs an admin token.
 | `staysa_dns_zone` | `domain`; computed `status`, `nameservers` |
 | `staysa_dns_record` | `zone`, `name`, `type`, `value`, `priority`, `ttl`; any change replaces the record |
 | `staysa_bucket` | `name`, `quota_mb`; computed `s3_name`, `endpoint`, `region` |
+| `staysa_service_source` | `project`, `service`, `repo`, `branch` (default `main`), `dir`, `token` (sensitive), `pr_previews`, `build_on` (`platform` or `servers`), `build_labels`; computed `has_token`. Destroying it removes the repository from the application. |
+| `staysa_server_builds` | `server`, `labels`, `max_builds` (1 to 8, default 1), `clean`; computed `name`, `auto_labels`. Needs an admin token for the whole organization. Destroying it stops the server taking builds. |
 
 ### What the provider cannot see
 
