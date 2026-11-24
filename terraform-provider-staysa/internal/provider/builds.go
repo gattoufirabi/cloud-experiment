@@ -260,7 +260,7 @@ func (r *serverBuildsResource) put(ctx context.Context, m *serverBuildsModel, en
 		return
 	}
 	var out serverAPI
-	if err := r.c.Do(ctx, "PUT", "/api/v1/servers/"+client.P(m.Server.ValueString())+"/builds", body, &out); err != nil {
+	if err := r.c.Do(ctx, "PUT", "/servers/"+client.P(m.Server.ValueString())+"/builds", body, &out); err != nil {
 		apiDiag(diags, "saving the server's build settings", err)
 		return
 	}
@@ -286,7 +286,7 @@ func (r *serverBuildsResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 	var out serverAPI
-	err := r.c.Do(ctx, "GET", "/api/v1/servers/"+client.P(m.Server.ValueString()), nil, &out)
+	err := r.c.Do(ctx, "GET", "/servers/"+client.P(m.Server.ValueString()), nil, &out)
 	if notFound(err) || (err == nil && !out.Builds) {
 		resp.State.RemoveResource(ctx) // server removed, or builds turned off outside Terraform
 		return
@@ -317,7 +317,7 @@ func (r *serverBuildsResource) Delete(ctx context.Context, req resource.DeleteRe
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	err := r.c.Do(ctx, "PUT", "/api/v1/servers/"+client.P(m.Server.ValueString())+"/builds",
+	err := r.c.Do(ctx, "PUT", "/servers/"+client.P(m.Server.ValueString())+"/builds",
 		map[string]any{"enabled": false, "labels": []string{}, "max_builds": 1, "clean": false}, nil)
 	if err != nil && !notFound(err) {
 		apiDiag(&resp.Diagnostics, "turning builds off on the server", err)

@@ -2199,6 +2199,55 @@ check "the server took them at once (long polling, not a 5-second poll)" "$(owne
 check "clean builds kept no cache: no volume left behind, the log says so" "$(own_b b.log | grep -c 'clean build'):$(docker volume ls -q | grep -c '^pn-bcache-clean-')" "1:0"
 check "[B] cannot change A's server's build settings" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/servers/$NID/builds" -d csrf=$CSRF_B -d builds=0 | grep -c 'err='):$(owner_sql "SELECT builds FROM nodes WHERE id = '$NID'")" "0:t"
 check "builds on the server are audited" "$(owner_sql "SELECT count(DISTINCT action) FROM audit_events WHERE org_id = '$ORG_A' AND action IN ('server.builds','build.claimed','build.done') AND (action <> 'build.claimed' OR detail->>'server' = '$NID')")" 3
+# The Terraform provider, run by OpenTofu: the provider built from this repository
+# (dev_overrides), against this console, on the same network as the server.
+TFD="$TMP/tofu"; mkdir -p "$TFD/plugins" "$TFD/work" "$TFD/imp"
+(cd "$(dirname "$0")/../terraform-provider-staysa" 2>/dev/null || cd /c/Users/MSI/Desktop/DEV/Devops/platform/terraform-provider-staysa; CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$TFD/plugins/terraform-provider-staysa" .)
+printf '%s\n' 'provider_installation {' '  dev_overrides { "registry.opentofu.org/gattoufirabi/staysa" = "/plugins" }' '  direct {}' '}' > "$TFD/tofurc"
+cat > "$TFD/work/main.tf" <<TF
+terraform {
+  required_providers {
+    staysa = { source = "gattoufirabi/staysa" }
+  }
+}
+provider "staysa" {}
+resource "staysa_server_builds" "own" {
+  server     = "$NID"
+  labels     = ["tf", "e2e"]
+  max_builds = 3
+}
+resource "staysa_service_source" "app2" {
+  project      = "onprem"
+  service      = "app2"
+  repo         = "http://host.docker.internal:8098/own.git"
+  branch       = "main"
+  token        = "tf-read-token-$RUN"
+  build_on     = "servers"
+  build_labels = ["linux"]
+}
+output "auto_labels" { value = join(",", sort(staysa_server_builds.own.auto_labels)) }
+output "has_token" { value = staysa_service_source.app2.has_token }
+TF
+cp "$TFD/work/main.tf" "$TFD/imp/main.tf"
+CADDY_IP=$(docker inspect -f '{{(index .NetworkSettings.Networks "platform-core").IPAddress}}' "$(docker ps -q --filter name=caddy | head -1)")
+tofu() { local dir=$1; shift; dx run --rm --network platform-core --add-host "console.localhost:$CADDY_IP" -e TF_CLI_CONFIG_FILE=/tofurc -e STAYSA_ENDPOINT=http://console.localhost -e STAYSA_TOKEN="$TOK_OWN" -e TF_IN_AUTOMATION=1 \
+  -v "$(cygpath -w "$TFD/plugins"):/plugins:ro" -v "$(cygpath -w "$TFD/tofurc"):/tofurc:ro" -v "$(cygpath -w "$TFD/$dir"):/work" -w /work ghcr.io/opentofu/opentofu:1.8.8 "$@" -no-color 2>&1; }
+tofu work apply -auto-approve > "$TFD/apply.log"; tail -3 "$TFD/apply.log"
+check "[tofu] apply: the server takes builds with its labels and 3 at once; the service builds on servers with label linux, with a token" "$(grep -c 'Apply complete! Resources: 2 added' "$TFD/apply.log"):$(owner_sql "SELECT builds::text || ':' || array_to_string(labels, ',') || ':' || max_builds FROM nodes WHERE id = '$NID'"):$(owner_sql "SELECT build_on || ':' || array_to_string(build_labels, ',') || ':' || (source_token_enc IS NOT NULL) FROM services s JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'onprem' AND s.slug = 'app2'")" "1:true:e2e,tf:3:servers:linux:true"
+check "[tofu] computed values: the automatic labels and has_token" "$(tofu work output -raw auto_labels | tr -d '\r'):$(tofu work output -raw has_token | tr -d '\r')" "$(printf '%s\n' linux "$OWN_ARCH" | sort | paste -sd,):true"
+check "[tofu] a second plan has nothing to change" "$(tofu work plan -detailed-exitcode >/dev/null; echo $?)" 0
+own PUT "/servers/$NID/builds" -d '{"enabled": true, "labels": ["tf", "e2e"], "max_builds": 1}' >/dev/null
+own PUT /projects/onprem/services/app2/source -d '{"repo": "http://host.docker.internal:8098/own.git", "build_on": "platform"}' >/dev/null
+tofu work plan > "$TFD/drift.log"
+check "[tofu] changes made outside Terraform show in the plan (max_builds, build_on)" "$(grep -c -e 'max_builds *= 1 -> 3' -e 'build_on *= "platform" -> "servers"' "$TFD/drift.log")" 2
+tofu work apply -auto-approve > "$TFD/apply2.log"
+check "[tofu] apply puts them back" "$(grep -c 'Apply complete! Resources: 0 added, 2 changed' "$TFD/apply2.log"):$(owner_sql "SELECT max_builds FROM nodes WHERE id = '$NID'")" "1:3"
+tofu imp import staysa_server_builds.own "$NID" > "$TFD/imp1.log"; tofu imp import staysa_service_source.app2 onprem/app2 > "$TFD/imp2.log"
+check "[tofu] import of both, then the plan only sets the token (never read back)" "$(cat "$TFD/imp1.log" "$TFD/imp2.log" | grep -c 'Import successful'):$(tofu imp plan | grep -c -e 'Plan: 0 to add, 1 to change, 0 to destroy' -e '[+~] token ')" "2:2"
+rm -rf "$TFD/imp/terraform.tfstate"*
+tofu work destroy -auto-approve > "$TFD/destroy.log"
+check "[tofu] destroy: the server no longer takes builds, the service has no repository nor token" "$(grep -c 'Destroy complete! Resources: 2 destroyed' "$TFD/destroy.log"):$(owner_sql "SELECT builds FROM nodes WHERE id = '$NID'"):$(owner_sql "SELECT source_repo = '' AND source_token_enc IS NULL AND build_on = 'platform' FROM services s JOIN projects p ON p.id = s.project_id WHERE p.org_id = '$ORG_A' AND p.slug = 'onprem' AND s.slug = 'app2'")" "1:f:t"
+check "[tofu] a project-limited token cannot manage servers" "$(c ja -X POST "$BASE/o/$A/api-tokens" -d "csrf=$CSRF_A" -d name=tf-scoped -d role=developer -d project=onprem | grep -o 'pla_[A-Za-z0-9_-]*' | head -1 | xargs -I{} curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer {}' "$BASE/api/v1/servers")" 403
 docker rm -f e2e-owngit >/dev/null 2>&1
 check "a server still running projects cannot be removed" "$(c ja -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/servers/$NID/delete" -d csrf=$CSRF_A | grep -c 'err=')" 1
 OWN_PID=$(owner_sql "SELECT id FROM projects WHERE org_id = '$ORG_A' AND slug = 'onprem'")
