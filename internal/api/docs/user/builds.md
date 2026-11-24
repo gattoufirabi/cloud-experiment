@@ -1,6 +1,6 @@
 # Builds from git
 
-Let the platform build your repository or a zip archive into an image and deploy it, with no CI pipeline of your own. It uses your Dockerfile when there is one, and detects the language otherwise.
+Let the platform build your repository or a zip archive into an image and deploy it, with no CI service of your own. It uses your Dockerfile when there is one, and detects the language otherwise. A `staysa.yml` file adds pipeline steps such as tests and migrations.
 
 ## Overview
 
@@ -22,6 +22,7 @@ The **Builds** tab appears on a service when the platform offers builds. The Tri
 - **Quick test from your laptop**: upload a zip or run `platformctl zip`. See [Deploy a zip archive](#deploy-a-zip-archive).
 - **Review every pull request**: build each pull request into a preview. See [Preview environments](/docs/previews#a-preview-for-each-pull-request).
 - **Build only, deploy later**: use `--no-deploy` or untick **deploy when built**.
+- **Run tests before deploying**: add a `staysa.yml` with test steps. See [Run a pipeline](#run-a-pipeline).
 
 ## How to use it
 
@@ -84,6 +85,34 @@ Content-Type: application/zip
 
 Add `?deploy=false` to only build, and `?filename=app.zip` to name it in the log. The answer gives the build's `status_url`. On the command line, `--no-deploy` only builds and pushes the image.
 
+### Run a pipeline
+
+Add a file named `staysa.yml` next to your Dockerfile (in the folder the service builds) to run steps around the image build: tests, linters, code generation, a smoke test of the built image, database migrations. Each step runs commands in a container image of your choice. The image is pushed and deployed only when every step passed.
+
+```yaml
+steps:
+  - name: unit tests
+    image: golang:1.23
+    run: go test ./...
+  - build
+  - name: smoke test
+    image: built
+    run: /app/server --selftest
+  - name: migrate
+    image: built
+    run: /app/server migrate
+    secrets: [DATABASE_URL]
+```
+
+- Steps run in order. A step that fails (exit code other than 0) stops the build: nothing is pushed or deployed, and the error names the step.
+- `build` marks where the image is built. Without it, the image is built after the other steps.
+- Every step starts in your source folder, and all steps share it: a step before `build` can generate files that the Dockerfile then copies.
+- `image: built` runs the step in the image just built.
+- `secrets` gives a step some of the service's [secrets](/docs/variables) as environment variables. Their values are replaced by `***` in the build log.
+- `deploy: false` at the top level pushes the image without deploying it.
+
+The same file works on the platform's builder and on [your own build servers](#build-on-your-own-servers). On the platform, steps run in the same sandbox as builds, with the same CPU, memory and network limits; their time counts as build minutes.
+
 ### Build on your own servers
 
 Builds can run on your own machines instead of the platform's, like self-hosted CI agents: a VM at AWS or Azure, or hardware of your own, attached as described in [Your own servers](/docs/servers#run-builds-on-your-servers).
@@ -145,6 +174,21 @@ Zip query parameters:
 | --- | --- |
 | `PORT` | Set by the platform to the service's port. Without a Dockerfile, make your app listen on it. |
 
+### Pipeline file reference
+
+| Key | Where | Description |
+| --- | --- | --- |
+| `steps` | top level | Up to 20 steps, run in order: `build`, or a step with the keys below. |
+| `deploy` | top level | `false` pushes the image without deploying it. Default `true`. |
+| `name` | step | Shown in the build log; unique, up to 60 characters. |
+| `image` | step | A public image such as `node:22`, or `built` for the image just built (after `build`). It needs `/bin/sh`. |
+| `run` | step | Commands run by `/bin/sh -c`, in the source folder. Up to 16 KB. |
+| `env` | step | Environment variables, such as `{NODE_ENV: test}`. Up to 50. |
+| `secrets` | step | Names of the service's secrets to pass as environment variables. Up to 20. |
+| `timeout` | step | From `10s` to `1h`. Default `10m`. The build's own time limit still applies. |
+
+Every step also gets `CI=true`, `STAYSA_CI=true`, `STAYSA_STEP` (its name) and `HOME=/tmp`. Steps run with no capabilities and cannot gain privileges. Unknown keys are refused, so a typo is reported instead of being ignored. Builds of pull requests from branches of the same repository run the pipeline too, with its secrets; pull requests from forks are never built.
+
 ### Image names
 
 | Source | Image tag |
@@ -172,6 +216,10 @@ Make your app listen on the `PORT` environment variable (the platform sets it to
 ### Pushes do not trigger a build
 
 Check that the webhook sends push events with content type JSON, and that you pushed to the configured branch: other branches are ignored. If the address was replaced with **New webhook address**, update it in your git host.
+
+### A pipeline step fails
+
+The build log shows each step's output under `==> step N/M`. "has no /bin/sh" means the step's image has no shell: pick another image, such as the `-alpine` or `-slim` variant. "the service has no secret" means a name under `secrets` does not match one of the service's secrets.
 
 ### My build stays queued
 

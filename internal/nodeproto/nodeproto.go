@@ -164,4 +164,13 @@ type BuildResult struct {
 	Image  string `json:"image,omitempty"`
 	Error  string `json:"error,omitempty"`
 	Log    string `json:"log"`
+	// NoDeploy: the pipeline file says deploy: false (the image is pushed only).
+	NoDeploy bool `json:"no_deploy,omitempty"`
+}
+
+// BuildSecretsRequest asks for the service's secrets a pipeline's steps name
+// (POST /node/v1/builds/{id}/secrets, while the build runs on this server); the answer
+// maps each name found to its value.
+type BuildSecretsRequest struct {
+	Names []string `json:"names"`
 }

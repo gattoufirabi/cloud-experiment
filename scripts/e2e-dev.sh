@@ -1493,6 +1493,40 @@ check "the folder archive is built with Railpack and served" "$(for _ in $(seq 1
 echo "not a zip" > "$TMP/bad.zip"
 check "[API] an invalid archive is refused (422)" "$(zapi "$TOK_DEV" "$TMP/bad.zip")" 422
 check "[B->A API] B cannot upload to a service only A has (404)" "$(curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK_B" -H 'Content-Type: application/zip' --data-binary "@$(cygpath -w "$TMP/app-main.zip")" "$BASE/api/v1/projects/shop/services/files/zip")" 404
+# Pipelines (staysa.yml): steps around the image build, in containers, sharing the workspace.
+web_b() { owner_sql "SELECT $1 FROM builds b JOIN services s ON s.id = b.service_id JOIN orgs o ON o.id = s.org_id WHERE o.slug = '$A' AND s.slug = 'web' ORDER BY b.number DESC LIMIT 1"; }
+curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -H "Authorization: Bearer $TOK_DEV" -H 'Content-Type: application/json' -X PUT "$BASE/api/v1/projects/shop/services/web/secrets/E2E_PIPE_SECRET" -d "{\"value\": \"pipe-secret-$RUN\", \"redeploy\": false}"
+PD="$TMP/pipeapp"; mkdir -p "$PD/site"; echo "placeholder" > "$PD/site/index.html"
+printf '%s\n' 'FROM nginx:1.27-alpine' 'COPY site/ /usr/share/nginx/html/' > "$PD/Dockerfile"
+cat > "$PD/staysa.yml" <<YML
+steps:
+  - name: generate
+    image: alpine:3.20
+    run: |
+      mkdir -p site
+      echo "pipeline-generated-$RUN" > site/index.html
+      echo "secret is \$E2E_PIPE_SECRET"
+    secrets: [E2E_PIPE_SECRET]
+  - build
+  - name: smoke
+    image: built
+    run: grep -q pipeline-generated /usr/share/nginx/html/index.html && echo SMOKE-OK
+YML
+pctl zip shop/web "$PD" --wait >/dev/null
+check "[pipeline] steps ran in order around the build: generated file built in, smoke test in the built image" "$(web_b b.status):$(web_b b.log | grep -c -e 'step 1/3: generate (alpine:3.20)' -e 'step 2/3: build the image' -e 'step 3/3: smoke (built)' -e 'SMOKE-OK')" "done:4"
+check "[pipeline] the secret reached the step, hidden in the log" "$(web_b b.log | grep -c 'secret is \*\*\*'):$(web_b b.log | grep -c "pipe-secret-$RUN")" "1:0"
+check "[pipeline] the image built from the pipeline's workspace is deployed" "$(for _ in $(seq 1 45); do curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/" | grep -q "pipeline-generated-$RUN" && { echo yes; break; }; sleep 2; done)" yes
+printf '%s\n' 'steps:' '  - build' '  - name: tests' '    image: built' '    run: echo running tests; exit 3' > "$PD/staysa.yml"
+pctl zip shop/web "$PD" --wait >/dev/null
+check "[pipeline] a failing step fails the build; nothing is pushed or deployed" "$(web_b b.status):$(web_b b.error):$(web_b "b.image = ''"):$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/" | grep -c "pipeline-generated-$RUN")" 'failed:step "tests" failed with exit code 3 (see the log above):t:1'
+printf '%s\n' 'steps:' '  - name: tests' '    image: alpine:3.20' '    comand: true' > "$PD/staysa.yml"
+pctl zip shop/web "$PD" --wait >/dev/null
+check "[pipeline] a mistake in staysa.yml is explained" "$(web_b b.status):$(web_b b.error | grep -c 'unknown key \"comand\"')" "failed:1"
+printf '%s\n' 'steps:' '  - name: lint' '    image: alpine:3.20' '    run: test -f Dockerfile' 'deploy: false' > "$PD/staysa.yml"
+echo "not-deployed-$RUN" > "$PD/site/index.html"
+pctl zip shop/web "$PD" --wait >/dev/null
+check "[pipeline] deploy: false pushes the image without deploying it" "$(web_b b.status):$(web_b b.log | grep -c 'deploy: false: the image is pushed, not deployed'):$(curl -s --resolve "$HOST_A:$PORT:127.0.0.1" "http://$HOST_A:$PORT/" | grep -c "not-deployed-$RUN")" "done:1:0"
+check "[pipeline] no step container left behind" "$(docker ps -aq --filter name=build-step- | grep -c .)" 0
 check "zip builds audited" "$(owner_sql "SELECT count(*) >= 2 FROM audit_events WHERE action = 'build.queued' AND detail::text LIKE '%"zip"%' AND org_id = (SELECT id FROM orgs WHERE slug = '$A')")" t
 fi
 if want "Preview per pull request"; then
@@ -2199,6 +2233,17 @@ check "the server took them at once (long polling, not a 5-second poll)" "$(owne
 check "clean builds kept no cache: no volume left behind, the log says so" "$(own_b b.log | grep -c 'clean build'):$(docker volume ls -q | grep -c '^pn-bcache-clean-')" "1:0"
 check "[B] cannot change A's server's build settings" "$(c jb -o /dev/null -w '%{redirect_url}' -X POST "$BASE/o/$A/servers/$NID/builds" -d csrf=$CSRF_B -d builds=0 | grep -c 'err='):$(owner_sql "SELECT builds FROM nodes WHERE id = '$NID'")" "0:t"
 check "builds on the server are audited" "$(owner_sql "SELECT count(DISTINCT action) FROM audit_events WHERE org_id = '$ORG_A' AND action IN ('server.builds','build.claimed','build.done') AND (action <> 'build.claimed' OR detail->>'server' = '$NID')")" 3
+# A pipeline on the build server: the server asks the API for the secrets its steps name.
+own PUT /projects/onprem/services/app/secrets/E2E_OWN_SECRET -d "{\"value\": \"own-pipe-$RUN\", \"redeploy\": false}" >/dev/null
+python -c 'import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1], "w")
+z.writestr("Dockerfile", "FROM nginx:1.27-alpine\nCOPY index.html /usr/share/nginx/html/index.html\n")
+z.writestr("staysa.yml", "steps:\n  - name: prepare\n    image: alpine:3.20\n    run: echo pipe-on-own-$RUN > index.html; echo token=$E2E_OWN_SECRET\n    secrets: [E2E_OWN_SECRET]\n  - build\n  - name: smoke\n    image: built\n    run: grep -q pipe-on-own /usr/share/nginx/html/index.html && echo OWN-SMOKE-OK\n".replace("$RUN", sys.argv[2]))
+z.close()' "$(cygpath -w "$TMP/ownpipe.zip")" "$RUN"
+curl -sS --resolve "console.localhost:$PORT:127.0.0.1" -o /dev/null -H "Authorization: Bearer $TOK_OWN" -H 'Content-Type: application/zip' --data-binary "@$(cygpath -w "$TMP/ownpipe.zip")" "$BASE/api/v1/projects/onprem/services/app/zip?deploy=false"
+check "[pipeline] a pipeline runs on the build server, with the secret from the API, hidden in the log" "$(own_built):$(own_b b.node_id):$(own_b b.log | grep -c -e 'step 1/3: prepare' -e 'OWN-SMOKE-OK' -e 'token=\*\*\*'):$(own_b b.log | grep -c "own-pipe-$RUN")" "done:$NID:3:0"
+check "[pipeline] the server read only the named secret, audited" "$(owner_sql "SELECT detail->>'secrets' FROM audit_events WHERE org_id = '$ORG_A' AND action = 'build.secrets' AND detail->>'server' = '$NID' ORDER BY created_at DESC LIMIT 1")" '["E2E_OWN_SECRET"]'
+check "[pipeline] another server's token cannot read a build's secrets" "$(pub -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer pln_nope' -d '{"names":["E2E_OWN_SECRET"]}' "$BASE/node/v1/builds/$(own_b b.id)/secrets")" 401
 # The Terraform provider, run by OpenTofu: the provider built from this repository
 # (dev_overrides), against this console, on the same network as the server.
 TFD="$TMP/tofu"; mkdir -p "$TFD/plugins" "$TFD/work" "$TFD/imp"

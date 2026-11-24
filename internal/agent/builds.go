@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"platform/internal/docker"
 	"platform/internal/model"
 	"platform/internal/netguard"
+	"platform/internal/pipeline"
 	"platform/internal/registry"
 )
 
@@ -254,12 +256,14 @@ func (a *Agent) runBuild(parent context.Context, b buildJob) {
 	if cloneID != "" {
 		defer a.dk.ContainerRemove(context.Background(), cloneID)
 	}
-	commit, mode := "", ""
+	commit, mode, pipe := "", "", ""
 	for _, line := range strings.Split(out, "\n") {
 		if c, ok := strings.CutPrefix(strings.TrimSpace(line), "COMMIT="); ok {
 			commit = c
 		} else if m, ok := strings.CutPrefix(strings.TrimSpace(line), "MODE="); ok {
 			mode = m
+		} else if pl, ok := strings.CutPrefix(strings.TrimSpace(line), "PIPELINE="); ok {
+			pipe = pl
 		} else if line != "" {
 			log.WriteString(line + "\n")
 		}
@@ -279,76 +283,124 @@ func (a *Agent) runBuild(parent context.Context, b buildJob) {
 		log.step("commit %s", commit)
 	}
 
-	// 2. build
+	// 2. the pipeline (staysa.yml), or the image build alone
 	image := fmt.Sprintf("%s/%s/%s:%s", a.cfg.RegistryHost, b.OrgSlug, b.ServiceSlug, tag)
 	ctxDir := "/src/repo"
 	if b.Dir != "" {
 		ctxDir += "/" + b.Dir
 	}
-	args := []string{"build", "--progress", "plain", "--local", "context=" + ctxDir,
-		"--output", "type=docker,name=" + image + ",dest=/src/out/image.tar,compression=uncompressed"}
-	if mode == "railpack" {
-		if a.seedBuildCache(ctx, cache, short) {
-			log.step("build cache started from the node's warm cache (Railpack base images)")
+	pl := &pipeline.Pipeline{Steps: []pipeline.Step{{Name: "build", Build: true}}, Deploy: true}
+	if pipe != "" {
+		data, err := base64.StdEncoding.DecodeString(pipe)
+		if err == nil {
+			pl, err = pipeline.Parse(data)
 		}
-		log.step("building %s with Railpack (no Dockerfile)", image)
-		args = append(args, "--frontend", "gateway.v0", "--opt", "source="+a.cfg.RailpackFrontend,
-			"--local", "dockerfile=/src/plan", "--opt", "build-arg:cache-key="+model.Compact(b.ServiceID))
-	} else {
-		log.step("building %s from the Dockerfile", image)
-		args = append(args, "--frontend", "dockerfile.v0", "--local", "dockerfile="+ctxDir)
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		log.step("pipeline %s: %d steps", pipeline.FileName, len(pl.Steps))
 	}
-	buildID, code, out, err := a.runOnce(ctx, "build-kit-"+short, docker.ContainerConfig{
-		Image:      a.cfg.BuildkitImage,
-		Entrypoint: []string{"buildctl-daemonless.sh"},
-		Cmd:        args,
-		Env:        []string{"BUILDKITD_FLAGS=--oci-worker-no-process-sandbox"},
-		Labels:     labels,
-		HostConfig: a.withDNS(docker.HostConfig{
-			Runtime: a.cfg.BuildRuntime, NetworkMode: buildNetwork,
-			Memory: int64(a.cfg.BuildMemoryMB) << 20, MemorySwap: int64(a.cfg.BuildMemoryMB) << 20,
-			NanoCPUs: int64(a.cfg.BuildCPUMillis) * 1_000_000, PidsLimit: 2048,
-			// Rootless BuildKit maps its user namespace with newuidmap/newgidmap (setuid),
-			// so no-new-privileges cannot be set; every other capability is dropped.
-			CapDrop: []string{"ALL"}, CapAdd: []string{"SETUID", "SETGID"},
-			Mounts: []docker.Mount{{Type: "volume", Source: vol, Target: "/src"},
-				{Type: "volume", Source: cache, Target: "/home/user/.local/share/buildkit"}},
-			LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "16m"}},
-		}),
-	}, a.cfg.BuildTimeout, func(out string) {
-		a.saveBuildLog(b.ID, log.String()+out)
-	})
-	if buildID != "" {
-		defer a.dk.ContainerRemove(context.Background(), buildID)
-	}
-	log.WriteString(out)
+	secrets, err := a.buildSecrets(ctx, b.ServiceID, pl.SecretNames())
 	if err != nil {
 		fail(err.Error())
 		return
 	}
-	if code != 0 {
-		fail("the build failed (see the log above)")
-		return
+	var size int64
+	buildImage := func() (int64, error) {
+		args := []string{"build", "--progress", "plain", "--local", "context=" + ctxDir,
+			"--output", "type=docker,name=" + image + ",dest=/src/out/image.tar,compression=uncompressed"}
+		if mode == "railpack" {
+			if a.seedBuildCache(ctx, cache, short) {
+				log.step("build cache started from the node's warm cache (Railpack base images)")
+			}
+			log.step("building %s with Railpack (no Dockerfile)", image)
+			args = append(args, "--frontend", "gateway.v0", "--opt", "source="+a.cfg.RailpackFrontend,
+				"--local", "dockerfile=/src/plan", "--opt", "build-arg:cache-key="+model.Compact(b.ServiceID))
+		} else {
+			log.step("building %s from the Dockerfile", image)
+			args = append(args, "--frontend", "dockerfile.v0", "--local", "dockerfile="+ctxDir)
+		}
+		buildID, code, out, err := a.runOnce(ctx, "build-kit-"+short, docker.ContainerConfig{
+			Image:      a.cfg.BuildkitImage,
+			Entrypoint: []string{"buildctl-daemonless.sh"},
+			Cmd:        args,
+			Env:        []string{"BUILDKITD_FLAGS=--oci-worker-no-process-sandbox"},
+			Labels:     labels,
+			HostConfig: a.withDNS(docker.HostConfig{
+				Runtime: a.cfg.BuildRuntime, NetworkMode: buildNetwork,
+				Memory: int64(a.cfg.BuildMemoryMB) << 20, MemorySwap: int64(a.cfg.BuildMemoryMB) << 20,
+				NanoCPUs: int64(a.cfg.BuildCPUMillis) * 1_000_000, PidsLimit: 2048,
+				// Rootless BuildKit maps its user namespace with newuidmap/newgidmap (setuid),
+				// so no-new-privileges cannot be set; every other capability is dropped.
+				CapDrop: []string{"ALL"}, CapAdd: []string{"SETUID", "SETGID"},
+				Mounts: []docker.Mount{{Type: "volume", Source: vol, Target: "/src"},
+					{Type: "volume", Source: cache, Target: "/home/user/.local/share/buildkit"}},
+				LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "16m"}},
+			}),
+		}, a.cfg.BuildTimeout, func(out string) {
+			a.saveBuildLog(b.ID, log.String()+out)
+		})
+		if buildID != "" {
+			defer a.dk.ContainerRemove(context.Background(), buildID)
+		}
+		log.WriteString(out)
+		if err != nil {
+			return 0, err
+		}
+		if code != 0 {
+			return 0, errors.New("the build failed (see the log above)")
+		}
+
+		// load the image here: later steps may run in it, then it is pushed
+		rc, size, err := a.dk.CopyFileOut(ctx, buildID, "/src/out/image.tar")
+		if err != nil {
+			return 0, fmt.Errorf("read built image: %w", err)
+		}
+		if size > int64(a.cfg.BuildMaxImageMB)<<20 {
+			rc.Close()
+			return 0, fmt.Errorf("the image is %d MB; the limit is %d MB", size>>20, a.cfg.BuildMaxImageMB)
+		}
+		err = a.dk.ImageLoad(ctx, rc)
+		rc.Close()
+		if err != nil {
+			return 0, fmt.Errorf("load built image: %w", err)
+		}
+		return size, nil
+	}
+	runner := &pipeline.Runner{DK: a.dk, Prefix: "build-step-" + short, Volume: vol, Workdir: ctxDir, Labels: labels,
+		Host: a.withDNS(docker.HostConfig{
+			Runtime: a.cfg.BuildRuntime, NetworkMode: buildNetwork,
+			Memory: int64(a.cfg.BuildMemoryMB) << 20, MemorySwap: int64(a.cfg.BuildMemoryMB) << 20,
+			NanoCPUs:  int64(a.cfg.BuildCPUMillis) * 1_000_000,
+			LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "16m"}},
+		}),
+		Log:  func(s string) { log.WriteString(s) },
+		Live: func(s string) { a.saveBuildLog(b.ID, log.String()+s) },
+	}
+	for i, st := range pl.Steps {
+		if len(pl.Steps) > 1 {
+			log.step("%s", pipeline.Describe(i+1, len(pl.Steps), st))
+		}
+		if st.Build {
+			if size, err = buildImage(); err != nil {
+				fail(err.Error())
+				return
+			}
+			continue
+		}
+		img := st.Image
+		if img == pipeline.BuiltImage {
+			img = image
+		}
+		if err := runner.Run(ctx, i+1, st, img, secrets); err != nil {
+			fail(err.Error())
+			return
+		}
 	}
 
-	// 3. load and push
+	// 3. push
 	log.step("pushing")
-	rc, size, err := a.dk.CopyFileOut(ctx, buildID, "/src/out/image.tar")
-	if err != nil {
-		fail("read built image: " + err.Error())
-		return
-	}
-	if size > int64(a.cfg.BuildMaxImageMB)<<20 {
-		rc.Close()
-		fail(fmt.Sprintf("the image is %d MB; the limit is %d MB", size>>20, a.cfg.BuildMaxImageMB))
-		return
-	}
-	err = a.dk.ImageLoad(ctx, rc)
-	rc.Close()
-	if err != nil {
-		fail("load built image: " + err.Error())
-		return
-	}
 	auth := docker.RegistryAuth(registry.BuilderUserPrefix+b.OrgSlug,
 		registry.BuilderPassword(a.cfg.RegistryInternalSecret, b.OrgSlug), a.cfg.RegistryHost)
 	if err := a.dk.ImagePush(ctx, image, auth); err != nil {
@@ -361,6 +413,8 @@ func (a *Agent) runBuild(parent context.Context, b buildJob) {
 	switch {
 	case b.PR != nil && b.PreviewID == nil:
 		log.step("the preview was deleted meanwhile (pull request closed): nothing to deploy")
+	case b.Deploy && !pl.Deploy:
+		log.step("%s says deploy: false: the image is pushed, not deployed", pipeline.FileName)
 	case b.Deploy:
 		if err := a.deployBuilt(ctx, b, image); err != nil {
 			fail("deploy: " + err.Error())
@@ -520,4 +574,30 @@ func short12(s string) string {
 		return s[:12]
 	}
 	return s
+}
+
+// buildSecrets decrypts the service's secrets a pipeline asks for (by name).
+func (a *Agent) buildSecrets(ctx context.Context, serviceID string, names []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(names) == 0 {
+		return out, nil
+	}
+	rows, err := a.pool.Query(ctx, `SELECT name, value_enc FROM secrets WHERE service_id = $1 AND name = ANY($2)`, serviceID, names)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var enc []byte
+		if err := rows.Scan(&name, &enc); err != nil {
+			return nil, err
+		}
+		plain, err := a.box.Open(enc, "secret:"+serviceID+":"+name)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read the secret %s", name)
+		}
+		out[name] = string(plain)
+	}
+	return out, rows.Err()
 }

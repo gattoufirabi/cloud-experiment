@@ -45,7 +45,12 @@ else
   echo "MODE=railpack"
 fi
 chmod -R a+rX repo plan
-chown 1000:1000 /cache`
+chown 1000:1000 /cache
+# A pipeline (staysa.yml): its steps may run as any user and write to the workspace.
+if [ -f "$D/staysa.yml" ]; then
+  chmod -R a+rwX repo
+  echo "PIPELINE=$(head -c 65537 "$D/staysa.yml" | base64 | tr -d '\n')"
+fi`
 )
 
 // FailureMessage explains a failed first step to the user.

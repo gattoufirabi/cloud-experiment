@@ -298,6 +298,58 @@ func (s *Server) nodeBuildLog(w http.ResponseWriter, r *http.Request, n *nodeInf
 	}
 }
 
+// nodeBuildSecrets gives the server running a build the service's secrets its pipeline
+// steps name. Audited: which secrets, never their values.
+func (s *Server) nodeBuildSecrets(w http.ResponseWriter, r *http.Request, n *nodeInfo) {
+	var req nodeproto.BuildSecretsRequest
+	if err := readJSON(r, 1<<16, &req); err != nil || len(req.Names) > 50 {
+		apiError(w, http.StatusBadRequest, "bad secrets request")
+		return
+	}
+	out := map[string]string{}
+	var ok bool
+	err := db.WithOrg(r.Context(), s.pool, n.OrgID, func(tx pgx.Tx) error {
+		serviceID, number, running, err := runningBuild(r.Context(), tx, r.PathValue("id"), n.ID)
+		if !running || err != nil {
+			return err
+		}
+		ok = true
+		rows, err := tx.Query(r.Context(), `SELECT name, value_enc FROM secrets WHERE service_id = $1 AND name = ANY($2)`, serviceID, req.Names)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		var names []string
+		for rows.Next() {
+			var name string
+			var enc []byte
+			if err := rows.Scan(&name, &enc); err != nil {
+				return err
+			}
+			plain, err := s.box.Open(enc, "secret:"+serviceID+":"+name)
+			if err != nil {
+				return err
+			}
+			out[name] = string(plain)
+			names = append(names, name)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+		return db.Audit(r.Context(), tx, n.OrgID, "", "build.secrets", "service:"+serviceID, map[string]any{"build": number, "server": n.ID, "secrets": names}, "")
+	})
+	switch {
+	case err != nil:
+		s.log.Error("build secrets", "node", n.ID, "err", err)
+		apiError(w, http.StatusInternalServerError, "could not read the secrets")
+	case !ok:
+		apiError(w, http.StatusConflict, "this build is no longer running on this server")
+	default:
+		writeJSON(w, out)
+	}
+}
+
 // nodeBuildSource serves the uploaded archive of a zip build to the server running it.
 func (s *Server) nodeBuildSource(w http.ResponseWriter, r *http.Request, n *nodeInfo) {
 	var zip []byte
@@ -378,6 +430,8 @@ func (s *Server) nodeBuildFinish(w http.ResponseWriter, r *http.Request, n *node
 		switch {
 		case pr != nil && previewID == nil:
 			log += "==> the preview was deleted meanwhile (pull request closed): nothing to deploy\n"
+		case deploy && res.NoDeploy:
+			log += "==> staysa.yml says deploy: false: the image is pushed, not deployed\n"
 		case deploy:
 			target := serviceID
 			if previewID != nil {

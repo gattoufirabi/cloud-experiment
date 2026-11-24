@@ -484,6 +484,7 @@
     {{if .Source.Repo}}
     <p><code>{{.Source.Repo}}</code> · branch <code>{{.Source.Branch}}</code>{{with .Source.Dir}} · folder <code>{{.}}</code>{{end}}{{if .Source.HasToken}} · token saved{{end}}</p>
     {{end}}
+    <p class="small muted">Add a <code>staysa.yml</code> next to your Dockerfile to run tests and other steps before the image is deployed. <a href="/docs/builds#run-a-pipeline">How pipelines work</a></p>
     {{if eq .Source.BuildOn "servers"}}<p class="small">Builds run on <a href="{{.Org.Path}}/servers">your build servers</a>{{with .Source.BuildLabels}} with the labels {{range $i, $l := .}}{{if $i}}, {{end}}<code>{{$l}}</code>{{end}}{{end}}.</p>{{end}}
     {{if .Source.Repo}}
     {{if .CanEdit}}

@@ -340,6 +340,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /node/v1/builds/claim", s.nodeAuth(s.nodeBuildClaim))
 	m.HandleFunc("POST /node/v1/builds/{id}/log", s.nodeAuth(s.nodeBuildLog))
 	m.HandleFunc("GET /node/v1/builds/{id}/source", s.nodeAuth(s.nodeBuildSource))
+	m.HandleFunc("POST /node/v1/builds/{id}/secrets", s.nodeAuth(s.nodeBuildSecrets))
 	m.HandleFunc("POST /node/v1/builds/{id}/finish", s.nodeAuth(s.nodeBuildFinish))
 
 	m.HandleFunc("GET /o/{org}/p/{project}", s.auth(authFull, s.projectPage))

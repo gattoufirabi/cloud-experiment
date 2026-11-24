@@ -88,6 +88,8 @@ type Agent struct {
 	dk  *docker.Client
 	log *slog.Logger
 
+	buildAppArmor string // security option of BuildKit containers (apparmor.go)
+
 	mu        sync.Mutex
 	busy      map[string]bool               // deployments being started
 	queued    map[string]bool               // deployments waiting for the deploy worker
@@ -122,6 +124,7 @@ func Run(ctx context.Context, o Options) error {
 	}
 	a.log.Info("node agent starting", "node", a.st.NodeID, "server", a.st.Server)
 	go a.deployWorker(ctx)
+	a.buildAppArmor = a.loadAppArmor(ctx)
 	go a.buildWorker(ctx)
 	go a.shipLogs(ctx)
 	for i := 0; i < 4; i++ {

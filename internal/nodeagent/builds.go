@@ -2,6 +2,7 @@ package nodeagent
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"platform/internal/buildsrc"
 	"platform/internal/docker"
 	"platform/internal/nodeproto"
+	"platform/internal/pipeline"
 )
 
 // Builds on this server (migrations 069, 070): when the organization turned builds on
@@ -161,9 +163,9 @@ func (a *Agent) runBuild(parent context.Context, job nodeproto.BuildJob) {
 			}
 		}
 	}()
-	commit, image, err := a.build(ctx, b, timeout)
+	commit, image, deploy, err := a.build(ctx, b, timeout)
 	close(stop)
-	res := nodeproto.BuildResult{Status: "done", Commit: commit, Image: image}
+	res := nodeproto.BuildResult{Status: "done", Commit: commit, Image: image, NoDeploy: !deploy}
 	if err != nil {
 		if parent.Err() != nil {
 			return // the agent is stopping: the platform fails the build when it notices
@@ -187,7 +189,7 @@ func (a *Agent) runBuild(parent context.Context, job nodeproto.BuildJob) {
 	}
 }
 
-func (a *Agent) build(ctx context.Context, b *buildRun, timeout time.Duration) (string, string, error) {
+func (a *Agent) build(ctx context.Context, b *buildRun, timeout time.Duration) (string, string, bool, error) {
 	job := b.job
 	switch {
 	case job.Zip:
@@ -195,27 +197,32 @@ func (a *Agent) build(ctx context.Context, b *buildRun, timeout time.Duration) (
 	default:
 		b.step("build #%d of %s (branch %s), on this server", job.Number, job.Repo, job.Branch)
 	}
+	if a.appArmorOpt() == "apparmor="+buildAppArmorProfile {
+		b.write("BuildKit runs as a non-root user with its own seccomp profile and the staysa-buildkit AppArmor profile.\n")
+	} else {
+		b.write("BuildKit runs as a non-root user with its own seccomp profile (no AppArmor on this server).\n")
+	}
 	if _, err := a.dk.ImageID(ctx, job.BuilderImage); err != nil {
 		b.step("preparing the build helper image (git and Railpack; first build on this server only)")
 		if err := a.dk.ImageBuild(ctx, job.BuilderImage, buildsrc.BuilderDockerfile); err != nil {
-			return "", "", fmt.Errorf("build helper image: %w", err)
+			return "", "", false, fmt.Errorf("build helper image: %w", err)
 		}
 	}
 	if _, err := a.dk.ImageID(ctx, job.BuildkitImage); err != nil {
 		if err := a.dk.ImagePull(ctx, job.BuildkitImage, ""); err != nil {
-			return "", "", fmt.Errorf("pull %s: %w", job.BuildkitImage, err)
+			return "", "", false, fmt.Errorf("pull %s: %w", job.BuildkitImage, err)
 		}
 	}
 	if _, err := a.dk.NetworkInspect(ctx, buildNetwork); docker.IsNotFound(err) {
 		if err := a.dk.NetworkCreateAuto(ctx, buildNetwork, map[string]string{"staysa.node.build-network": "true"}); err != nil && !strings.Contains(err.Error(), "already exists") {
-			return "", "", fmt.Errorf("build network: %w", err)
+			return "", "", false, fmt.Errorf("build network: %w", err)
 		}
 	}
 	id := compact(job.ID, 12)
 	vol, cache := "pn-build-"+id, "pn-bcache-"+compact(job.ServiceID, 12)
 	labels := map[string]string{"staysa.node.build": job.ID}
 	if err := a.dk.VolumeCreate(ctx, vol, labels); err != nil {
-		return "", "", fmt.Errorf("create build volume: %w", err)
+		return "", "", false, fmt.Errorf("create build volume: %w", err)
 	}
 	defer a.dk.VolumeRemove(context.Background(), vol)
 	if job.Clean {
@@ -224,11 +231,11 @@ func (a *Agent) build(ctx context.Context, b *buildRun, timeout time.Duration) (
 		cache = "pn-bcache-clean-" + id
 		b.step("clean build: no cache from earlier builds, none kept")
 		if err := a.dk.VolumeCreate(ctx, cache, labels); err != nil {
-			return "", "", fmt.Errorf("create cache volume: %w", err)
+			return "", "", false, fmt.Errorf("create cache volume: %w", err)
 		}
 		defer a.dk.VolumeRemove(context.Background(), cache)
 	} else if err := a.dk.VolumeCreate(ctx, cache, map[string]string{"staysa.node.build-cache": job.ServiceID}); err != nil {
-		return "", "", fmt.Errorf("create cache volume: %w", err)
+		return "", "", false, fmt.Errorf("create cache volume: %w", err)
 	}
 
 	// 1. source
@@ -237,11 +244,11 @@ func (a *Agent) build(ctx context.Context, b *buildRun, timeout time.Duration) (
 	if job.Zip {
 		zip, err := a.fetch(ctx, "/node/v1/builds/"+job.ID+"/source")
 		if err != nil {
-			return "", "", fmt.Errorf("download the archive: %w", err)
+			return "", "", false, fmt.Errorf("download the archive: %w", err)
 		}
 		var n int
 		if tarball, n, err = buildsrc.ZipToTar(zip); err != nil {
-			return "", "", fmt.Errorf("archive: %w", err)
+			return "", "", false, fmt.Errorf("archive: %w", err)
 		}
 		b.step("unpacking %d files", n)
 		script = buildsrc.Zip + buildsrc.Common
@@ -266,12 +273,14 @@ func (a *Agent) build(ctx context.Context, b *buildRun, timeout time.Duration) (
 	if cloneID != "" {
 		defer a.dk.ContainerRemove(context.Background(), cloneID)
 	}
-	commit, mode := "", ""
+	commit, mode, pipe := "", "", ""
 	for _, line := range strings.Split(out, "\n") {
 		if c, ok := strings.CutPrefix(strings.TrimSpace(line), "COMMIT="); ok {
 			commit = c
 		} else if m, ok := strings.CutPrefix(strings.TrimSpace(line), "MODE="); ok {
 			mode = m
+		} else if pl, ok := strings.CutPrefix(strings.TrimSpace(line), "PIPELINE="); ok {
+			pipe = pl
 		} else if line != "" {
 			b.write(line + "\n")
 		}
@@ -281,7 +290,7 @@ func (a *Agent) build(ctx context.Context, b *buildRun, timeout time.Duration) (
 		if err != nil {
 			msg += ": " + err.Error()
 		}
-		return "", "", errors.New(msg)
+		return "", "", false, errors.New(msg)
 	}
 	tag := "git-" + commit[:12]
 	if job.Zip {
@@ -290,78 +299,134 @@ func (a *Agent) build(ctx context.Context, b *buildRun, timeout time.Duration) (
 		b.step("commit %s", commit)
 	}
 
-	// 2. build
+	// 2. the pipeline (staysa.yml), or the image build alone
 	image := job.ImageRepo + ":" + tag
 	ctxDir := "/src/repo"
 	if job.Dir != "" {
 		ctxDir += "/" + job.Dir
 	}
-	args := []string{"build", "--progress", "plain", "--local", "context=" + ctxDir,
-		"--output", "type=docker,name=" + image + ",dest=/src/out/image.tar,compression=uncompressed"}
-	if mode == "railpack" {
-		b.step("building %s with Railpack (no Dockerfile)", image)
-		args = append(args, "--frontend", "gateway.v0", "--opt", "source="+job.RailpackFrontend,
-			"--local", "dockerfile=/src/plan", "--opt", "build-arg:cache-key="+compact(job.ServiceID, 32))
-	} else {
-		b.step("building %s from the Dockerfile", image)
-		args = append(args, "--frontend", "dockerfile.v0", "--local", "dockerfile="+ctxDir)
+	pl := &pipeline.Pipeline{Steps: []pipeline.Step{{Name: "build", Build: true}}, Deploy: true}
+	if pipe != "" {
+		data, err := base64.StdEncoding.DecodeString(pipe)
+		if err == nil {
+			pl, err = pipeline.Parse(data)
+		}
+		if err != nil {
+			return "", "", false, err
+		}
+		b.step("pipeline %s: %d steps", pipeline.FileName, len(pl.Steps))
 	}
-	kitID, code, out, err := a.runOnce(ctx, "pn-build-kit-"+id, docker.ContainerConfig{
-		Image:      job.BuildkitImage,
-		Entrypoint: []string{"buildctl-daemonless.sh"},
-		Cmd:        args,
-		Env:        []string{"BUILDKITD_FLAGS=--oci-worker-no-process-sandbox"},
-		Labels:     labels,
-		HostConfig: docker.HostConfig{
-			NetworkMode: buildNetwork, PidsLimit: 4096,
-			// Rootless BuildKit maps its user namespace with newuidmap/newgidmap (setuid);
-			// every other capability is dropped. Docker's default seccomp and AppArmor
-			// profiles block the mounts it needs; buildSeccomp allows those and still
-			// refuses the system calls a build never needs (see seccomp.go). AppArmor
-			// profiles must be loaded on the host, which the agent cannot do.
-			CapDrop: []string{"ALL"}, CapAdd: []string{"SETUID", "SETGID"},
-			SecurityOpt: []string{"seccomp=" + buildSeccomp, "apparmor=unconfined"},
-			Mounts: []docker.Mount{{Type: "volume", Source: vol, Target: "/src"},
-				{Type: "volume", Source: cache, Target: "/home/user/.local/share/buildkit"}},
-			LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "16m"}},
+	secrets := map[string]string{}
+	if names := pl.SecretNames(); len(names) > 0 {
+		if err := a.call(ctx, http.MethodPost, "/node/v1/builds/"+job.ID+"/secrets", nodeproto.BuildSecretsRequest{Names: names}, &secrets); err != nil {
+			return "", "", false, fmt.Errorf("read the service's secrets: %w", err)
+		}
+	}
+	loaded := false
+	buildImage := func() error {
+		args := []string{"build", "--progress", "plain", "--local", "context=" + ctxDir,
+			"--output", "type=docker,name=" + image + ",dest=/src/out/image.tar,compression=uncompressed"}
+		if mode == "railpack" {
+			b.step("building %s with Railpack (no Dockerfile)", image)
+			args = append(args, "--frontend", "gateway.v0", "--opt", "source="+job.RailpackFrontend,
+				"--local", "dockerfile=/src/plan", "--opt", "build-arg:cache-key="+compact(job.ServiceID, 32))
+		} else {
+			b.step("building %s from the Dockerfile", image)
+			args = append(args, "--frontend", "dockerfile.v0", "--local", "dockerfile="+ctxDir)
+		}
+		kitID, code, out, err := a.runOnce(ctx, "pn-build-kit-"+id, docker.ContainerConfig{
+			Image:      job.BuildkitImage,
+			Entrypoint: []string{"buildctl-daemonless.sh"},
+			Cmd:        args,
+			Env:        []string{"BUILDKITD_FLAGS=--oci-worker-no-process-sandbox"},
+			Labels:     labels,
+			HostConfig: docker.HostConfig{
+				NetworkMode: buildNetwork, PidsLimit: 4096,
+				// Rootless BuildKit maps its user namespace with newuidmap/newgidmap (setuid);
+				// every other capability is dropped. Docker's default seccomp and AppArmor
+				// profiles block the mounts it needs; buildSeccomp and the staysa-buildkit
+				// AppArmor profile allow those and still refuse what a build never needs
+				// (see seccomp.go and apparmor.go).
+				CapDrop: []string{"ALL"}, CapAdd: []string{"SETUID", "SETGID"},
+				SecurityOpt: []string{"seccomp=" + buildSeccomp, a.appArmorOpt()},
+				Mounts: []docker.Mount{{Type: "volume", Source: vol, Target: "/src"},
+					{Type: "volume", Source: cache, Target: "/home/user/.local/share/buildkit"}},
+				LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "16m"}},
+			},
+		}, timeout, func(s string) {
+			b.mu.Lock()
+			b.extra = s
+			b.mu.Unlock()
+		}, "", nil)
+		if kitID != "" {
+			defer a.dk.ContainerRemove(context.Background(), kitID)
+		}
+		b.write(out)
+		if err != nil {
+			return err
+		}
+		if code != 0 {
+			return errors.New("the build failed (see the log above)")
+		}
+
+		// load the image here: later steps may run in it, then it is pushed
+		rc, size, err := a.dk.CopyFileOut(ctx, kitID, "/src/out/image.tar")
+		if err != nil {
+			return fmt.Errorf("read built image: %w", err)
+		}
+		if job.MaxImageMB > 0 && size > int64(job.MaxImageMB)<<20 {
+			rc.Close()
+			return fmt.Errorf("the image is %d MB; the limit is %d MB", size>>20, job.MaxImageMB)
+		}
+		err = a.dk.ImageLoad(ctx, rc)
+		rc.Close()
+		if err != nil {
+			return fmt.Errorf("load built image: %w", err)
+		}
+		loaded = true
+		return nil
+	}
+	defer func() {
+		if loaded {
+			a.dk.ImageRemove(context.Background(), image) // pushed, or the build failed after building it
+		}
+	}()
+	runner := &pipeline.Runner{DK: a.dk, Prefix: "pn-build-step-" + id, Volume: vol, Workdir: ctxDir, Labels: labels,
+		Host: docker.HostConfig{NetworkMode: buildNetwork,
+			LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "16m"}}},
+		Log: b.write,
+		Live: func(s string) {
+			b.mu.Lock()
+			b.extra = s
+			b.mu.Unlock()
 		},
-	}, timeout, func(s string) {
-		b.mu.Lock()
-		b.extra = s
-		b.mu.Unlock()
-	}, "", nil)
-	if kitID != "" {
-		defer a.dk.ContainerRemove(context.Background(), kitID)
 	}
-	b.write(out)
-	if err != nil {
-		return "", "", err
-	}
-	if code != 0 {
-		return "", "", errors.New("the build failed (see the log above)")
+	for i, st := range pl.Steps {
+		if len(pl.Steps) > 1 {
+			b.step("%s", pipeline.Describe(i+1, len(pl.Steps), st))
+		}
+		if st.Build {
+			if err := buildImage(); err != nil {
+				return "", "", false, err
+			}
+			continue
+		}
+		img := st.Image
+		if img == pipeline.BuiltImage {
+			img = image
+		}
+		if err := runner.Run(ctx, i+1, st, img, secrets); err != nil {
+			return "", "", false, err
+		}
 	}
 
-	// 3. load and push
+	// 3. push
 	b.step("pushing")
-	rc, size, err := a.dk.CopyFileOut(ctx, kitID, "/src/out/image.tar")
-	if err != nil {
-		return "", "", fmt.Errorf("read built image: %w", err)
-	}
-	if job.MaxImageMB > 0 && size > int64(job.MaxImageMB)<<20 {
-		rc.Close()
-		return "", "", fmt.Errorf("the image is %d MB; the limit is %d MB", size>>20, job.MaxImageMB)
-	}
-	err = a.dk.ImageLoad(ctx, rc)
-	rc.Close()
-	if err != nil {
-		return "", "", fmt.Errorf("load built image: %w", err)
-	}
-	defer a.dk.ImageRemove(context.Background(), image) // it is in the registry now
 	host, _, _ := strings.Cut(job.ImageRepo, "/")
 	if err := a.dk.ImagePush(ctx, image, docker.RegistryAuth("build", job.PushToken, host)); err != nil {
-		return "", "", fmt.Errorf("push image: %w", err)
+		return "", "", false, fmt.Errorf("push image: %w", err)
 	}
-	return commit, image, nil
+	return commit, image, pl.Deploy, nil
 }
 
 // runOnce runs a container to completion and returns its output; the caller removes it.

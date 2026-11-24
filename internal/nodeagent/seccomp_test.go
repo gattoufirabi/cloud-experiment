@@ -3,6 +3,7 @@ package nodeagent
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -29,5 +30,17 @@ func TestBuildSeccomp(t *testing.T) {
 		if slices.Contains(p.Syscalls[0].Names, needed) {
 			t.Errorf("%s is refused but rootless BuildKit needs it", needed)
 		}
+	}
+}
+
+func TestAppArmorProfile(t *testing.T) {
+	with, without := appArmorText(true), appArmorText(false)
+	for _, want := range []string{"profile staysa-buildkit", "mount,", "pivot_root,", "deny /sys/kernel/security/** rwklx,"} {
+		if !strings.Contains(without, want) {
+			t.Errorf("profile lacks %q", want)
+		}
+	}
+	if !strings.Contains(with, "userns,") || strings.Contains(without, "userns") || strings.Contains(with, "@@") {
+		t.Error("userns rule not handled")
 	}
 }
