@@ -35,6 +35,10 @@ cat > /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl <<'EOF'
   runtime_type = "io.containerd.runsc.v1"
 EOF
 
+# horizontal-pod-autoscaler-cpu-initialization-period=30s: by default the autoscaler
+# ignores the CPU of a pod younger than 5 minutes whenever it is not ready. Under a sudden
+# spike, the pods it just added fail their readiness probe because they are saturated, so
+# it saw no load and stopped scaling. With 30 s, only pods still starting are set aside.
 curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - server \
   --disable traefik --disable servicelb \
   --write-kubeconfig-mode 600 \
@@ -42,6 +46,7 @@ curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - server
   --cluster-cidr "$POD_CIDR" --service-cidr "$SERVICE_CIDR" \
   --secrets-encryption \
   --kubelet-arg=pod-max-pids=256 \
+  --kube-controller-manager-arg=horizontal-pod-autoscaler-cpu-initialization-period=30s \
   --kube-apiserver-arg=anonymous-auth=false
 
 until k3s kubectl get nodes 2>/dev/null | grep -q ' Ready'; do sleep 2; done

@@ -81,6 +81,8 @@ type Agent struct {
 	targets   []target // running live containers, refreshed each reconcile
 	caddyHash string
 	ticks     int
+
+	caddySync sync.Mutex // one config push at a time (the main loop and kubeUpstreamLoop both push)
 }
 
 type target struct {
@@ -205,6 +207,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.buildWarmLoop(ctx)
 	go a.budgetLoop(ctx)
 	go a.scalingLoop(ctx)
+	go a.kubeUpstreamLoop(ctx)
 
 	a.reconcile(ctx)
 	tick := time.NewTicker(15 * time.Second)

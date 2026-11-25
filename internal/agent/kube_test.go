@@ -175,3 +175,46 @@ func TestPlatformAddresses(t *testing.T) {
 		t.Fatalf("got %v: only the platform network address may be allowed in, never a tenant subnet", got)
 	}
 }
+
+func testPod(name, ip, phase string, ready, deleting bool) kube.Obj {
+	st := "False"
+	if ready {
+		st = "True"
+	}
+	meta := map[string]any{"name": name}
+	if deleting {
+		meta["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+	}
+	return kube.Obj{"metadata": meta, "status": map[string]any{"phase": phase, "podIP": ip,
+		"conditions": []any{map[string]any{"type": "Ready", "status": st}}}}
+}
+
+// The proxy dials ready pods; when none is ready it keeps every running one rather than
+// none, and the first entry keeps the revision's instance ID.
+func TestPodInstances(t *testing.T) {
+	pods := []kube.Obj{
+		testPod("web-b", "10.42.0.12", "Running", true, false),
+		testPod("web-a", "10.42.0.11", "Running", true, false),
+		testPod("web-c", "10.42.0.13", "Running", false, false), // busy or starting
+		testPod("web-d", "10.42.0.14", "Running", true, true),   // being deleted
+		testPod("web-e", "", "Pending", false, false),
+	}
+	got := podInstances("sp-x", "svc-1-r3", 8080, pods)
+	want := []instance{
+		{ID: "k8s:sp-x/svc-1-r3", Name: "web-a", Upstream: "10.42.0.11:8080"},
+		{ID: "k8s:sp-x/web-b", Name: "web-b", Upstream: "10.42.0.12:8080"},
+	}
+	if !sameInstances(got, want) {
+		t.Fatalf("ready pods: %+v", got)
+	}
+	none := podInstances("sp-x", "svc-1-r3", 8080, []kube.Obj{
+		testPod("web-c", "10.42.0.13", "Running", false, false),
+		testPod("web-d", "10.42.0.14", "Running", false, true),
+	})
+	if len(none) != 1 || none[0].Upstream != "10.42.0.13:8080" || none[0].ID != "k8s:sp-x/svc-1-r3" {
+		t.Fatalf("no ready pod: %+v", none)
+	}
+	if len(podInstances("sp-x", "svc-1-r3", 8080, nil)) != 0 {
+		t.Fatal("no pod: want no instance (the Service address is the fallback)")
+	}
+}

@@ -146,12 +146,19 @@ func (w Workload) Deployment() Obj {
 			"requests": Obj{"cpu": cpu, "memory": mem},
 			"limits":   Obj{"cpu": cpu, "memory": mem},
 		},
+		// Readiness decides which pods the proxy dials (agent/kube.go kubeUpstreamLoop). It
+		// tolerates a slow answer under load (5 s, 4 misses in a row = 20 s): a pod pulled
+		// out for being busy pushes its traffic onto the others, which then fail too.
 		"readinessProbe": Obj{
 			"httpGet":          Obj{"path": healthPath(w.HealthPath), "port": w.Port},
 			"periodSeconds":    5,
-			"timeoutSeconds":   3,
-			"failureThreshold": 3,
+			"timeoutSeconds":   5,
+			"failureThreshold": 4,
 		},
+		// A deleted pod keeps serving for 5 s before it is stopped: requests the proxy sent
+		// before dropping it from its upstreams finish (sleep runs in the kubelet, no shell
+		// needed in the image).
+		"lifecycle": Obj{"preStop": Obj{"sleep": Obj{"seconds": 5}}},
 		"securityContext": Obj{
 			"privileged":               false,
 			"allowPrivilegeEscalation": false,
@@ -192,8 +199,8 @@ func (w Workload) Deployment() Obj {
 	}
 }
 
-// Service is the stable address the proxy dials (its ClusterIP); its selector points at
-// the live revision, so switching revisions moves traffic at once.
+// Service selects the live revision's pods. The proxy dials the pods themselves; the
+// Service's ClusterIP is its fallback when no pod is running (agent/kube.go).
 func (w Workload) Service() Obj {
 	return Obj{
 		"apiVersion": "v1", "kind": "Service",

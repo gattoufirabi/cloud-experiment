@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"platform/internal/db"
 	"platform/internal/kube"
@@ -22,9 +25,9 @@ import (
 //
 // Autoscaled web services of the primary node run on a k3s cluster on the same host
 // instead of Docker containers: each revision is a Deployment in the project's namespace,
-// a Service gives the proxy one stable address (its ClusterIP, recorded as the
-// deployment's single instance upstream), and a HorizontalPodAutoscaler replaces the
-// agent's CPU loop (autoscale.go) for them. Everything else (databases, workers,
+// its ready pods are the proxy's upstreams (recorded as the deployment's instances and
+// refreshed every 2 s by kubeUpstreamLoop, the Service's ClusterIP being the fallback),
+// and a HorizontalPodAutoscaler replaces the agent's CPU loop (autoscale.go) for them. Everything else (databases, workers,
 // functions, builds, services with volumes or public ports, previews) stays on Docker.
 //
 // The isolation guarantees are kept: pods run under the RuntimeClass whose handler is
@@ -196,13 +199,20 @@ func (a *Agent) deployKube(ctx context.Context, j job, netName string) error {
 		cleanup()
 		return errors.New("the Kubernetes service has no cluster address")
 	}
-	insts := []instance{{ID: kubeInstanceID(ns, name), Name: svcName, Upstream: net.JoinHostPort(ip, strconv.Itoa(j.Spec.Port))}}
+	// The proxy dials the new revision's ready pods directly (kubeUpstreamLoop keeps the
+	// list current as the autoscaler adds and removes pods); the Service address is only
+	// the fallback when no pod can be listed.
+	pods, _ := a.kube.List(ctx, "Pod", ns, kube.LabelDeployment+"="+j.ID)
+	insts := podInstances(ns, name, j.Spec.Port, pods)
+	if len(insts) == 0 {
+		insts = []instance{{ID: kubeInstanceID(ns, name), Name: svcName, Upstream: net.JoinHostPort(ip, strconv.Itoa(j.Spec.Port))}}
+	}
 	old, err := a.promote(ctx, j, insts)
 	if err != nil {
 		cleanup()
 		return err
 	}
-	a.syncCaddy(ctx, true) // same address when the service already ran here: a no-op
+	a.syncCaddy(ctx, true) // traffic moves to the new pods before the previous revision is deleted
 	// Traffic and scaling move to the new revision.
 	if _, err := a.kube.Apply(ctx, w.Service()); err != nil {
 		a.log.Error("switch Kubernetes service", "deployment", j.ID, "err", err)
@@ -365,6 +375,149 @@ func (a *Agent) podTail(ctx context.Context, ns, pod string) string {
 		return ""
 	}
 	return "\n--- last log lines ---\n" + strings.Join(lines, "\n")
+}
+
+// ---------- proxy upstreams ----------
+
+// kubeUpstreamLoop keeps the proxy's upstreams of Kubernetes services equal to their
+// live revision's ready pods, every 2 seconds. Dialing pods directly (instead of the
+// Service's ClusterIP) gives the same behavior as containers: round robin per request
+// rather than per connection (kube-proxy pins a kept-alive connection to one pod),
+// passive health checks, retries on another pod, and the per-instance in-flight limit.
+// A pod the autoscaler adds receives traffic within seconds of passing its readiness
+// probe instead of waiting for the next reconcile.
+func (a *Agent) kubeUpstreamLoop(ctx context.Context) {
+	if a.kube == nil || !a.isPrimary() {
+		return
+	}
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		a.syncKubeUpstreams(ctx)
+	}
+}
+
+func (a *Agent) syncKubeUpstreams(ctx context.Context) {
+	rows, err := a.pool.Query(ctx, `
+		SELECT d.id::text, s.id::text, coalesce((d.spec->>'port')::int, 0), d.instances
+		FROM deployments d JOIN services s ON s.id = d.service_id JOIN projects p ON p.id = s.project_id JOIN orgs o ON o.id = d.org_id
+		WHERE d.status = 'live' AND NOT o.suspended AND coalesce(d.instances->0->>'id', '') LIKE 'k8s:%' AND `+mineSQL, a.mineArgs()...)
+	if err != nil {
+		return
+	}
+	type live struct {
+		DepID, ServiceID string
+		Port             int
+		Insts            []instance
+	}
+	lives, err := pgx.CollectRows(rows, pgx.RowToStructByPos[live])
+	if err != nil || len(lives) == 0 {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	all, err := a.kube.List(cctx, "Pod", "", kube.LabelManaged+"=true")
+	if err != nil {
+		return
+	}
+	byDep := map[string][]kube.Obj{}
+	for _, p := range all {
+		dep := kube.Labels(p)[kube.LabelDeployment]
+		byDep[dep] = append(byDep[dep], p)
+	}
+	changed := false
+	for _, l := range lives {
+		ns, name, ok := parseKubeInstance(l.Insts[0].ID)
+		if !ok || l.Port == 0 {
+			continue
+		}
+		want := podInstances(ns, name, l.Port, byDep[l.DepID])
+		if len(want) == 0 { // no pod running: the Service address (it answers once one is back)
+			svc, err := a.kube.Get(cctx, "Service", ns, kube.ServiceName(l.ServiceID))
+			ip := kube.Str(svc, "spec", "clusterIP")
+			if err != nil || ip == "" || ip == "None" {
+				continue
+			}
+			want = []instance{{ID: kubeInstanceID(ns, name), Name: kube.ServiceName(l.ServiceID), Upstream: net.JoinHostPort(ip, strconv.Itoa(l.Port))}}
+		}
+		if sameInstances(want, l.Insts) {
+			continue
+		}
+		raw, _ := json.Marshal(want)
+		prev, _ := json.Marshal(l.Insts)
+		tag, err := a.pool.Exec(ctx, `
+			UPDATE deployments SET instances = $2, upstream = $3, updated_at = now()
+			WHERE id = $1 AND status = 'live' AND instances = $4::jsonb`, l.DepID, raw, want[0].Upstream, prev)
+		if err == nil && tag.RowsAffected() > 0 {
+			changed = true
+		}
+	}
+	if changed {
+		a.syncCaddy(ctx, false)
+	}
+}
+
+// podInstances lists a revision's pods as proxy upstreams: the ready ones, or, when none
+// is ready (all failing their health check under overload), every running one, so the
+// service keeps answering what it can instead of returning 502 for everything. The first
+// entry keeps the revision's instance ID (reconcile finds the Deployment through it).
+func podInstances(ns, depName string, port int, pods []kube.Obj) []instance {
+	type pod struct{ name, ip string }
+	var ready, running []pod
+	for _, p := range pods {
+		if kube.Str(p, "metadata", "deletionTimestamp") != "" || kube.Str(p, "status", "phase") != "Running" {
+			continue
+		}
+		ip := kube.Str(p, "status", "podIP")
+		if ip == "" {
+			continue
+		}
+		x := pod{kube.Str(p, "metadata", "name"), ip}
+		running = append(running, x)
+		if podReady(p) {
+			ready = append(ready, x)
+		}
+	}
+	use := ready
+	if len(use) == 0 {
+		use = running
+	}
+	sort.Slice(use, func(i, j int) bool { return use[i].name < use[j].name })
+	out := make([]instance, 0, len(use))
+	for i, p := range use {
+		id := kubeInstanceID(ns, p.name)
+		if i == 0 {
+			id = kubeInstanceID(ns, depName)
+		}
+		out = append(out, instance{ID: id, Name: p.name, Upstream: net.JoinHostPort(p.ip, strconv.Itoa(port))})
+	}
+	return out
+}
+
+func podReady(p kube.Obj) bool {
+	for _, c := range kube.Slice(p, "status", "conditions") {
+		if m, ok := c.(map[string]any); ok && m["type"] == "Ready" {
+			return m["status"] == "True"
+		}
+	}
+	return false
+}
+
+func sameInstances(a, b []instance) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------- reconcile ----------

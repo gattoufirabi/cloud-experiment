@@ -190,7 +190,7 @@ func (a *Agent) checkHealth(ctx context.Context) {
 			c := t
 			c.ContainerID = in.ID
 			if _, _, onKube := parseKubeInstance(in.ID); onKube {
-				c.Upstream = in.Upstream // the Service address: kube-proxy picks a ready pod
+				c.Upstream = in.Upstream // a pod's address (or the Service's when no pod runs)
 			}
 			probes = append(probes, one{i, c})
 		}

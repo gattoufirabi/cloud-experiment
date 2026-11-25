@@ -168,3 +168,19 @@ func TestNames(t *testing.T) {
 		t.Fatal(ips)
 	}
 }
+
+// A busy pod must not drop out of the proxy's upstreams at the first slow answer, and a
+// deleted one keeps serving a few seconds so requests already sent to it finish.
+func TestDeploymentProbeToleratesLoad(t *testing.T) {
+	c := field(testWorkload().Deployment(), "spec", "template", "spec").(Obj)["containers"].([]any)[0].(Obj)
+	rp := c["readinessProbe"].(Obj)
+	if rp["timeoutSeconds"].(int)*rp["failureThreshold"].(int) < 15 {
+		t.Errorf("readiness gives up too fast: %v", rp)
+	}
+	if _, ok := c["livenessProbe"]; ok {
+		t.Error("no liveness probe: a saturated pod would be restarted, losing its capacity")
+	}
+	if field(c, "lifecycle", "preStop", "sleep", "seconds") != 5 {
+		t.Errorf("preStop sleep: %v", c["lifecycle"])
+	}
+}
