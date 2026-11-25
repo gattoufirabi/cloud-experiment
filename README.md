@@ -154,18 +154,27 @@ Internet ──► Caddy (front door, TLS) ──► api  (Go, unprivileged, no 
 
 One binary, several roles: `platform api | agent | migrate | admin`.
 
+The code is organized by component: each feature keeps its console pages, API endpoints, agent work and libraries together, on top of a small shared core.
+
 | Path | What |
 |---|---|
 | `cmd/platform/` | entry point and operator commands |
-| `internal/api/` | console + API, HTML templates, static assets |
-| `internal/agent/` | reconcile loop, policy, Caddy config, log and metric shipping |
-| `internal/docker/` | minimal Docker Engine API client (no SDK) |
-| `internal/secure/` | argon2id passwords, TOTP, secret encryption, tokens |
-| `internal/model/` | deployment spec and validation shared by API and agent |
+| `internal/api/` | starts the console and API: wires the core and every component's routes and templates |
+| `internal/agent/` | starts the node agent: wires the core, every component's loops and the API's notifications |
+| `internal/core/web/` | console and API core: server, sessions, authorization, rendering, layout and static assets, shared code |
+| `internal/core/worker/` | agent core: deployments, reconcile loop and policy, Caddy config, placement, managed databases, shared code |
+| `internal/components/<feature>/api/` | a feature's pages, endpoints and templates (type `API`, which embeds the core's `*web.Server`) |
+| `internal/components/<feature>/agent/` | a feature's background work in the agent (type `Worker`, which embeds `*worker.Agent`; `Start` and `Notify`) |
+| `internal/components/<feature>/<lib>/` | libraries only that feature uses, such as `builds/pipeline`, `servers/nodeagent` or `storage/s3` |
+| `internal/lib/` | libraries shared by several components: `docker`, `secure`, `model`, `db`, `config`, `mail`... |
 | `migrations/` | database schema, RLS policies, audit function |
 | `deploy/` | dev and production compose files, Caddy start config, DB role setup |
 | `host/` | Phase 0: gVisor installer, tenant firewall, isolation test |
 | `scripts/e2e-dev.sh` | end-to-end test: two tenants, deploys, cross-tenant attempts |
+
+Components: `auth` (sign-in, passkeys, SSO, signup), `orgs` (organizations, members, catalog), `projects`, `services`, `builds`, `servers` (customer servers, build servers), `databases`, `backups`, `storage`, `functions`, `queues`, `secrets`, `dns`, `email` (sending and hosted mailboxes), `monitoring` (logs, metrics, alerts, analytics), `billing`, `operator` (admin panel), `docs`, `registry` and `restapi` (the infrastructure API used by the Terraform provider).
+
+To add a feature, create `internal/components/<name>/api` with a `component.go` that declares `type API struct{ *web.Server }` and a `Routes(m *http.ServeMux)` method (and `Templates` if it has pages), then add it to the lists in `internal/api/api.go`. Its agent side, if any, is a `Worker` with `Start` and `Notify`, added in `internal/agent/agent.go`. A component never imports another component's `api` or `agent` package: code two components need goes to the core.
 
 ---
 

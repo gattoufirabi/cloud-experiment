@@ -22,7 +22,7 @@ cleanup
 for n in "$NA" "$NB"; do
   docker network create -o com.docker.network.bridge.name="$n" "$n" >/dev/null
 done
-# Same hardening the agent applies (see internal/agent/agent.go containerConfig).
+# Same hardening the agent applies (see internal/core/worker/agent.go).
 run() { # run <name> <network> <cmd...>
   local name=$1 net=$2; shift 2
   docker run -d --name "$name" --runtime=runsc --network "$net" --memory 128m --memory-swap 128m \
