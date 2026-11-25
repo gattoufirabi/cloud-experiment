@@ -213,7 +213,7 @@ Your operator can choose to run autoscaled web services on a small Kubernetes cl
 - A deployment starts the new revision with as many instances as are running at that moment, then moves traffic when all of them are healthy.
 - Your service reaches the project's databases, the platform's addresses (console API, object storage) and the other services' `.internal` names as usual. It cannot reach other customers' services or the server itself.
 - Logs work as usual. The CPU and memory graphs, and CPU alerts, do not cover these instances yet.
-- An overload limit (see [Traffic protection](/docs/traffic-protection)) applies to the service as a whole rather than to each instance.
+- An overload limit (see [Traffic protection](/docs/traffic-protection)) applies to each instance, as with containers.
 
 ### Schedule scaling
 

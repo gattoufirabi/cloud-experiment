@@ -85,12 +85,12 @@ Clients run **their own code** on **your kernel**. That one fact drives most of 
 By default the agent scales services itself (`internal/components/services/agent/autoscale.go`: every 15 s it compares CPU with the target and deploys a new instance count; Caddy round-robins across the containers). With `AUTOSCALE_BACKEND=kubernetes` on the primary, **autoscaled web services** run on a k3s cluster on the same host instead. A service qualifies when it has autoscaling on, a port, no persistent folder, no public TCP/UDP port, and is not a preview. Databases, workers, functions, jobs, builds and every other service stay Docker containers. The switch is a config value: setting it back to `docker` makes the agent redeploy those services as containers on its next pass.
 
 ```
- Caddy ──► ClusterIP of Service svc-<id> (one stable address, recorded as the deployment's upstream)
-              │ kube-proxy
+ Caddy ──► each ready pod's address (refreshed every 2 s by the agent, recorded as the deployment's instances)
+              │ (the Service svc-<id> ClusterIP is the fallback while no pod is ready)
               ▼
  namespace sp-<project id>  (Pod Security "baseline", NetworkPolicy staysa-isolation)
    Deployment svc-<id>-r<rev>  ── pods: RuntimeClass runsc (gVisor), no SA token, caps dropped,
-   HorizontalPodAutoscaler          requests = limits, env from a per-revision Secret
+   HorizontalPodAutoscaler          CPU request 10 % of the limit (memory request = limit), env from a per-revision Secret
    ingress: own project's pods, the proxy and agent containers (their platform-network addresses)
    egress: DNS, own project's DB addresses on its Docker network, internet minus private ranges and node IPs
    own node: not covered by NetworkPolicy; the host firewall only lets pods reach 6443/10250 (no anonymous access)
@@ -98,16 +98,21 @@ By default the agent scales services itself (`internal/components/services/agent
 
 | Concern | Docker backend | Kubernetes backend |
 |---|---|---|
-| Who scales | Agent loop, every 15 s, CPU from VictoriaMetrics | HorizontalPodAutoscaler (metrics-server), up by up to 100 % or 2 pods per 15 s, down after a 5-minute window |
+| Who scales | Agent loop, every 15 s, CPU from VictoriaMetrics | HorizontalPodAutoscaler (metrics-server), up by up to 100 % or 2 pods per 15 s, down after a 5-minute window. Its target is an amount of CPU per pod (the service's CPU target × its limit), and new pods are measured after 30 s (`k3s-install.sh` sets the controller's CPU initialization period) |
+| CPU reserved per instance | Nothing: containers share the cores up to their limit | `KUBE_CPU_REQUEST_PCT` of the limit (10 % by default), so pods share cores like containers. Reserving the whole limit let a 6-core node fit one 4-vCPU pod: the autoscaler asked for more and they stayed Pending |
 | Sandbox | `--runtime runsc` | RuntimeClass whose handler must be `runsc`: the agent refuses to start otherwise (unless `ALLOW_INSECURE_RUNTIME` in development) |
 | Tenant network | One Docker bridge per project + `tenant-firewall.sh` | One namespace per project + default-deny NetworkPolicy; the same host rules for the pod CIDR (`KUBE_POD_CIDR`) |
 | Reaching the project's databases | Same bridge | NetworkPolicy allows only that project's database (and proxy) addresses; the host rule lets pods into tenant bridges, the policy narrows it per namespace |
-| Proxy → app | Caddy dials each container | Caddy dials the Service ClusterIP; kube-proxy spreads the requests over the pods |
+| Proxy → app | Caddy dials each container | Caddy dials each ready pod directly (round robin, passive health checks, `max_inflight` per pod); the ClusterIP only while no pod is ready. Pods answer a readiness probe (5 s timeout, 4 failures) and wait 5 s before stopping, so the proxy drops them first |
 | Deploys | Blue/green per revision | Same: a Deployment per revision; Service selector and HPA switch when all its pods are ready, then the old revision is deleted |
 | Logs | Docker log stream | Pod log stream (API), shipped to VictoriaLogs with the same tags |
 | Control plane access | Only the agent holds the Docker socket | Only the agent holds a kubeconfig, for a ServiceAccount limited to the objects it manages (no exec, no RBAC, no node writes). The API never talks to the cluster |
 
-The trust boundary does not move: the agent still re-validates every spec, decides the pod spec itself (the database cannot ask for host paths, privileges or another runtime), and Pod Security "baseline" is enforced by the API server as a second line. k3s runs with secrets encryption at rest, anonymous auth off, and its API server reachable only from the platform's own bridge. Usage is metered on the pods the autoscaler runs (the agent records the count every 15 s). Known gaps compared with containers: CPU and memory graphs, CPU alerts and the per-container metrics do not cover pods yet; the overload limit (`max_inflight`) applies to the Service address as a whole, not per pod.
+The trust boundary does not move: the agent still re-validates every spec, decides the pod spec itself (the database cannot ask for host paths, privileges or another runtime), and Pod Security "baseline" is enforced by the API server as a second line. k3s runs with secrets encryption at rest, anonymous auth off, and its API server reachable only from the platform's own bridge. Usage is metered on the pods the autoscaler runs (the agent records the count every 15 s). Known gaps compared with containers: CPU and memory graphs, CPU alerts and the per-container metrics do not cover pods yet.
+
+In the code, the cluster client and the pod, Service, NetworkPolicy and autoscaler definitions are in `internal/lib/kube`; the engine side (deploying a revision as a Deployment, reconciling, recording pod addresses, shipping pod logs) is in `internal/core/worker` (`kube.go`) next to the Docker path; health probes of pods are in the `monitoring` component, their metering in `billing`, and the Docker autoscaler skips them in `services`.
+
+Measured on the production server (6 cores, gVisor, load from the internet, 4 vCPU / 1 GB instances): before pods reserved only part of their CPU, k3s stayed at one pod and held 200 req/s on a CPU-bound endpoint against 300 for the Docker backend, which reached 3 instances. Run on a laptop k3s, the same settings with the 10 % request let all 6 pods start where the full reservation stopped at 3. The Docker backend remains the default.
 
 ### Trust zones
 1. **Edge (Caddy)**: trusted code, exposed to the internet. Only proxies traffic; holds no client secrets other than TLS keys.

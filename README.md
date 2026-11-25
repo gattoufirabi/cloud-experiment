@@ -27,6 +27,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md). Plain-language overview: the "Multi-
 | **Log retention per plan and export**: organization-wide log search and download, retention by plan (1/7/30 days), continuous export to a bucket (hourly gzipped NDJSON) or a signed HTTPS endpoint, exactly once | done, tested |
 | **Single sign-on (OIDC) per organization**: Google Workspace, Entra ID, Okta, Keycloak..., PKCE, accounts created at first sign-in, roles from provider groups, domains routing, optional "require SSO" with owner break-glass | done, tested |
 | **Autoscaling**: target tracking on CPU between a minimum and maximum of instances, fast scale-out, cooled-down scale-in, zero-downtime deployments, audited | done, tested |
+| **Optional Kubernetes backend** (`AUTOSCALE_BACKEND=kubernetes`): autoscaled web services as Deployments + HorizontalPodAutoscalers on a single-node k3s, pods under gVisor, one namespace and default-deny NetworkPolicy per project, the proxy dialing ready pods directly; installed with `host/k3s-install.sh` | done, tested (local k3s, one production trial); off by default |
 | **Outgoing email (SES-style)**: DNS-verified sending domains, DKIM signing (RSA-SHA256, relaxed), direct delivery to recipients' MX (opportunistic TLS, no relay needed) or through a relay, send API with attachments, SMTP submission on port 465 (TLS at the proxy), per-recipient results, hard bounces into a suppression list, signed delivery webhooks, email-only service tokens, retries, sending log, daily quotas, per-email billing | done, tested |
 | **Observability**: Prometheus-compatible query API per organization (enforced org filter), scraping of applications' own `/metrics`, one-click managed Grafana with provisioned data source and dashboard, metric alarms (PromQL threshold rules into incidents and channels); **Analytics**: per-request traffic from the proxy (latency percentiles, errors, paths, referrers, browsers, devices, bots) and cookieless visitor behavior (page views, sessions, bounce rate, campaigns, custom events) without storing IPs | done, tested |
 | **Secrets manager**: organization-wide encrypted, versioned secrets referenced as `${secret:NAME}` by services and functions, rotation with automatic redeploys, audited reads, API and CLI | done, tested |
@@ -162,14 +163,14 @@ The code is organized by component: each feature keeps its console pages, API en
 | `internal/api/` | starts the console and API: wires the core and every component's routes and templates |
 | `internal/agent/` | starts the node agent: wires the core, every component's loops and the API's notifications |
 | `internal/core/web/` | console and API core: server, sessions, authorization, rendering, layout and static assets, shared code |
-| `internal/core/worker/` | agent core: deployments, reconcile loop and policy, Caddy config, placement, managed databases, shared code |
+| `internal/core/worker/` | agent core: deployments (Docker, and Kubernetes in `kube.go`), reconcile loop and policy, Caddy config, placement, managed databases, shared code |
 | `internal/components/<feature>/api/` | a feature's pages, endpoints and templates (type `API`, which embeds the core's `*web.Server`) |
 | `internal/components/<feature>/agent/` | a feature's background work in the agent (type `Worker`, which embeds `*worker.Agent`; `Start` and `Notify`) |
 | `internal/components/<feature>/<lib>/` | libraries only that feature uses, such as `builds/pipeline`, `servers/nodeagent` or `storage/s3` |
-| `internal/lib/` | libraries shared by several components: `docker`, `secure`, `model`, `db`, `config`, `mail`... |
+| `internal/lib/` | libraries shared by several components: `docker`, `kube`, `secure`, `model`, `db`, `config`, `mail`... |
 | `migrations/` | database schema, RLS policies, audit function |
 | `deploy/` | dev and production compose files, Caddy start config, DB role setup |
-| `host/` | Phase 0: gVisor installer, tenant firewall, isolation test |
+| `host/` | Phase 0: gVisor installer, tenant firewall, isolation test; `k3s-install.sh` for the optional Kubernetes backend |
 | `scripts/e2e-dev.sh` | end-to-end test: two tenants, deploys, cross-tenant attempts |
 
 Components: `auth` (sign-in, passkeys, SSO, signup), `orgs` (organizations, members, catalog), `projects`, `services`, `builds`, `servers` (customer servers, build servers), `databases`, `backups`, `storage`, `functions`, `queues`, `secrets`, `dns`, `email` (sending and hosted mailboxes), `monitoring` (logs, metrics, alerts, analytics), `billing`, `operator` (admin panel), `docs`, `registry` and `restapi` (the infrastructure API used by the Terraform provider).
