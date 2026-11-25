@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"platform/internal/lib/docker"
+	"platform/internal/lib/kube"
 )
 
 // ---------- logs: container stdout/stderr -> VictoriaLogs ----------
@@ -29,6 +31,7 @@ type Follower struct {
 
 type LogShipper struct {
 	Docker *docker.Client
+	Kube   *kube.Client // pods of autoscaled services on Kubernetes (nil = none)
 	URL    string
 	HTTP   *http.Client
 	Log    *slog.Logger
@@ -81,6 +84,10 @@ func (s *LogShipper) follow(ctx context.Context, t target, gen int) {
 	if !ok {
 		since = s.Start
 	}
+	if ns, pod, ok := ParseKubeInstance(t.ContainerID); ok {
+		s.followPod(ctx, t, ns, pod, since)
+		return
+	}
 	rc, err := s.Docker.ContainerLogs(ctx, t.ContainerID, since, true, "")
 	if err != nil {
 		return
@@ -107,6 +114,38 @@ func (s *LogShipper) follow(ctx context.Context, t target, gen int) {
 		case <-ctx.Done():
 		}
 	})
+}
+
+// followPod ships a pod's log (Kubernetes merges stdout and stderr: all lines are "stdout").
+func (s *LogShipper) followPod(ctx context.Context, t target, ns, pod string, since int64) {
+	if s.Kube == nil {
+		return
+	}
+	rc, err := s.Kube.Logs(ctx, ns, pod, time.Unix(since, 0), true, 0)
+	if err != nil {
+		return
+	}
+	defer rc.Close()
+	sc := bufio.NewScanner(rc)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	for sc.Scan() {
+		ts, msg, found := strings.Cut(sc.Text(), " ")
+		tm, err := time.Parse(time.RFC3339Nano, ts)
+		if !found || err != nil {
+			tm, msg = time.Now(), sc.Text()
+		}
+		if strings.TrimSpace(msg) == "" {
+			continue
+		}
+		s.mu.Lock()
+		s.Since[t.ContainerID] = tm.Unix() + 1
+		s.mu.Unlock()
+		select {
+		case s.Ch <- LogLine{t: t, time: tm, msg: msg, stream: "stdout"}:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func (s *LogShipper) Run(ctx context.Context) {

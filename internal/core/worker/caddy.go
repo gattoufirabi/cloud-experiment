@@ -201,6 +201,8 @@ func (a *Agent) SyncCaddy(ctx context.Context, force bool) {
 	if !a.IsPrimary() {
 		return // the proxy runs on the primary node
 	}
+	a.caddySync.Lock()
+	defer a.caddySync.Unlock()
 	routes, err := a.loadRoutes(ctx)
 	if err != nil {
 		a.Log.Error("load routes", "err", err)

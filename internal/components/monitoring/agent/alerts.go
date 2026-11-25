@@ -149,6 +149,9 @@ func (a *Worker) checkHealth(ctx context.Context) {
 		for _, in := range t.Instances {
 			c := t
 			c.ContainerID = in.ID
+			if _, _, onKube := worker.ParseKubeInstance(in.ID); onKube {
+				c.Upstream = in.Upstream // a pod's address (or the Service's when no pod runs)
+			}
 			probes = append(probes, one{i, c})
 		}
 	}
@@ -225,6 +228,12 @@ func (a *Worker) probe(ctx context.Context, client *http.Client, t probeTarget) 
 	if t.ContainerID == "" {
 		return "no container"
 	}
+	if _, _, onKube := worker.ParseKubeInstance(t.ContainerID); onKube {
+		if t.Upstream == "" {
+			return "no network address"
+		}
+		return httpProbe(ctx, client, t.Upstream, t.HealthPath)
+	}
 	info, err := a.Docker.ContainerInspect(ctx, t.ContainerID)
 	if err != nil {
 		return "container missing"
@@ -242,9 +251,14 @@ func (a *Worker) probe(ctx context.Context, client *http.Client, t probeTarget) 
 	if ip == "" {
 		return "no network address"
 	}
+	return httpProbe(ctx, client, net.JoinHostPort(ip, strconv.Itoa(t.Port)), t.HealthPath)
+}
+
+// httpProbe asks host:port for the health path: an answer below 500 within 3 s is healthy.
+func httpProbe(ctx context.Context, client *http.Client, hostPort, path string) string {
 	pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(pctx, http.MethodGet, "http://"+net.JoinHostPort(ip, strconv.Itoa(t.Port))+t.HealthPath, nil)
+	req, _ := http.NewRequestWithContext(pctx, http.MethodGet, "http://"+hostPort+path, nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "health check got no answer within 3 s"

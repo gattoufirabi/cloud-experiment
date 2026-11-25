@@ -205,6 +205,16 @@ Autoscaling adds instances when your service is busy and removes them when it is
 - Your plan's instance limit, CPU and memory are checked against the maximum, so the maximum must fit in your plan.
 - Services with a persistent folder or public TCP/UDP ports run a single instance and cannot autoscale. Previews do not autoscale.
 
+#### On installations that autoscale with Kubernetes
+
+Your operator can choose to run autoscaled web services on a small Kubernetes cluster (k3s) instead of plain containers. Your settings, addresses, variables and deployments work the same way, and each instance still runs in its own gVisor sandbox, isolated from other customers. What changes:
+
+- The instances are scaled by Kubernetes: it checks the CPU every 15 seconds, can double the instances (or add 2) every 15 seconds while the CPU is above the target, and removes instances once the CPU has been lower for 5 minutes. Scaling no longer creates a deployment, so the **Deployments** list shows only your own changes; the instance count on the **Overview** tab follows the autoscaler.
+- A deployment starts the new revision with as many instances as are running at that moment, then moves traffic when all of them are healthy.
+- Your service reaches the project's databases, the platform's addresses (console API, object storage) and the other services' `.internal` names as usual. It cannot reach other customers' services or the server itself.
+- Logs work as usual. The CPU and memory graphs, and CPU alerts, do not cover these instances yet.
+- An overload limit (see [Traffic protection](/docs/traffic-protection)) applies to the service as a whole rather than to each instance.
+
 ### Schedule scaling
 
 For load you can predict (office hours, a nightly batch, a weekly sale), set the number of instances at given times.
@@ -387,7 +397,7 @@ A deployment or scale call answers `202` with `revision`, `status` (`pending`) a
 
 - Each update starts the new revision next to the old one, scans the image, waits for the health check, then switches traffic.
 - The proxy skips an instance that fails for 20 seconds, also when it answers 502, 503 or 504.
-- Autoscaling runs every 15 seconds on the average CPU of the live instances over the last minute; it waits about 35 seconds after a deployment goes live before measuring it, doubles the instances when they are at their CPU limit, and waits 5 minutes without changes before scaling in. Only the live deployment's containers are measured, so the old containers of a switch do not count.
+- Autoscaling runs every 15 seconds on the average CPU of the live instances over the last minute (on installations that autoscale with Kubernetes, see [the differences](#on-installations-that-autoscale-with-kubernetes)); it waits about 35 seconds after a deployment goes live before measuring it, doubles the instances when they are at their CPU limit, and waits 5 minutes without changes before scaling in. Only the live deployment's containers are measured, so the old containers of a switch do not count.
 - During every deployment, the old instances stop only when the requests in progress on them have finished (at most 15 seconds).
 - Scheduled scaling is applied within a minute of its time.
 - On an installation with several servers, a service with several instances stays up when one instance stops answering: the proxy retries the request on another instance. There is nothing to set up.

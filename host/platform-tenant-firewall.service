@@ -6,6 +6,8 @@ PartOf=docker.service
 
 [Service]
 Type=oneshot
+# KUBE_POD_CIDR (set by k3s-install.sh) adds the rules for Kubernetes pods.
+EnvironmentFile=-/etc/default/platform-tenant-firewall
 RemainAfterExit=yes
 ExecStart=/opt/platform/host/tenant-firewall.sh
 

@@ -11,6 +11,7 @@ A self-hosted mini cloud. External clients sign in to a web console, create proj
 | Scale | One server at first; the design must grow to several servers without a rewrite |
 | Users | External clients (untrusted tenants) |
 | Constraint | Open-source components only, self-hosted, lightweight |
+| Autoscaling | The agent's own CPU loop by default; optionally k3s (Deployments + HorizontalPodAutoscalers) for autoscaled web services only, behind `AUTOSCALE_BACKEND=kubernetes` (section 2.1) |
 
 ---
 
@@ -27,7 +28,7 @@ Clients run **their own code** on **your kernel**. That one fact drives most of 
 | Control-plane compromise | The web app is internet-facing; if it holds the Docker socket, one bug = full takeover | The web API has **no** host privileges. Only a local agent touches Docker, and it enforces a hard policy no matter what the database says |
 | Single server = single point of failure | Every client is down at the same time | Honest SLA, tested restores, and an agent protocol already shaped for adding nodes later (phase 4) |
 
-**Why not just use Coolify, Dokploy or CapRover?** They are good for *your own* apps, but they are not built for hostile tenants. They give the web app full Docker socket access, use the default `runc` runtime, have no per-tenant cgroup or disk quotas, and their "teams" are a UI concept, not a security boundary. **Why not Kubernetes with vCluster and Kata?** It solves the problem but needs several GB of RAM just for the control plane on one box, which conflicts with "lightweight".
+**Why not just use Coolify, Dokploy or CapRover?** They are good for *your own* apps, but they are not built for hostile tenants. They give the web app full Docker socket access, use the default `runc` runtime, have no per-tenant cgroup or disk quotas, and their "teams" are a UI concept, not a security boundary. **Why not Kubernetes with vCluster and Kata?** It solves the problem but needs several GB of RAM just for the control plane on one box, which conflicts with "lightweight". That still holds for the runtime as a whole. The one exception is opt-in: a single-node **k3s** (~500 MB) can run the *autoscaled web services* of the primary, with gVisor as its RuntimeClass (section 2.1). Everything else stays on Docker.
 
 ---
 
@@ -78,6 +79,35 @@ Clients run **their own code** on **your kernel**. That one fact drives most of 
 │                                         encrypted backups → off-site rest-server│
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 2.1 Optional: autoscaled services on k3s (`AUTOSCALE_BACKEND=kubernetes`)
+
+By default the agent scales services itself (`internal/components/services/agent/autoscale.go`: every 15 s it compares CPU with the target and deploys a new instance count; Caddy round-robins across the containers). With `AUTOSCALE_BACKEND=kubernetes` on the primary, **autoscaled web services** run on a k3s cluster on the same host instead. A service qualifies when it has autoscaling on, a port, no persistent folder, no public TCP/UDP port, and is not a preview. Databases, workers, functions, jobs, builds and every other service stay Docker containers. The switch is a config value: setting it back to `docker` makes the agent redeploy those services as containers on its next pass.
+
+```
+ Caddy ──► ClusterIP of Service svc-<id> (one stable address, recorded as the deployment's upstream)
+              │ kube-proxy
+              ▼
+ namespace sp-<project id>  (Pod Security "baseline", NetworkPolicy staysa-isolation)
+   Deployment svc-<id>-r<rev>  ── pods: RuntimeClass runsc (gVisor), no SA token, caps dropped,
+   HorizontalPodAutoscaler          requests = limits, env from a per-revision Secret
+   ingress: own project's pods, the proxy and agent containers (their platform-network addresses)
+   egress: DNS, own project's DB addresses on its Docker network, internet minus private ranges and node IPs
+   own node: not covered by NetworkPolicy; the host firewall only lets pods reach 6443/10250 (no anonymous access)
+```
+
+| Concern | Docker backend | Kubernetes backend |
+|---|---|---|
+| Who scales | Agent loop, every 15 s, CPU from VictoriaMetrics | HorizontalPodAutoscaler (metrics-server), up by up to 100 % or 2 pods per 15 s, down after a 5-minute window |
+| Sandbox | `--runtime runsc` | RuntimeClass whose handler must be `runsc`: the agent refuses to start otherwise (unless `ALLOW_INSECURE_RUNTIME` in development) |
+| Tenant network | One Docker bridge per project + `tenant-firewall.sh` | One namespace per project + default-deny NetworkPolicy; the same host rules for the pod CIDR (`KUBE_POD_CIDR`) |
+| Reaching the project's databases | Same bridge | NetworkPolicy allows only that project's database (and proxy) addresses; the host rule lets pods into tenant bridges, the policy narrows it per namespace |
+| Proxy → app | Caddy dials each container | Caddy dials the Service ClusterIP; kube-proxy spreads the requests over the pods |
+| Deploys | Blue/green per revision | Same: a Deployment per revision; Service selector and HPA switch when all its pods are ready, then the old revision is deleted |
+| Logs | Docker log stream | Pod log stream (API), shipped to VictoriaLogs with the same tags |
+| Control plane access | Only the agent holds the Docker socket | Only the agent holds a kubeconfig, for a ServiceAccount limited to the objects it manages (no exec, no RBAC, no node writes). The API never talks to the cluster |
+
+The trust boundary does not move: the agent still re-validates every spec, decides the pod spec itself (the database cannot ask for host paths, privileges or another runtime), and Pod Security "baseline" is enforced by the API server as a second line. k3s runs with secrets encryption at rest, anonymous auth off, and its API server reachable only from the platform's own bridge. Usage is metered on the pods the autoscaler runs (the agent records the count every 15 s). Known gaps compared with containers: CPU and memory graphs, CPU alerts and the per-container metrics do not cover pods yet; the overload limit (`max_inflight`) applies to the Service address as a whole, not per pod.
 
 ### Trust zones
 1. **Edge (Caddy)**: trusted code, exposed to the internet. Only proxies traffic; holds no client secrets other than TLS keys.

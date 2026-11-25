@@ -43,6 +43,16 @@ type Config struct {
 	MaxCPUMillis     int
 	MaxMemoryMB      int
 
+	// Autoscaling backend: "docker" (the agent's own CPU loop, default) or "kubernetes":
+	// autoscaled web services run as Deployments + HorizontalPodAutoscalers on a k3s
+	// cluster on the primary node, under the RuntimeClass KubeRuntimeClass (gVisor).
+	AutoscaleBackend  string
+	KubeConfig        string   // kubeconfig file (k3s: /etc/rancher/k3s/k3s.yaml)
+	KubeServer        string   // overrides the kubeconfig's server address ("" = keep it)
+	KubeRuntimeClass  string   // RuntimeClass of tenant pods; its handler must be runsc
+	KubeIngressFrom   []string // CIDRs allowed into tenant pods besides the proxy and agent containers
+	KubeCPURequestPct int      // share of a pod's CPU limit reserved on its node (scheduling)
+
 	// registry and scanning
 	RegistryHost           string // public host[:port] clients push to, e.g. registry.example.com
 	RegistryUpstream       string // registry container address for Caddy
@@ -271,6 +281,12 @@ func Load() Config {
 		ACMECA:               env("ACME_CA", "https://acme-v02.api.letsencrypt.org/directory"),
 		MaxCPUMillis:         envInt("MAX_CPU_MILLIS", 4000),
 		MaxMemoryMB:          envInt("MAX_MEMORY_MB", 8192),
+		AutoscaleBackend:     strings.ToLower(env("AUTOSCALE_BACKEND", "docker")),
+		KubeConfig:           env("KUBECONFIG", "/etc/rancher/k3s/k3s.yaml"),
+		KubeServer:           env("KUBE_SERVER", ""),
+		KubeRuntimeClass:     env("KUBE_RUNTIME_CLASS", "runsc"),
+		KubeIngressFrom:      envList("KUBE_INGRESS_FROM"),
+		KubeCPURequestPct:    envInt("KUBE_CPU_REQUEST_PCT", 10),
 
 		RegistryHost:           env("REGISTRY_HOST", ""),
 		RegistryUpstream:       env("REGISTRY_UPSTREAM", "registry:5000"),

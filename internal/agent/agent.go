@@ -107,6 +107,11 @@ func Run(ctx context.Context, cfg config.Config) error {
 		RestoringDB:   map[string]bool{},
 	}
 
+	if err := a.InitKube(ctx); err != nil {
+		return err
+	}
+	a.Logs.Kube = a.Kube
+
 	a.ResolveSelf(ctx)
 	a.Heartbeat(ctx) // register the node before anything is placed on it
 
@@ -124,6 +129,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	go a.DiskLoop(ctx)
 	go a.JanitorLoop(ctx)
 	go a.NodeLoop(ctx)
+	go a.KubeUpstreamLoop(ctx)
 	for _, c := range comps {
 		c.Start(ctx)
 	}

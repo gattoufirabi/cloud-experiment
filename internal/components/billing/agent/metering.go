@@ -68,8 +68,8 @@ func (a *Worker) meterMinute(ctx context.Context) {
 		INSERT INTO usage_hourly (org_id, resource_id, kind, name, hour, cpu_milli_minutes, mem_mb_minutes)
 		SELECT d.org_id, d.service_id, 'service', p.slug || '/' || coalesce(ps.slug || ' preview ' || s.preview_name, s.slug),
 		       date_trunc('hour', now()),
-		       (d.spec->>'cpu_millis')::int * greatest(1, coalesce((d.spec->>'instances')::int, 1)),
-		       (d.spec->>'memory_mb')::int * greatest(1, coalesce((d.spec->>'instances')::int, 1))
+		       (d.spec->>'cpu_millis')::int * `+meteredInstancesSQL+`,
+		       (d.spec->>'memory_mb')::int * `+meteredInstancesSQL+`
 		FROM deployments d
 		JOIN services s ON s.id = d.service_id
 		LEFT JOIN services ps ON ps.id = s.preview_of
@@ -100,6 +100,11 @@ func (a *Worker) meterMinute(ctx context.Context) {
 	// Keep a week of ticks; older minutes can no longer be metered anyway.
 	_, _ = a.Pool.Exec(ctx, `DELETE FROM meter_ticks WHERE minute < now() - interval '7 days'`)
 }
+
+// meteredInstancesSQL is a live deployment's instance count: the revision's own, or on
+// Kubernetes the pods its autoscaler runs now (kept in services.instances by reconcileKube).
+const meteredInstancesSQL = `greatest(1, CASE WHEN coalesce(d.instances->0->>'id', '') LIKE 'k8s:%' THEN s.instances
+		ELSE coalesce((d.spec->>'instances')::int, 1) END)`
 
 func (a *Worker) meterEgress(ctx context.Context, last map[string]uint64, abuse *worker.AbuseState) {
 	seen := map[string]bool{}
