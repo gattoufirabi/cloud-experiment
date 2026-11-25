@@ -51,7 +51,7 @@ func TestDeploymentIsSandboxedAndHardened(t *testing.T) {
 		}
 	}
 	res := c["resources"].(Obj)
-	if res["requests"].(Obj)["cpu"] != "500m" || res["limits"].(Obj)["cpu"] != "500m" || res["limits"].(Obj)["memory"] != "256Mi" {
+	if res["requests"].(Obj)["cpu"] != "50m" || res["limits"].(Obj)["cpu"] != "500m" || res["requests"].(Obj)["memory"] != "256Mi" || res["limits"].(Obj)["memory"] != "256Mi" {
 		t.Errorf("resources %v", res)
 	}
 	if c["envFrom"].([]any)[0].(Obj)["secretRef"].(Obj)["name"] != "svc-aaaaaaaabbbb-r7-env" {
@@ -110,7 +110,7 @@ func TestServiceAndHPAFollowTheRevision(t *testing.T) {
 		t.Fatalf("hpa %v", h["spec"])
 	}
 	b, _ := json.Marshal(h)
-	if !strings.Contains(string(b), `"averageUtilization":70`) || !strings.Contains(string(b), `"stabilizationWindowSeconds":300`) {
+	if !strings.Contains(string(b), `"averageValue":"350m"`) || !strings.Contains(string(b), `"stabilizationWindowSeconds":300`) {
 		t.Fatalf("hpa %s", b)
 	}
 }
@@ -182,5 +182,21 @@ func TestDeploymentProbeToleratesLoad(t *testing.T) {
 	}
 	if field(c, "lifecycle", "preStop", "sleep", "seconds") != 5 {
 		t.Errorf("preStop sleep: %v", c["lifecycle"])
+	}
+}
+
+// A pod reserves only a share of its CPU limit, so several fit on a node (a 4-vCPU pod
+// reserving 4 cores left no room for a second one on a 6-core server).
+func TestCPURequestIsAShareOfTheLimit(t *testing.T) {
+	for _, c := range []struct{ millis, pct, want int }{
+		{4000, 0, 400}, {4000, 25, 1000}, {4000, 100, 4000}, {4000, 250, 400}, {50, 10, 10},
+	} {
+		w := Workload{CPUMillis: c.millis, CPURequestPct: c.pct}
+		if got := w.cpuRequest(); got != c.want {
+			t.Errorf("cpuRequest(%d, %d%%) = %d, want %d", c.millis, c.pct, got, c.want)
+		}
+	}
+	if (Workload{CPUMillis: 4000, TargetCPU: 50}).cpuTarget() != 2000 {
+		t.Error("the autoscaler's target is a share of the limit, not of the request")
 	}
 }

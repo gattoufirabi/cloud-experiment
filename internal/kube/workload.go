@@ -63,7 +63,23 @@ type Workload struct {
 
 	Replicas, Min, Max, TargetCPU int
 	RuntimeClass                  string
+	CPURequestPct                 int // share of CPUMillis each pod reserves on its node (1-100; 0 = 10)
 }
+
+// cpuRequest is what a pod reserves for scheduling: a share of its limit, like a Docker
+// container, which reserves nothing and shares the cores. Reserving the whole limit let a
+// 6-core node fit a single 4-vCPU pod, so the autoscaler could never add a second one.
+func (w Workload) cpuRequest() int {
+	pct := w.CPURequestPct
+	if pct <= 0 || pct > 100 {
+		pct = 10
+	}
+	return max(10, w.CPUMillis*pct/100)
+}
+
+// cpuTarget is the autoscaler's per-pod target in millicores: TargetCPU % of the limit,
+// the platform's unit (a Utilization target would be a % of the smaller request).
+func (w Workload) cpuTarget() int { return max(1, w.CPUMillis*w.TargetCPU/100) }
 
 func (w Workload) ns() string { return Namespace(w.ProjectID) }
 
@@ -130,8 +146,8 @@ func (w Workload) PullSecret() Obj {
 
 // Deployment runs the revision's pods under gVisor with the same hardening as the Docker
 // containers: no service account token, no privilege escalation, capabilities dropped,
-// CPU and memory requests equal to limits (so CPU utilization is "% of the limit", the
-// unit of the platform's autoscale target).
+// CPU and memory limits. Memory is reserved in full (it cannot be shared); CPU reserves only
+// cpuRequest, so pods share cores as containers do and the node is not "full" at once.
 func (w Workload) Deployment() Obj {
 	name := RevisionName(w.ServiceID, w.Revision)
 	cpu := strconv.Itoa(w.CPUMillis) + "m"
@@ -143,7 +159,7 @@ func (w Workload) Deployment() Obj {
 		"envFrom":         []any{Obj{"secretRef": Obj{"name": name + "-env"}}},
 		"ports":           []any{Obj{"name": "http", "containerPort": w.Port, "protocol": "TCP"}},
 		"resources": Obj{
-			"requests": Obj{"cpu": cpu, "memory": mem},
+			"requests": Obj{"cpu": strconv.Itoa(w.cpuRequest()) + "m", "memory": mem},
 			"limits":   Obj{"cpu": cpu, "memory": mem},
 		},
 		// Readiness decides which pods the proxy dials (agent/kube.go kubeUpstreamLoop). It
@@ -224,7 +240,7 @@ func (w Workload) HPA() Obj {
 			"minReplicas":    w.Min,
 			"maxReplicas":    w.Max,
 			"metrics": []any{Obj{"type": "Resource", "resource": Obj{
-				"name": "cpu", "target": Obj{"type": "Utilization", "averageUtilization": w.TargetCPU}}}},
+				"name": "cpu", "target": Obj{"type": "AverageValue", "averageValue": strconv.Itoa(w.cpuTarget()) + "m"}}}},
 			"behavior": Obj{
 				"scaleUp": Obj{"stabilizationWindowSeconds": 0, "selectPolicy": "Max", "policies": []any{
 					Obj{"type": "Percent", "value": 100, "periodSeconds": 15},

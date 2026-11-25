@@ -105,7 +105,7 @@ func (a *Agent) workload(j job, env, hosts []string, replicas int) kube.Workload
 		CPUMillis: j.Spec.CPUMillis, MemoryMB: j.Spec.MemoryMB,
 		Env: env, Hosts: hosts,
 		Replicas: replicas, Min: j.AutoMin, Max: j.AutoMax, TargetCPU: j.AutoCPU,
-		RuntimeClass: a.cfg.KubeRuntimeClass,
+		RuntimeClass: a.cfg.KubeRuntimeClass, CPURequestPct: a.cfg.KubeCPURequestPct,
 	}
 	if registry.IsPlatformImage(j.Spec.Image, a.cfg.RegistryHost) && a.cfg.RegistryInternalSecret != "" {
 		w.PullServer = a.cfg.RegistryHost

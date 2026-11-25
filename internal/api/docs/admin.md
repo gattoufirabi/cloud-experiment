@@ -255,6 +255,7 @@ Clients' alerts cover their applications; watch the server and the platform serv
 | KUBECONFIG, KUBE_SERVER | /etc/rancher/k3s/k3s.yaml (compose: /run/kube/agent.yaml), empty | The agent's kubeconfig; KUBE_SERVER replaces its server address. |
 | KUBE_RUNTIME_CLASS | runsc | RuntimeClass of tenant pods; its handler must be runsc unless ALLOW_INSECURE_RUNTIME=true. |
 | KUBE_INGRESS_FROM | empty | Extra CIDRs allowed into tenant pods, besides the proxy and agent containers (found automatically). |
+| KUBE_CPU_REQUEST_PCT | 10 | Share of a pod's CPU limit it reserves on the node (1-100). Pods share cores like containers; 100 reserves the whole limit, which lets few pods fit on a node and can stop the autoscaler from adding pods. |
 
 ## Admin troubleshooting
 
