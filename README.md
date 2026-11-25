@@ -253,3 +253,7 @@ Operator commands: `platform admin help` (create-org, invite, suspend-org, set-p
 | Supply chain | Trivy scan on push, deploy and nightly; optional block on critical CVEs | e2e |
 | Backups | per-org repository and key; agent picks the target volume; restore needs admin + typed confirmation; safety snapshot first | e2e (cross-tenant backup/restore refused, encrypted at rest, round trip) |
 | Alerts | channels and incidents per org (RLS); outbound requests refuse internal addresses after DNS resolution; secrets encrypted | e2e (cross-tenant channel use refused) + unit tests (SSRF guard) |
+
+## License
+
+Copyright (C) 2026 Rabi Gattoufi. Licensed under the [GNU Affero General Public License v3.0](LICENSE): if you run a modified version as a network service, you must offer its source to its users. The Terraform provider in `terraform-provider-staysa/` keeps its own [MPL-2.0](terraform-provider-staysa/LICENSE) license.
