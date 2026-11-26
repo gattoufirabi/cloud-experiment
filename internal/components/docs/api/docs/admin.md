@@ -274,6 +274,18 @@ Clients' alerts cover their applications; watch the server and the platform serv
 | Backup jobs fail | Check the job message and the rest-server (WireGuard, disk). |
 | Alerts not delivered | The channel's last delivery line gives the reason. |
 
+## Load testing
+
+`scripts/loadtest/loadtest.sh` measures what the server can take. Run it from a workstation with Docker and SSH access to the server; it creates its own organization on a temporary plan, deploys a small test app and deletes everything at the end, even when interrupted. Send the load from another server in the same region (`GEN_SSH=user@host`): a home connection runs out of bandwidth long before the platform does.
+
+- **light**: requests per second through the proxy and the sandbox on a trivial app.
+- **cpu**: a CPU-bound app autoscaling from 1 to 10 instances.
+- **conns**: concurrent open connections (each request held 1 second).
+- **bw**: 1 MiB responses (bandwidth).
+- **density**: small services added 10 at a time, 50 per project, until a deployment fails or memory reaches 90%.
+
+Each step runs until 95% of requests answer in under 500 ms with under 1% errors, and a phase stops at the first step past 5 seconds or 10% errors. The report (`scripts/loadtest/results/<time>/report.md`) lists every step with the server's CPU, memory, proxy CPU and outgoing traffic. It loads the real server: run it when a slowdown for the other tenants is acceptable. A project holds about 250 containers (its network is a /24), whatever the server's size.
+
 ## Known limits
 
 - **One server:** a hardware failure or a large traffic attack takes every client down until it is repaired or restored.
