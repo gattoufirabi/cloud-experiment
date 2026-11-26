@@ -268,6 +268,7 @@ Clients' alerts cover their applications; watch the server and the platform serv
 | Deployments stay pending | Check `docker compose -f compose.prod.yml logs agent` and restart it; pending deployments resume. |
 | "No application is published at this address" | The service has no live deployment, its organization is suspended, or the address is misspelled. |
 | Apps unreachable right after a Caddy restart | Wait up to a minute: the agent re-attaches it. |
+| Every site drops for a few seconds under heavy traffic | Check `sudo journalctl -k | grep -i oom` for Caddy. It has 1 GB (`deploy/compose.prod.yml`), with `GOMEMLIMIT` and `GODEBUG=disablethp=1` so freed memory leaves; raise both together if large downloads at high volume still reach the limit. |
 | Certificate errors on a client domain | Only verified domains get certificates; check DNS and Caddy logs. |
 | docker push denied | Wrong, pull-only, expired or revoked token, or another organization's path. |
 | Scans fail | Check `docker compose -f compose.prod.yml logs trivy`; block-critical organizations cannot deploy meanwhile. |

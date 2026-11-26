@@ -96,7 +96,7 @@ trap 'log "interrupted"; exit 130' INT TERM
 
 # ---------- host sampler: one SSH session, a line every 2 s ----------
 sampler() {
-  echo "t,cpu_pct,mem_pct,load1,caddy_cpu_pct,containers,rx_mbps,tx_mbps" > "$OUT/host.csv"
+  echo "t,cpu_pct,mem_pct,load1,caddy_cpu_pct,caddy_mem_mb,containers,rx_mbps,tx_mbps" > "$OUT/host.csv"
   R "sudo bash -s" > >(tr -d '\r' >> "$OUT/host.csv") <<'REMOTE' &
 cpu() { head -1 /proc/stat | awk '{print $2+$3+$4+$7+$8+$9, $5+$6}'; }
 IF=$(ip route show default | awk '{print $5; exit}')
@@ -110,8 +110,8 @@ while sleep 2; do
   dt=$(( (t-pt)/1000 )); db=$((cb-pb)); di=$((ci-pi))
   awk -v t=$t -v db=$db -v di=$di -v cc=$((cc-pc)) -v dt=$dt -v rx=$((rx-prx)) -v tx=$((tx-ptx)) \
       -v mem="$(free | awk '/Mem:/{printf "%.1f", 100*($2-$7)/$2}')" -v ld="$(cut -d' ' -f1 /proc/loadavg)" \
-      -v n="$(docker ps -q | wc -l)" -v cores="$(nproc)" \
-      'BEGIN{ printf "%.1f,%.1f,%s,%s,%.1f,%d,%.1f,%.1f\n", t/1e9, (db+di>0?100*db/(db+di):0), mem, ld, 100*cc/dt/cores, n, rx*8/dt, tx*8/dt }'
+      -v n="$(docker ps -q | wc -l)" -v cores="$(nproc)" -v cm="$(cat "$CG/memory.current" 2>/dev/null || echo 0)" \
+      'BEGIN{ printf "%.1f,%.1f,%s,%s,%.1f,%.0f,%d,%.1f,%.1f\n", t/1e9, (db+di>0?100*db/(db+di):0), mem, ld, 100*cc/dt/cores, cm/1048576, n, rx*8/dt, tx*8/dt }'
   pb=$cb; pi=$ci; prx=$rx; ptx=$tx; pc=$cc; pt=$t
   [ -f /tmp/loadtest-stop ] && break
 done

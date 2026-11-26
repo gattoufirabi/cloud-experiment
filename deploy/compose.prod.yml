@@ -195,7 +195,16 @@ services:
       - ./caddy/initial-prod.json:/etc/caddy/initial.json:ro
       - caddy-admin:/run/caddy
       - /srv/platform/caddy:/data
-    deploy: { resources: { limits: { memory: 512M } } }   # the WAF rule set needs ~100 MB
+    # Memory: about 60 MB idle (the WAF rule set ~100 MB more), but heavy traffic (many large
+    # responses at once) grows the Go heap by hundreds of MB for a moment. GOMEMLIMIT makes the
+    # collector work harder well before the container limit, and disablethp lets freed memory
+    # really leave: with transparent huge pages "always" (Debian's default), memory Caddy had
+    # released stayed charged to the container, which then sat at its limit and was killed by
+    # the next spike (load test, 2026-11-26).
+    environment:
+      GOMEMLIMIT: 768MiB
+      GODEBUG: disablethp=1
+    deploy: { resources: { limits: { memory: 1G } } }
 
   # S3-compatible object storage (Garage). Reached by Caddy and by the API/agent over
   # the compose network only; data in /srv/platform/garage.

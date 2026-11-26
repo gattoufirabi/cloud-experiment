@@ -97,8 +97,8 @@ for ph in dict.fromkeys(i[0] for i in idx):
     title, unit = TITLES.get(ph, (ph, "req/s"))
     cpu = ph == "cpu"
     md += [f"## {title}", "",
-           f"| {unit} offered | served req/s | p50 ms | p95 ms | p99 ms | errors | not sent | MB/s in | server CPU | memory | proxy CPU | out Mbit/s |" + (" instances |" if cpu else ""),
-           "|---|---|---|---|---|---|---|---|---|---|---|---|" + ("---|" if cpu else "")]
+           f"| {unit} offered | served req/s | p50 ms | p95 ms | p99 ms | errors | not sent | MB/s in | server CPU | memory | proxy CPU | proxy MB | out Mbit/s |" + (" instances |" if cpu else ""),
+           "|---|---|---|---|---|---|---|---|---|---|---|---|---|" + ("---|" if cpu else "")]
     held = broke = None
     for _, v, t0, t1, hold in (i for i in idx if i[0] == ph):
         st = load_step(os.path.join(OUT, f"{ph}-{v:06d}.summary.json"))
@@ -111,7 +111,8 @@ for ph in dict.fromkeys(i[0] for i in idx):
                "error_pct": round(st["err"], 2) if st else "", "not_sent": st["dropped"] if st else "",
                "mb_in_per_s": round(st["bytes"] / hold / 1e6, 2) if st else "",
                "cpu_pct": peak(w0, w1, "cpu_pct"), "mem_pct": peak(w0, w1, "mem_pct"),
-               "caddy_cpu_pct": peak(w0, w1, "caddy_cpu_pct"), "tx_mbps": peak(w0, w1, "tx_mbps")}
+               "caddy_cpu_pct": peak(w0, w1, "caddy_cpu_pct"), "caddy_mem_mb": peak(w0, w1, "caddy_mem_mb"),
+               "tx_mbps": peak(w0, w1, "tx_mbps")}
         if cpu:
             row["instances"] = max((k for t, k in inst if w0 <= t <= w1), default="")
         steps_out.append(row)
@@ -120,10 +121,10 @@ for ph in dict.fromkeys(i[0] for i in idx):
         if verdict != "holds" and broke is None:
             broke = row
         if st is None:
-            md.append(f"| {v} | k6 did not finish |  |  |  |  |  |  | {row['cpu_pct']:.0f}% | {row['mem_pct']:.0f}% | {row['caddy_cpu_pct']:.0f}% | {row['tx_mbps']:.0f} |" + (" |" if cpu else ""))
+            md.append(f"| {v} | k6 did not finish |  |  |  |  |  |  | {row['cpu_pct']:.0f}% | {row['mem_pct']:.0f}% | {row['caddy_cpu_pct']:.0f}% | {row['caddy_mem_mb']:.0f} | {row['tx_mbps']:.0f} |" + (" |" if cpu else ""))
             continue
         md.append(f"| {v} | {row['served_rps']} | {row['p50_ms']} | {row['p95_ms']} | {row['p99_ms']} | {row['error_pct']}% | {row['not_sent']} | {row['mb_in_per_s']} | "
-                  f"{row['cpu_pct']:.0f}% | {row['mem_pct']:.0f}% | {row['caddy_cpu_pct']:.0f}% | {row['tx_mbps']:.0f} |" + (f" {row.get('instances', '')} |" if cpu else ""))
+                  f"{row['cpu_pct']:.0f}% | {row['mem_pct']:.0f}% | {row['caddy_cpu_pct']:.0f}% | {row['caddy_mem_mb']:.0f} | {row['tx_mbps']:.0f} |" + (f" {row.get('instances', '')} |" if cpu else ""))
     line = f"**Holds up to:** {held['offered']} {unit} ({held['served_rps']} req/s served, p95 {held['p95_ms']} ms)" if held else "**Holds up to:** none of the steps"
     if broke:
         line += f". **First step that did not hold:** {broke['offered']} {unit}" + (f" (p95 {broke['p95_ms']} ms, {broke['error_pct']}% errors)." if broke["p95_ms"] != "" else " (k6 did not finish).")
