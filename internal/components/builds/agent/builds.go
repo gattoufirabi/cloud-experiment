@@ -323,26 +323,39 @@ func (a *Worker) runBuild(parent context.Context, b buildJob) {
 			log.step("building %s from the Dockerfile", image)
 			args = append(args, "--frontend", "dockerfile.v0", "--local", "dockerfile="+ctxDir)
 		}
-		buildID, code, out, err := a.RunOnce(ctx, "build-kit-"+short, docker.ContainerConfig{
-			Image:      a.Cfg.BuildkitImage,
-			Entrypoint: []string{"buildctl-daemonless.sh"},
-			Cmd:        args,
-			Env:        []string{"BUILDKITD_FLAGS=--oci-worker-no-process-sandbox"},
-			Labels:     labels,
-			HostConfig: a.WithDNS(docker.HostConfig{
-				Runtime: a.Cfg.BuildRuntime, NetworkMode: buildNetwork,
-				Memory: int64(a.Cfg.BuildMemoryMB) << 20, MemorySwap: int64(a.Cfg.BuildMemoryMB) << 20,
-				NanoCPUs: int64(a.Cfg.BuildCPUMillis) * 1_000_000, PidsLimit: 2048,
-				// Rootless BuildKit maps its user namespace with newuidmap/newgidmap (setuid),
-				// so no-new-privileges cannot be set; every other capability is dropped.
-				CapDrop: []string{"ALL"}, CapAdd: []string{"SETUID", "SETGID"},
-				Mounts: []docker.Mount{{Type: "volume", Source: vol, Target: "/src"},
-					{Type: "volume", Source: cache, Target: "/home/user/.local/share/buildkit"}},
-				LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "16m"}},
-			}),
-		}, a.Cfg.BuildTimeout, func(out string) {
-			a.saveBuildLog(b.ID, log.String()+out)
-		})
+		runKit := func(flags string) (string, int, string, error) {
+			return a.RunOnce(ctx, "build-kit-"+short, docker.ContainerConfig{
+				Image:      a.Cfg.BuildkitImage,
+				Entrypoint: []string{"buildctl-daemonless.sh"},
+				Cmd:        args,
+				Env:        []string{"BUILDKITD_FLAGS=" + flags},
+				Labels:     labels,
+				HostConfig: a.WithDNS(docker.HostConfig{
+					Runtime: a.Cfg.BuildRuntime, NetworkMode: buildNetwork,
+					Memory: int64(a.Cfg.BuildMemoryMB) << 20, MemorySwap: int64(a.Cfg.BuildMemoryMB) << 20,
+					NanoCPUs: int64(a.Cfg.BuildCPUMillis) * 1_000_000, PidsLimit: 2048,
+					// Rootless BuildKit maps its user namespace with newuidmap/newgidmap (setuid),
+					// so no-new-privileges cannot be set; every other capability is dropped.
+					CapDrop: []string{"ALL"}, CapAdd: []string{"SETUID", "SETGID"},
+					Mounts: []docker.Mount{{Type: "volume", Source: vol, Target: "/src"},
+						{Type: "volume", Source: cache, Target: "/home/user/.local/share/buildkit"}},
+					LogConfig: docker.LogConfig{Type: "json-file", Config: map[string]string{"max-size": "16m"}},
+				}),
+			}, a.Cfg.BuildTimeout, func(out string) {
+				a.saveBuildLog(b.ID, log.String()+out)
+			})
+		}
+		const kitFlags = "--oci-worker-no-process-sandbox"
+		buildID, code, out, err := runKit(kitFlags)
+		if err == nil && code != 0 && a.Cfg.BuildRuntime == "runsc" && needsNativeSnapshotter(out) {
+			if buildID != "" {
+				a.Docker.ContainerRemove(context.Background(), buildID)
+			}
+			log.WriteString(out)
+			log.step("a step changed a file that its own processes had in use (for example apt-get upgrading libc6), " +
+				"which the sandbox's overlay filesystem refuses: building again with BuildKit's native snapshotter (slower)")
+			buildID, code, out, err = runKit(kitFlags + " --oci-worker-snapshotter=native")
+		}
 		if buildID != "" {
 			defer a.Docker.ContainerRemove(context.Background(), buildID)
 		}
@@ -546,4 +559,13 @@ func (a *Worker) buildSecrets(ctx context.Context, serviceID string, names []str
 		out[name] = string(plain)
 	}
 	return out, rows.Err()
+}
+
+// needsNativeSnapshotter reports whether a failed BuildKit run hit the sandbox's overlay
+// limit. Under gVisor, BuildKit's overlayfs snapshotter is gVisor's own overlay, which
+// cannot copy a lower-layer file up while a process has it mapped, and answers ENODEV: dpkg
+// upgrading libc6 cannot hard-link the dynamic loader every running process uses. The
+// native snapshotter (each layer a plain directory, no copy-up) does not have the limit.
+func needsNativeSnapshotter(out string) bool {
+	return strings.Contains(out, "No such device")
 }
